@@ -53,8 +53,8 @@ runner, application session UI, or historical scene data.
 These checks do not establish HTTPS deployment, installation in a live ChatGPT
 account, ChatGPT-native image upload, automatic Skill selection, subagent
 registration, OAuth, public-directory approval, multi-user isolation, or
-performance on large production scenes. Read the setup and hosting instructions
-in [README.md](../README.md) before connecting a host.
+performance on large production scenes. Read the
+[service setup](operations.md) before connecting a client.
 
 The [portable manifest](https://agent-plugins.org/schemas/1.0.0/plugin.schema.json)
 and [MCP configuration](https://agent-plugins.org/schemas/1.0.0/mcp.schema.json)
