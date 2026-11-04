@@ -6,8 +6,10 @@ subagent coordination. The MCP service executes Blender operations and enforces
 scene state.
 
 - Read `skills/blender-scene/SKILL.md` when creating or refining scenes.
-- Keep runtime data under `.canova/runs/`. Never commit scenes, references, secrets,
-  environment files, logs, or personal connection settings.
+- Keep runtime data under `.canova/runs/`. Never commit generated scenes, secrets,
+  environment files, logs, or personal connection settings. Commit a reference
+  image only when the user explicitly authorizes it for a named public docs
+  showcase; keep other references out of Git.
 - Use a dedicated Blender bridge process for this service. Do not attach to a
   user's working scene or bypass `SceneStore` when executing scene code.
 - Run `npm run check`, `npm run build`, and `npm test` after code changes.

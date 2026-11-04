@@ -5,7 +5,10 @@ evidence, and preview the best result inside a supporting chat client.
 
 ChatGPT or Codex supplies the language model and Agent loop. This package contains Skills,
 a Blender MCP service, an embedded Three.js viewer, and optional Codex agent
-templates. It does not require a separate LLM API key or Codex App Server.
+templates. For demanding image-to-scene work, we recommend a paid ChatGPT plan
+with access to Plugins and GPT-6.1 Sol or GPT-6 Astra. Model and plugin
+availability vary by plan and workspace ([model guidance](https://learn.chatgpt.com/docs/models),
+[plugin availability](https://developers.openai.com/training/walkthroughs/plugins-and-skills)).
 For a prominent high-detail object, the host can use a separately available 3D
 generation tool and import its GLB. This package does not include a 3D generation
 provider or its credentials.
@@ -163,12 +166,14 @@ after `scene_export`, outside `scene_review`.
 
 This example comes from a local Blender 5.1.1 run on 2026-11-04. The input was a
 single gamer-bedroom photo showing a shelving desk, monitor, bed, curtain, PC
-and black ergonomic chair. A copyable request is:
+and black ergonomic chair.
 
-![Rendered gamer bedroom scene with a Meshy-generated chair](docs/gameroom-showcase.webp)
+| Input reference | Reviewed Blender render |
+| --- | --- |
+| ![Input photo of a gamer bedroom](docs/gameroom-reference.webp) | ![Rendered gamer bedroom scene with a Meshy-generated chair](docs/gameroom-showcase.webp) |
 
-The image is the reviewed Blender render. The `.blend` and GLB from that run
-remain local artifacts; this showcase includes the render, not the scene files.
+The input photo is included with the user's permission for this public showcase.
+The `.blend` and GLB from that run remain local artifacts. A copyable request is:
 
 > Build an orbitable 3D room from this photo. Match the camera composition and
 > warm shelf lighting. If a detailed chair would improve the result, check the
