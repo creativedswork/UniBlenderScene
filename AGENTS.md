@@ -1,8 +1,9 @@
 # CodexBlenderPlugin
 
 This repository packages a host-driven Blender workflow. ChatGPT or Codex supplies
-the model, planning, Python generation, visual review, and any authorized subagent
-coordination. The MCP service executes Blender operations and enforces scene state.
+the language model, planning, Python generation, visual review, and any authorized
+subagent coordination. The MCP service executes Blender operations and enforces
+scene state.
 
 - Read `skills/blender-scene/SKILL.md` when creating or refining scenes.
 - Keep runtime data under `.canova/runs/`. Never commit scenes, references, secrets,
@@ -13,6 +14,9 @@ coordination. The MCP service executes Blender operations and enforces scene sta
   Run `npm run test:blender` for changes to Blender execution or export.
 - Keep portable plugin metadata in root `plugin.json`, skills in `skills/`, and
   MCP connection declarations in `mcp.json`.
+- Keep external 3D asset provider selection in the scene Skill. The service does
+  not bundle a provider or its credentials; do not describe optional providers
+  as built-in generation capabilities.
 - Describe GitHub publication, service deployment, client installation, and plugin
   directory approval as separate states. Report only checks actually performed.
 

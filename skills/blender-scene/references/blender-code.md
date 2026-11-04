@@ -25,3 +25,20 @@ available. Use imports for other modules you need.
 
 See `tests/scene.py` at the plugin root for a complete camera, material, and
 lighting example used by the real Blender integration check.
+
+## Imported GLB checks
+
+After `bpy.ops.import_scene.gltf(filepath=...)`, inspect the imported object
+names, material slots, polygon counts, dimensions, scale, origin, parent, and
+rotation mode. Call `scene_get` with `objectName` after the edit to retrieve an
+exact object's transforms when the default summary omits it.
+
+Blender applies `rotation_euler` only when `rotation_mode` is an Euler mode.
+Imported GLBs may use `QUATERNION`; setting `rotation_euler` in that mode changes
+stored values without rotating the object. Set `rotation_mode = 'XYZ'` before
+assigning Euler angles, or assign `rotation_quaternion` directly. Render a view
+after changing orientation to confirm the result.
+
+Place the asset against the floor using its evaluated bounding box, then compare
+its scale and rear, front, or side view with the reference. Preserve the source
+texture and material connections when exporting to GLB.

@@ -3,14 +3,19 @@
 Create and refine Blender scenes from reference images or text, inspect rendered
 evidence, and preview the best result inside a supporting chat client.
 
-ChatGPT or Codex supplies the model and Agent loop. This package contains Skills,
+ChatGPT or Codex supplies the language model and Agent loop. This package contains Skills,
 a Blender MCP service, an embedded Three.js viewer, and optional Codex agent
 templates. It does not require a separate LLM API key or Codex App Server.
+For a prominent high-detail object, the host can use a separately available 3D
+generation tool and import its GLB. This package does not include a 3D generation
+provider or its credentials.
 
 ```mermaid
 flowchart LR
   U["User request + image"] --> H["ChatGPT / Codex host"]
   S["Packaged Skills"] --> H
+  H -->|"optional asset request"| P["External 3D asset provider"]
+  P -->|"generated GLB"| H
   H -->|"plan · edit · review"| M["Blender MCP service"]
   M --> B["Dedicated Blender process"]
   B --> C["Checkpoint + render + best scene"]
@@ -131,24 +136,55 @@ The bundled Skill guides the host through:
 | Tool | Result |
 | --- | --- |
 | `scene_create` | Empty scene, optional reference image, asynchronous job ID |
-| `scene_plan` | Frozen criteria, implementation steps and visual threshold |
+| `scene_plan` | Frozen pre-export criteria, implementation steps and visual threshold |
 | `scene_edit` | Checkpoint, execute Python, save and render |
-| `scene_get` | Job status, reference image, latest render and object summary |
-| `scene_review` | Evidence record, best checkpoint and convergence decision |
+| `scene_get` | Reference image, latest render, abbreviated object summary; `objectName` inspects one object's transforms without image bytes |
+| `scene_review` | Pre-export render evidence, best checkpoint and convergence decision |
 | `scene_export` | Best `.blend`, GLB, render profile and optional world EXR |
-| `scene_view` | Embedded viewer with progress, orbit controls and downloads |
+| `scene_view` | Lightweight job polling; embedded viewer with orbit controls and downloads |
 | `scene_continue` | New user-requested refinement on the same scene |
 
-Long Blender operations return immediately. The host polls `scene_get`; the
-widget polls `scene_view` for displayed jobs. The host must inspect the render
-before reviewing it. The service does not judge images or generate Python.
+Long Blender operations return immediately. The host and widget poll `scene_view`
+for job status without image bytes. After a render completes, the host calls
+`scene_get` to inspect the image before reviewing it. Pass `objectName` to
+`scene_get` to inspect a named object's rotation mode, transforms, materials and
+polygon count. The service does not judge images or generate Python.
 
 The service enforces planning → editing → review, saves checkpoints before
 edits, and restores failed edits. It allows 5 regular edit attempts, extending to
 8 if the fifth review improves the best result and identifies repairable gaps.
 Two consecutive non-improvements stop the request. Best-checkpoint ranking
 uses unmet blockers, unmet major criteria, regressions, then the host's visual
-score. Scores are judgments, not measured image-similarity metrics.
+score. Scores are judgments, not measured image-similarity metrics. Criteria
+must be observable before export; verify GLB loading and viewer interaction
+after `scene_export`, outside `scene_review`.
+
+## Showcase: gamer bedroom from one photo
+
+This example comes from a local Blender 5.1.1 run on 2026-11-04. The input was a
+single gamer-bedroom photo showing a shelving desk, monitor, bed, curtain, PC
+and black ergonomic chair. A copyable request is:
+
+![Rendered gamer bedroom scene with a Meshy-generated chair](docs/gameroom-showcase.webp)
+
+The image is the reviewed Blender render. The `.blend` and GLB from that run
+remain local artifacts; this showcase includes the render, not the scene files.
+
+> Build an orbitable 3D room from this photo. Match the camera composition and
+> warm shelf lighting. If a detailed chair would improve the result, check the
+> available image-to-3D tools and tell me the credit cost before generating it.
+> Show a Blender render and an interactive 3D preview.
+
+| Stage | What happened in this run |
+| --- | --- |
+| Scene layout | The host wrote Blender geometry for the desk, room, shelves, bed, curtain, PC and accessories through `scene_edit`. |
+| Detailed asset | A separately configured Meshy 7.1 tool generated the chair from an isolated chair reference after the user confirmed 35 credits. The resulting mesh had 1,022,392 faces. Meshy is not bundled with this plugin. |
+| Visual review | The host compared Blender renders with the photo and adjusted chair scale and orientation. Checking the imported object's rotation mode revealed that Euler-angle changes had been ignored while it was in `QUATERNION` mode. |
+| Delivery | The reviewed scene was exported as a `.blend` and a 55 MB GLB; a Three.js browser check loaded the GLB and verified orbit dragging without page errors. |
+
+The single photo does not show the room's hidden surfaces, so the orbitable model
+is a reconstruction rather than an exact scan. The Blender PNG is the visual
+reference for lighting and material comparison; WebGL may render them differently.
 
 The viewer preserves the exported camera and aspect ratio, reconstructs lights,
 loads EXR environments, applies AgX where configured, adds contact shadows, and

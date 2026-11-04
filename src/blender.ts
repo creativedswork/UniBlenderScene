@@ -48,6 +48,7 @@ export function sceneSummaryCode(): string {
   return `
 result = {
     "blenderVersion": bpy.app.version_string,
+    "objectCount": len(bpy.context.scene.objects),
     "objects": [{"name": obj.name, "type": obj.type,
                  "location": list(obj.location), "dimensions": list(obj.dimensions)}
                 for obj in bpy.context.scene.objects][:300],
@@ -55,6 +56,26 @@ result = {
     "world": bpy.context.scene.world.name if bpy.context.scene.world else None,
     "resolution": [bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y]
 }`;
+}
+
+export function inspectObjectCode(path: string, name: string): string {
+  return `
+bpy.ops.wm.open_mainfile(filepath=${JSON.stringify(path)})
+obj = bpy.data.objects.get(${JSON.stringify(name)})
+if obj is None:
+    raise RuntimeError("Object not found: " + ${JSON.stringify(name)})
+result = {
+    "name": obj.name, "type": obj.type,
+    "parent": obj.parent.name if obj.parent else None,
+    "location": list(obj.location), "dimensions": list(obj.dimensions),
+    "scale": list(obj.scale), "rotationMode": obj.rotation_mode,
+    "rotationEuler": list(obj.rotation_euler),
+    "rotationQuaternion": list(obj.rotation_quaternion),
+    "matrixWorld": [list(row) for row in obj.matrix_world],
+    "polygonCount": len(obj.data.polygons) if obj.type == "MESH" else None,
+    "materials": [slot.material.name if slot.material else None for slot in obj.material_slots],
+}
+`;
 }
 
 export function renderCode(path: string): string {

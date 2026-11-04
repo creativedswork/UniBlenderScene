@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { BlenderClient } from "../src/blender.js";
 import { allowedDownloadURL, SceneStore, type Plan } from "../src/store.js";
 import { createMcpServer } from "../src/server.js";
@@ -14,6 +15,11 @@ class FakeBlender extends BlenderClient {
   value = "initial";
   override async execute(code: string) {
     if (this.failNext) { this.failNext = false; throw new Error("Invalid Python edit"); }
+    if (code.includes('obj = bpy.data.objects.get("Chair")')) {
+      return { name: "Chair", type: "MESH", rotationMode: "QUATERNION", polygonCount: 42,
+        matrixWorld: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
+    }
+    if (code.includes("obj = bpy.data.objects.get(")) throw new Error("Object not found");
     for (const line of code.split("\n")) {
       const save = line.match(/save_as_mainfile\(filepath=(".*")\)/);
       if (save) writeFileSync(JSON.parse(save[1]!), this.value);
@@ -124,5 +130,12 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
     assert.equal(prompts.prompts[0]?.name, "blender-scene");
     const invalid = await client.callTool({ name: "scene_create", arguments: { prompt: "" } });
     assert.equal(invalid.isError, true);
+    const scene = store.create("A chair"); await store.settled();
+    const inspected = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, objectName: "Chair" } }) as CallToolResult;
+    const object = inspected.structuredContent?.inspectedObject as { rotationMode: string };
+    assert.equal(object.rotationMode, "QUATERNION");
+    assert.equal(inspected.content.some((item) => item.type === "image"), false);
+    const missing = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, objectName: "Missing" } });
+    assert.equal(missing.isError, true);
   } finally { await client.close(); await server.close(); }
 });

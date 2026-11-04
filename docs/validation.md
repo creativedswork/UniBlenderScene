@@ -19,6 +19,8 @@ and temporary `.canova/runs` directory.
 The Blender check exercised HTTP MCP initialization, all eight tool
 registrations, resource reading, scene creation, frozen planning, Python edits,
 PNG rendering, review recording, best-checkpoint GLB export, and scene viewing.
+It polled jobs through image-free `scene_view` responses and queried one named
+Blender object for its rotation mode, world matrix, materials, and polygon count.
 It rejected stale reviews and unauthorized artifact reads, transferred a PNG
 through an explicitly approved HTTPS reference host, continued a scene with a
 new request, and recovered from an intentionally failed edit. A subsequent

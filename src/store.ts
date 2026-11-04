@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
-import { BlenderClient, renderCode, sceneSummaryCode } from "./blender.js";
+import { BlenderClient, inspectObjectCode, renderCode, sceneSummaryCode } from "./blender.js";
 
 export type Criterion = { id: string; description: string; severity: "blocker" | "major" | "minor" };
 export type Plan = { summary: string; criteria: Criterion[]; steps: string[]; visualThreshold: number };
@@ -110,6 +110,16 @@ export class SceneStore {
     });
   }
   async settled(): Promise<void> { await this.queue; }
+
+  inspectObject(id: string, name: string): Promise<Record<string, unknown>> {
+    const scene = this.get(id);
+    this.idle(scene);
+    const operation = this.queue.then(() => this.blender.execute(
+      inspectObjectCode(this.path(scene, "current.blend"), name),
+    ));
+    this.queue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
 
   create(prompt: string, reference?: Reference): Scene {
     const scene: Scene = {

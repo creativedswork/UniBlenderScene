@@ -76,8 +76,9 @@ async function call(name: string, args: Record<string, unknown>): Promise<CallTo
 async function poll(id: string, expectedStatus = "done"): Promise<Record<string, any>> {
   const deadline = Date.now() + 300000;
   while (Date.now() < deadline) {
-    const output = await call("scene_get", { sceneId: id });
+    const output = await call("scene_view", { sceneId: id });
     assert.equal(output.isError, undefined, JSON.stringify(output.content));
+    assert.equal(output.content.some((item) => item.type === "image"), false);
     const scene = output.structuredContent as Record<string, any>;
     if (!["queued", "running"].includes(scene.job?.status)) {
       assert.equal(scene.job?.status, expectedStatus, scene.error);
@@ -109,6 +110,16 @@ try {
   const evidence = await call("scene_get", { sceneId: id });
   assert.ok(evidence.content.some((item) => item.type === "image" && item.data.length > 10000));
   assert.ok(rendered.summary.objects.some((object: { name: string }) => object.name === "RedCube"));
+  assert.ok(rendered.summary.objectCount >= rendered.summary.objects.length);
+  const inspected = await call("scene_get", { sceneId: id, objectName: "RedCube" });
+  assert.equal(inspected.content.some((item) => item.type === "image"), false);
+  const object = inspected.structuredContent!.inspectedObject as Record<string, any>;
+  assert.equal(object.name, "RedCube");
+  assert.equal(object.rotationMode, "XYZ");
+  assert.equal(object.polygonCount, 6);
+  assert.equal(object.matrixWorld.length, 4);
+  const missingObject = await call("scene_get", { sceneId: id, objectName: "MissingObject" });
+  assert.equal(missingObject.isError, true);
   const badReview = await call("scene_review", {
     sceneId: id, iteration: 99, criteria: [{ id: "red-cube", passed: true, evidence: "Stale" }],
     visualScore: 90, regressions: [], repairable: false, nextAction: "Export",
@@ -162,7 +173,7 @@ try {
   const report = {
     status: "passed", tools: tools.tools.length, sceneId: id,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
-    checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "stale review rejection", "artifact access boundary", "HTTPS host-file image transfer", "new-request continuation", "failed-edit checkpoint recovery"],
+    checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS host-file image transfer", "new-request continuation", "failed-edit checkpoint recovery"],
   };
   await writeFile(join(root, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, evidenceDirectory: root }, null, 2));
