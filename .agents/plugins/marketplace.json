@@ -1,0 +1,12 @@
+{
+  "name": "codex-blender",
+  "interface": { "displayName": "Codex Blender" },
+  "plugins": [
+    {
+      "name": "codex-blender-plugin",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

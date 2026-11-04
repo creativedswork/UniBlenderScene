@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-blender-plugin",
+  "version": "0.1.0",
+  "description": "Create and refine Blender scenes from images, then inspect them in an interactive Three.js viewer.",
+  "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/blender-setup/SKILL.md",
+      "interface": {
+        "displayName": "CodexBlenderPlugin",
+        "developerName": "CreativeDSWork",
+        "category": "Productivity",
+        "shortDescription": "Create Blender scenes from images",
+        "longDescription": "Use the host model to plan, write Blender code, review rendered evidence, and deliver the best scene with an embedded 3D viewer.",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": [
+          "Create a Blender scene from this image and show the interactive 3D result."
+        ]
+      }
+    }
+  }
+}
