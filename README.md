@@ -81,3 +81,11 @@ The `.blend` and GLB from this run remain local artifacts.
   source, remote connection, configuration, and packaging.
 - [Scene Skill](skills/blender-scene/SKILL.md): scene workflow and tool use.
 - [Validation results](docs/validation.md): checks performed for this release.
+
+## Credits and upstream updates
+
+The [scene craft guidance](skills/blender-scene/references/scene-craft.md) adapts
+methods from [Scenario Labs' Blender Expert Skills](https://github.com/scenario-labs/skills/tree/main/skills/dcc/blender)
+(MIT). Thanks to Scenario Labs and its contributors. The plugin does not bundle
+their scripts or MCP service. See [upstream tracking](docs/scenario-skills.md)
+for the reviewed version and `npm run check:scenario-skills` update check.

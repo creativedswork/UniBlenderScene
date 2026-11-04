@@ -1,0 +1,21 @@
+{
+  "repository": "scenario-labs/skills",
+  "reviewedOn": "2026-11-04",
+  "sources": [
+    {
+      "name": "scenario-blender-expert",
+      "path": "skills/dcc/blender/scenario-blender-expert",
+      "lastReviewedCommit": "b8544b9c86e0685844cc6effbb27f3885f744d3a"
+    },
+    {
+      "name": "scenario-blender-lighting-rendering",
+      "path": "skills/dcc/blender/scenario-blender-lighting-rendering",
+      "lastReviewedCommit": "b8544b9c86e0685844cc6effbb27f3885f744d3a"
+    },
+    {
+      "name": "scenario-blender-export",
+      "path": "skills/dcc/blender/scenario-blender-export",
+      "lastReviewedCommit": "b8544b9c86e0685844cc6effbb27f3885f744d3a"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: blender-scene
-description: Create or refine Blender scenes from descriptions or reference images, optionally incorporate high-detail assets from available 3D generation tools, review renders, and deliver an interactive 3D preview through CodexBlenderPlugin.
+description: Build or refine Blender scenes from text or reference images, review renders, and deliver an interactive 3D preview. Use for scene creation or refinement; use blender-setup for installation.
 ---
 
 # Blender scene workflow
@@ -23,7 +23,10 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    and obtain the user's authorization before a paid generation unless already
    authorized. The plugin does not supply a 3D generation provider. Read
    [asset workflow](references/assets.md) when using an external asset.
-4. Freeze a plan with `scene_plan`: state the target, measurable criteria with
+4. For a visually detailed scene, especially one based on a reference, read
+   [scene craft](references/scene-craft.md) before planning. Turn applicable
+   composition, lighting, and geometry checks into observable criteria. Freeze
+   a plan with `scene_plan`: state the target, measurable criteria with
    unique IDs and severities, implementation steps, and a visual threshold from
    0 to 100. Criteria must be observable before export. Verify GLB loading and
    viewer interaction after export, outside `scene_review`.
