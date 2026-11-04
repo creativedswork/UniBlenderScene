@@ -138,6 +138,10 @@ try {
   const glbResponse = await fetch(glb.url); assert.equal(glbResponse.status, 200);
   const bytes = Buffer.from(await glbResponse.arrayBuffer());
   assert.equal(bytes.toString("ascii", 0, 4), "glTF"); assert.equal(bytes.readUInt32LE(4), 2);
+  const gltf = JSON.parse(bytes.subarray(20, 20 + bytes.readUInt32LE(12)).toString("utf8"));
+  assert.ok(gltf.materials.some((material: { emissiveTexture?: unknown; emissiveFactor?: number[] }) =>
+    material.emissiveTexture && material.emissiveFactor?.some((value) => value > 0)),
+    "Opted-in floor must carry baked lighting in the GLB.");
   const glbChunk = await call("scene_asset_chunk", { sceneId: id, name: "final.glb", offset: 0 });
   assert.equal(glbChunk.isError, undefined);
   assert.deepEqual(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64"), bytes.subarray(0, 256 * 1024));
@@ -145,6 +149,8 @@ try {
   const profile = await (await fetch(profileURL)).json() as Record<string, any>;
   assert.equal(profile.camera.name, "__CodexBlenderActiveCamera");
   assert.equal(profile.lights[0].type, "AREA");
+  assert.deepEqual(profile.bakedObjects, ["Floor"]);
+  assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
   const forbidden = await fetch(`${origin}/artifacts/${id}/run.json?token=invalid`); assert.equal(forbidden.status, 403);
   const unauthorizedGLB = await fetch(glb.url.replace(/token=[^&]+/, "token=invalid")); assert.equal(unauthorizedGLB.status, 403);
   await writeFile(join(root, "scene.json"), JSON.stringify(exported, null, 2));

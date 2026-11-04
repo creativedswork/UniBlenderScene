@@ -15,6 +15,12 @@ available. Use imports for other modules you need.
 - The viewer exports the active camera, reconstructs lights from a render
   profile, and loads the world EXR when present. Blender compositor effects,
   volumes, and indirect lighting can differ in WebGL. Review the PNG render.
+- For a static opaque surface that needs closer WebGL lighting, set
+  `obj["codex_bake_lighting"] = 256` (or 512 for a large wall or floor). Export
+  bakes its direct and indirect light into an emissive texture on a copy of the
+  scene. Use this selectively because each surface adds export time and GLB
+  size. `obj["codex_preview_emissive_tint"] = [r, g, b]` optionally adjusts that
+  surface in the viewer without changing the reviewed Blender render.
 - For a fresh scene, clear the default objects if any. For refinements, identify
   objects by their existing names and change only what the request requires.
 - Do not write outside the scene workspace, delete checkpoints, start background

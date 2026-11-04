@@ -26,6 +26,8 @@ floor_shader = floor_material.node_tree.nodes.get("Principled BSDF")
 floor_shader.inputs["Base Color"].default_value = (0.32, 0.29, 0.24, 1)
 floor_shader.inputs["Roughness"].default_value = 0.8
 floor.data.materials.append(floor_material)
+floor["codex_bake_lighting"] = 128
+floor["codex_preview_emissive_tint"] = [1.0, 1.0, 1.0]
 
 bpy.ops.object.camera_add(location=(6, -7, 5))
 camera = bpy.context.object

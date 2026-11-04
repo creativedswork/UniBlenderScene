@@ -30,6 +30,67 @@ def upstream(socket, kind, seen=None):
     return None
 
 
+def bake_static_lighting(scene):
+    """Bake opted-in opaque meshes on the export copy into emissive glTF textures."""
+    candidates = [obj for obj in scene.objects if obj.type == "MESH" and obj.get("codex_bake_lighting")]
+    if not candidates:
+        return []
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = min(scene.cycles.samples, 32)
+    scene.render.bake.margin = 8
+    scene.render.bake.use_clear = True
+    baked = []
+    for obj in candidates:
+        resolution = int(obj["codex_bake_lighting"])
+        if resolution < 64 or resolution > 1024:
+            raise ValueError(f"Invalid light bake resolution on {obj.name}: {resolution}")
+        if not obj.data.uv_layers:
+            obj.data.uv_layers.new(name="BakedLighting")
+            bpy.ops.object.select_all(action="DESELECT")
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.uv.smart_project(island_margin=0.03)
+            bpy.ops.object.mode_set(mode="OBJECT")
+        image = bpy.data.images.new(f"{obj.name} baked lighting", width=resolution, height=resolution, alpha=False)
+        image.generated_color = (0, 0, 0, 1)
+        materials = []
+        for slot in obj.material_slots:
+            if slot.material is None:
+                slot.material = bpy.data.materials.new(f"{obj.name} material")
+            material = slot.material.copy()
+            material.use_nodes = True
+            slot.material = material
+            nodes = material.node_tree.nodes
+            for node in nodes:
+                node.select = False
+            target = nodes.new("ShaderNodeTexImage")
+            target.image = image
+            target.select = True
+            nodes.active = target
+            materials.append(material)
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.bake(type="COMBINED", pass_filter={"DIFFUSE", "DIRECT", "INDIRECT"})
+        image.pack()
+        for material in materials:
+            nodes = material.node_tree.nodes
+            nodes.clear()
+            output = nodes.new("ShaderNodeOutputMaterial")
+            shader = nodes.new("ShaderNodeBsdfPrincipled")
+            shader.inputs["Base Color"].default_value = (0, 0, 0, 1)
+            shader.inputs["Roughness"].default_value = 1
+            shader.inputs["Emission Strength"].default_value = 1
+            texture = nodes.new("ShaderNodeTexImage")
+            texture.image = image
+            material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Emission Color"])
+            material.node_tree.links.new(shader.outputs["BSDF"], output.inputs["Surface"])
+        baked.append(obj.name)
+    return baked
+
+
 try:
     world = scene.world
     background = None
@@ -53,6 +114,11 @@ try:
     camera = scene.camera
     if camera:
         camera.name = "__CodexBlenderActiveCamera"
+    baked_objects = bake_static_lighting(scene)
+    baked_tints = {
+        name: list(scene.objects[name]["codex_preview_emissive_tint"])
+        for name in baked_objects if "codex_preview_emissive_tint" in scene.objects[name]
+    }
     profile = {
         "version": 1,
         "colorManagement": {
@@ -72,6 +138,8 @@ try:
             "environmentRotationY": -float(mapping.inputs["Rotation"].default_value[2]) if mapping else 0.0,
         },
         "lightMapping": {"intensityScale": 0.1, "maxShadowLights": 3, "shadowPowerRatio": 0.35},
+        "bakedObjects": baked_objects,
+        "bakedTints": baked_tints,
         "lights": [],
         "warnings": [
             "WebGL preview approximates Blender lighting. Use the rendered image for visual review.",

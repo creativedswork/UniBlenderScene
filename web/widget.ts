@@ -22,6 +22,8 @@ type Profile = {
   world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number };
   camera: { name: string } | null;
   lightMapping: { intensityScale: number; maxShadowLights: number; shadowPowerRatio: number };
+  bakedObjects?: string[];
+  bakedTints?: Record<string, number[]>;
   lights: { name: string; type: string; color: number[]; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -211,8 +213,20 @@ async function loadModel(url: string) {
       renderer.toneMapping = THREE.NoToneMapping;
       scene.add(new THREE.HemisphereLight(0xffffff, 0x9aaa76, 1.2));
     }
+    const bakedObjects = new Set((profile.bakedObjects ?? []).map(normalized));
+    const bakedTints = new Map(Object.entries(profile.bakedTints ?? {}).map(([name, tint]) => [normalized(name), tint]));
     gltf.scene.traverse((object) => {
-      if (object instanceof THREE.Mesh) { object.castShadow = true; object.receiveShadow = true; }
+      if (object instanceof THREE.Mesh) {
+        object.castShadow = true;
+        object.receiveShadow = !bakedObjects.has(normalized(object.name));
+        const tint = bakedTints.get(normalized(object.name));
+        if (tint?.length === 3) {
+          for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+            if (material instanceof THREE.MeshStandardMaterial) material.emissive.multiply(
+              new THREE.Color().setRGB(tint[0]!, tint[1]!, tint[2]!, THREE.LinearSRGBColorSpace));
+          }
+        }
+      }
     });
     applyLights(gltf.scene, profile, extent, center);
     const textures: THREE.Texture[] = [];
@@ -237,7 +251,10 @@ async function loadModel(url: string) {
       scene.background = environment; scene.backgroundIntensity = world.strength;
       scene.backgroundRotation.y = world.environmentRotationY;
     }
-    const exportedCamera = gltf.cameras.find((camera) => camera.name === normalized(profile.camera?.name ?? "")) ?? gltf.cameras[0];
+    const sceneCameras: THREE.Camera[] = [];
+    gltf.scene.traverse((object) => { if (object instanceof THREE.Camera) sceneCameras.push(object); });
+    const exportedCamera = sceneCameras.find((camera) => camera.name === normalized(profile.camera?.name ?? "")) ??
+      sceneCameras[0] ?? gltf.cameras[0];
     const camera = exportedCamera instanceof THREE.PerspectiveCamera || exportedCamera instanceof THREE.OrthographicCamera ?
       exportedCamera : new THREE.PerspectiveCamera(45, 1, 0.01, extent * 100);
     if (!exportedCamera) { camera.position.copy(center).add(new THREE.Vector3(extent * 1.5, extent, extent * 1.5)); camera.lookAt(center); }
@@ -246,12 +263,13 @@ async function loadModel(url: string) {
       const position = camera.getWorldPosition(new THREE.Vector3()), rotation = camera.getWorldQuaternion(new THREE.Quaternion());
       camera.removeFromParent(); scene.add(camera); camera.position.copy(position); camera.quaternion.copy(rotation);
     }
+    const initialDirection = camera.getWorldDirection(new THREE.Vector3());
     const controls = new OrbitControls(camera, renderer.domElement);
     const focusDistance = wideOutdoor ? Math.min(camera.position.distanceTo(center), extent * 0.02) : camera.position.distanceTo(center) || extent;
-    controls.target.copy(exportedCamera ? camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(focusDistance)) : center);
+    controls.target.copy(exportedCamera ? camera.position.clone().addScaledVector(initialDirection, focusDistance) : center);
     controls.enableDamping = true; controls.update();
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
-    const composer = new EffectComposer(renderer);
+    const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { samples: 4 }));
     composer.addPass(new RenderPass(scene, camera));
     const ao = new GTAOPass(scene, camera, 512, 512);
     ao.output = GTAOPass.OUTPUT.Default;

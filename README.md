@@ -75,6 +75,16 @@ chair after the user approved its credit cost. The reviewed scene was exported a
 The scene is a reconstruction: the photo does not show the room's hidden sides.
 The `.blend` and GLB from this run remain local artifacts.
 
+## Related research
+
+- [VIGA: Vision-as-Inverse-Graphics Agent via Interleaved Multimodal Reasoning](https://arxiv.org/abs/2601.11109)
+  (Yin et al., 2026) describes a code, render, inspect, and revise loop for
+  reconstructing editable scenes from images. Its visual feedback approach is
+  relevant to this plugin's scene review workflow.
+- [SceneCraft: An LLM Agent for Synthesizing 3D Scene as Blender Code](https://arxiv.org/abs/2403.01248)
+  (Hu et al., 2024) uses scene planning, Blender Python generation, and rendered
+  visual feedback to refine 3D scenes.
+
 ## Documentation
 
 - [Service setup and deployment](docs/operations.md): local runtime, plugin
