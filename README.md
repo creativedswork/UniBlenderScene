@@ -60,18 +60,15 @@ This scene was built from one photo in Blender 5.1.1.
 
 | Input reference | Reviewed Blender render |
 | --- | --- |
-| ![Input photo of a gamer bedroom](docs/gameroom-reference.webp) | ![Rendered gamer bedroom scene with a Meshy-generated chair](docs/gameroom-showcase.webp) |
+| ![Input photo of a gamer bedroom](docs/gameroom-reference.webp) | ![Latest Blender render of the gamer bedroom scene](docs/gameroom-showcase.webp) |
 
-The input photo is included with the user's permission. The request was:
+The input photo is included with the user's permission. The request was to build
+a high-fidelity 3D scene matching the photo.
 
-> Build an orbitable 3D room from this photo. Match the camera composition and
-> warm shelf lighting. If a detailed chair would improve the result, check the
-> available image-to-3D tools and tell me the credit cost before generating it.
-> Show a Blender render and an interactive 3D preview.
-
-The room was modeled in Blender. A separately configured Meshy tool supplied the
-chair after the user approved its credit cost. The reviewed scene was exported as
-`.blend` and GLB, and the Three.js preview was checked for orbit interaction.
+The room and chair were modeled in Blender. The monitor uses generated fantasy
+artwork. The reviewed scene was exported as `.blend` and GLB; static surfaces
+were baked into the GLB to bring the interactive preview's lighting closer to
+the Blender render. The Three.js preview was checked for orbit interaction.
 The scene is a reconstruction: the photo does not show the room's hidden sides.
 The `.blend` and GLB from this run remain local artifacts.
 
