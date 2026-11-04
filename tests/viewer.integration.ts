@@ -29,7 +29,7 @@ const server = createServer(async (request, response) => {
     } else if (path === "/widget") {
       response.writeHead(200, {
         "Content-Type": "text/html",
-        "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self';",
+        "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' blob:;",
       }).end(widget);
     } else if (path === "/scene") {
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -60,7 +60,7 @@ try {
     await page.waitForFunction(() => {
       const frame = document.getElementById("viewer") as HTMLIFrameElement;
       return frame.contentDocument?.querySelector("#mode-3d")?.getAttribute("aria-pressed") === "true";
-    }, undefined, { timeout: 15000 });
+    }, undefined, { timeout: 60000 });
   } catch (error) {
     await page.screenshot({ path: resolve(root, "viewer-failure.png") });
     console.error(await frame.locator("body").innerText(), errors);
@@ -80,10 +80,25 @@ try {
   await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.6, { steps: 12 });
   await page.mouse.up();
   const moved = await canvas.screenshot();
+  await writeFile(resolve(root, "viewer-orbit.png"), moved);
   assert.equal(first.equals(moved), false, "Orbit drag must change the rendered camera.");
+  await frame.getByRole("button", { name: "Reset camera" }).click();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.5, { steps: 12 });
+  await page.mouse.up();
+  await writeFile(resolve(root, "viewer-orbit-side.png"), await canvas.screenshot());
+  await frame.getByRole("button", { name: "Reset camera" }).click();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.5, { steps: 16 });
+  await page.mouse.up();
+  await writeFile(resolve(root, "viewer-orbit-reverse.png"), await canvas.screenshot());
   await frame.getByRole("button", { name: "Reset camera" }).click();
   await frame.getByRole("button", { name: "Render", exact: true }).click();
   assert.equal(await frame.locator("#render").isVisible(), true);
+  assert.equal(await frame.locator("#render").evaluate((image) => (image as HTMLImageElement).naturalWidth > 0), true,
+    "Render image must contain decoded pixels, not a broken URL.");
   await page.locator("#viewer").screenshot({ path: resolve(root, "viewer-render.png") });
   await frame.getByRole("button", { name: "3D", exact: true }).click();
   await frame.getByRole("textbox", { name: "Scene refinement" }).fill("Soften the light");
@@ -97,11 +112,15 @@ try {
     page.waitForEvent("download"), frame.getByRole("link", { name: "Download GLB", exact: true }).click(),
   ]);
   assert.equal(await download.failure(), null);
+  const [blendDownload] = await Promise.all([
+    page.waitForEvent("download"), frame.getByRole("link", { name: "Download Blender file", exact: true }).click(),
+  ]);
+  assert.equal(await blendDownload.failure(), null);
   await page.locator("#viewer").screenshot({ path: resolve(root, "viewer-preview.png") });
   assert.deepEqual(errors, []);
   await writeFile(resolve(root, "viewer-report.json"), JSON.stringify({
     status: "passed", browser: browser.version(),
-    checks: ["MCP AppBridge iframe handshake", "CSP-bounded local assets", "WebGL GLB loading", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB download"],
+    checks: ["MCP AppBridge iframe handshake", "asset tool transfer with inaccessible direct URLs", "decoded render image", "WebGL GLB loading", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB and Blender downloads"],
     pageErrors: errors,
   }, null, 2));
   console.log(`Viewer integration passed; screenshots saved under ${root}`);

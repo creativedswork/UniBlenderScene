@@ -95,7 +95,7 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 8);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 9);
   const widget = await client.readResource({ uri: "ui://codex-blender/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
@@ -138,6 +138,9 @@ try {
   const glbResponse = await fetch(glb.url); assert.equal(glbResponse.status, 200);
   const bytes = Buffer.from(await glbResponse.arrayBuffer());
   assert.equal(bytes.toString("ascii", 0, 4), "glTF"); assert.equal(bytes.readUInt32LE(4), 2);
+  const glbChunk = await call("scene_asset_chunk", { sceneId: id, name: "final.glb", offset: 0 });
+  assert.equal(glbChunk.isError, undefined);
+  assert.deepEqual(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64"), bytes.subarray(0, 256 * 1024));
   const profileURL = exported.artifacts.find((file: { name: string }) => file.name === "render-profile.json").url;
   const profile = await (await fetch(profileURL)).json() as Record<string, any>;
   assert.equal(profile.camera.name, "__CodexBlenderActiveCamera");

@@ -35,6 +35,53 @@ let viewer: {
 } | undefined;
 const message = (text: string) => { el("message").textContent = text; };
 const artifact = (name: string) => snapshot?.artifacts.find((item) => item.name === name)?.url;
+type AssetChunk = { name: string; offset: number; size: number; mimeType: string; data: string };
+const assetURLs = new Map<string, Promise<string>>();
+let assetTransport: "chunk" | "scene_view" = "chunk";
+
+async function requestAssetChunk(sceneId: string, name: string, offset: number): Promise<AssetChunk> {
+  const fallback = () => app.callServerTool({ name: "scene_view", arguments: { sceneId, asset: { name, offset } } });
+  let result;
+  if (assetTransport === "chunk") {
+    try {
+      result = await app.callServerTool({ name: "scene_asset_chunk", arguments: { sceneId, name, offset } });
+      if (result.isError || !result.structuredContent || !("data" in result.structuredContent)) throw new Error("Asset tool unavailable.");
+    } catch {
+      assetTransport = "scene_view";
+      result = await fallback();
+    }
+  } else result = await fallback();
+  if (result.isError) throw new Error(`Could not read ${name}.`);
+  return result.structuredContent as AssetChunk;
+}
+
+function assetURL(name: string, version: string): Promise<string> {
+  const sceneId = snapshot?.id;
+  if (!sceneId) return Promise.reject(new Error("Scene is unavailable."));
+  const key = `${sceneId}:${name}:${version}`;
+  const cached = assetURLs.get(key);
+  if (cached) return cached;
+  const pending = (async () => {
+    const parts: ArrayBuffer[] = [];
+    let offset = 0, size = -1, mimeType = "application/octet-stream";
+    do {
+      const chunk = await requestAssetChunk(sceneId, name, offset);
+      if (!chunk || chunk.name !== name || chunk.offset !== offset || !Number.isSafeInteger(chunk.size) || chunk.size > 100 * 1024 * 1024) {
+        throw new Error(`Invalid ${name} chunk.`);
+      }
+      if (size >= 0 && chunk.size !== size) throw new Error(`${name} changed while loading.`);
+      size = chunk.size; mimeType = chunk.mimeType;
+      const binary = atob(chunk.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (!bytes.length && offset < size) throw new Error(`Incomplete ${name} chunk.`);
+      parts.push(bytes.buffer as ArrayBuffer); offset += bytes.length;
+    } while (offset < size);
+    return URL.createObjectURL(new Blob(parts, { type: mimeType }));
+  })().catch((error) => { assetURLs.delete(key); throw error; });
+  assetURLs.set(key, pending);
+  return pending;
+}
 
 function dispose() {
   if (!viewer) return;
@@ -129,12 +176,11 @@ function applyLights(model: THREE.Group, profile: Profile, extent: number, cente
 async function loadModel(url: string) {
   loadingURL = url;
   try {
-    const profileURL = artifact("render-profile.json");
-    if (!profileURL) throw new Error("Export profile is missing.");
+    const profileURL = await assetURL("render-profile.json", url);
     const profileResponse = await fetch(profileURL);
     if (!profileResponse.ok) throw new Error("Export profile could not be loaded.");
     const profile = await profileResponse.json() as Profile;
-    const gltf = await new GLTFLoader().loadAsync(url);
+    const gltf = await new GLTFLoader().loadAsync(await assetURL("final.glb", url));
     if (artifact("final.glb") !== url) return;
     dispose();
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -157,6 +203,14 @@ async function loadModel(url: string) {
     if (!solidBounds.isEmpty()) bounds = solidBounds;
     const center = bounds.isEmpty() ? new THREE.Vector3() : bounds.getCenter(new THREE.Vector3());
     const extent = bounds.isEmpty() ? 2 : Math.max(...bounds.getSize(new THREE.Vector3()).toArray(), 1);
+    // A single 1024px shadow map across a wide landscape turns tiny grass and
+    // flowers almost black. Use broad sky fill for these outdoor previews.
+    const wideOutdoor = !profile.world.environmentUri && extent > 100 && profile.lights.some((light) => light.type === "SUN");
+    if (wideOutdoor) {
+      renderer.shadowMap.enabled = false;
+      renderer.toneMapping = THREE.NoToneMapping;
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x9aaa76, 1.2));
+    }
     gltf.scene.traverse((object) => {
       if (object instanceof THREE.Mesh) { object.castShadow = true; object.receiveShadow = true; }
     });
@@ -165,8 +219,7 @@ async function loadModel(url: string) {
     const world = profile.world;
     let environment: THREE.Texture;
     if (world.environmentUri) {
-      const environmentURL = artifact("environment.exr");
-      if (!environmentURL) throw new Error("Export environment is missing.");
+      const environmentURL = await assetURL("environment.exr", url);
       environment = await new EXRLoader().loadAsync(environmentURL);
     } else {
       const [r = 0, g = 0, b = 0] = world.color;
@@ -194,7 +247,8 @@ async function loadModel(url: string) {
       camera.removeFromParent(); scene.add(camera); camera.position.copy(position); camera.quaternion.copy(rotation);
     }
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.copy(exportedCamera ? camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(camera.position.distanceTo(center) || extent)) : center);
+    const focusDistance = wideOutdoor ? Math.min(camera.position.distanceTo(center), extent * 0.02) : camera.position.distanceTo(center) || extent;
+    controls.target.copy(exportedCamera ? camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(focusDistance)) : center);
     controls.enableDamping = true; controls.update();
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
     const composer = new EffectComposer(renderer);
@@ -251,14 +305,31 @@ function receive(data: unknown) {
   el<HTMLButtonElement>("send").disabled = busy || !["completed", "best_effort"].includes(next.stage);
   const render = ["completed", "best_effort"].includes(next.stage) ? next.bestRenderUrl : next.renderUrl;
   if (render) {
-    el<HTMLImageElement>("render").src = render;
-    el("empty").style.display = "none";
+    const name = ["completed", "best_effort"].includes(next.stage) ? "best.png" : "render";
+    el("empty").textContent = "Loading scene render";
+    void assetURL(name, `${next.iteration}:${next.best?.iteration ?? 0}`).then((url) => {
+      if (snapshot?.id !== next.id) return;
+      el<HTMLImageElement>("render").src = url;
+      el("empty").style.display = "none";
+      setMode(mode);
+    }).catch((error) => { console.error("Scene render failed:", error); message("Scene render could not be loaded."); });
   }
-  if (next.reference) { el<HTMLImageElement>("reference").src = next.reference.url; el("reference").style.display = "block"; }
+  if (next.reference) void assetURL("reference", next.reference.url).then((url) => {
+    if (snapshot?.id === next.id) { el<HTMLImageElement>("reference").src = url; el("reference").style.display = "block"; }
+  }).catch((error) => console.error("Reference image failed:", error));
   for (const [element, name] of [["download-glb", "final.glb"], ["download-blend", "best.blend"]]) {
     const link = el<HTMLAnchorElement>(element!), url = artifact(name!);
     link.hidden = !url;
-    if (url) { link.href = url; link.download = name!; }
+    if (url) {
+      link.href = url; link.download = name!;
+      link.onclick = (event) => {
+        event.preventDefault();
+        void assetURL(name!, url).then((blobURL) => {
+          const download = document.createElement("a");
+          download.href = blobURL; download.download = name!; download.click();
+        }).catch((error) => { console.error("Scene download failed:", error); message(`${name} could not be downloaded.`); });
+      };
+    }
   }
   if (next.error) message("The scene operation failed. Ask in the conversation to inspect it and retry.");
   const glb = artifact("final.glb");

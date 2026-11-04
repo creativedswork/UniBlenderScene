@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -35,6 +35,28 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   };
   const write = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+  const assetNames = ["render", "best.png", "reference", "final.glb", "render-profile.json", "environment.exr", "best.blend"] as const;
+  const assetChunk = async (sceneId: string, name: typeof assetNames[number], offset: number): Promise<CallToolResult> => {
+    const scene = store.get(sceneId);
+    const file = name === "render" ? scene.render :
+      ["final.glb", "render-profile.json", "environment.exr"].includes(name) && scene.exportedIteration !== undefined ?
+        `artifacts/${scene.exportedIteration}/${name}` : name;
+    if (!file || !store.allowedFiles(scene).includes(file)) throw new Error("Scene asset is unavailable.");
+    const path = store.path(scene, file);
+    const size = (await stat(path)).size;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > size) throw new Error("Scene asset offset is out of range.");
+    const chunk = Buffer.alloc(Math.min(256 * 1024, size - offset));
+    const handle = await open(path, "r");
+    let bytesRead = 0;
+    try { ({ bytesRead } = await handle.read(chunk, 0, chunk.length, offset)); } finally { await handle.close(); }
+    const mimeType = file === "reference" ? scene.reference!.mime :
+      file.endsWith(".png") ? "image/png" : file.endsWith(".glb") ? "model/gltf-binary" :
+      file.endsWith(".json") ? "application/json" : "application/octet-stream";
+    return {
+      content: [{ type: "text", text: `Read ${bytesRead} scene asset bytes.` }],
+      structuredContent: { name, offset, size, mimeType, data: chunk.subarray(0, bytesRead).toString("base64") },
+    };
+  };
   server.registerTool("scene_create", {
     title: "Create Blender scene",
     description: "Create an empty task-owned scene and optionally download a host-provided reference image. Returns immediately; poll scene_get until its job completes, then freeze a plan.",
@@ -103,9 +125,19 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   }, (args) => guarded(() => result(store.export(args.sceneId))));
   server.registerTool("scene_view", {
     title: "View Blender scene",
-    description: "Read job progress without image bytes and show the embedded Three.js viewer with render/GLB downloads. Use for host and widget polling; call scene_get once a render job finishes.",
-    inputSchema: idSchema, annotations: read, _meta: widgetMeta,
-  }, (args) => guarded(() => result(store.get(args.sceneId))));
+    description: "Read job progress without image bytes and show the embedded Three.js viewer with render/GLB downloads. The optional asset request transfers a bounded chunk to the viewer. Use for host and widget polling; call scene_get once a render job finishes.",
+    inputSchema: { ...idSchema, asset: z.object({ name: z.enum(assetNames), offset: z.number().int().min(0) }).optional() },
+    annotations: read, _meta: widgetMeta,
+  }, ({ sceneId, asset }) => guarded(() => asset ? assetChunk(sceneId, asset.name, asset.offset) : result(store.get(sceneId))));
+  server.registerTool("scene_asset_chunk", {
+    title: "Read Blender scene asset chunk",
+    description: "Read a bounded chunk of an approved scene artifact for the embedded viewer when direct artifact URLs are unavailable.",
+    inputSchema: {
+      ...idSchema,
+      name: z.enum(assetNames),
+      offset: z.number().int().min(0).default(0),
+    }, annotations: read, _meta: { "openai/widgetAccessible": true },
+  }, ({ sceneId, name, offset }) => guarded(() => assetChunk(sceneId, name, offset)));
   server.registerTool("scene_continue", {
     title: "Continue scene request",
     description: "Begin a new user-requested refinement from the best delivered checkpoint. Resets the request's plan and iteration budget; scene ID is preserved. Freeze a new plan before editing.",
@@ -120,12 +152,12 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
       text: await readFile(new URL("../dist/widget.html", import.meta.url), "utf8"),
       _meta: {
         ui: {
-          csp: { connectDomains: [origin], resourceDomains: [origin] },
+          csp: { connectDomains: [origin, "blob:"], resourceDomains: [origin, "blob:"] },
           ...(process.env.WIDGET_DOMAIN ? { domain: process.env.WIDGET_DOMAIN } : {}),
           prefersBorder: true,
         },
         "openai/widgetDescription": "Interactive Blender scene with orbit controls, reference image, rendered evidence, and downloads.",
-        "openai/widgetCSP": { connect_domains: [origin], resource_domains: [origin] },
+        "openai/widgetCSP": { connect_domains: [origin, "blob:"], resource_domains: [origin, "blob:"] },
       },
     }],
   }));

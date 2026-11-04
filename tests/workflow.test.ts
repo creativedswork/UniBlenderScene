@@ -120,7 +120,7 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   await server.connect(a); await client.connect(b);
   try {
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 8);
+    assert.equal(tools.tools.length, 9);
     const create = tools.tools.find((tool) => tool.name === "scene_create")!;
     assert.deepEqual(create._meta?.["openai/fileParams"], ["reference"]);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_view")?._meta?.["openai/outputTemplate"], "ui://codex-blender/viewer.html");
@@ -137,5 +137,16 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
     assert.equal(inspected.content.some((item) => item.type === "image"), false);
     const missing = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, objectName: "Missing" } });
     assert.equal(missing.isError, true);
+    const unavailable = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png" } });
+    assert.equal(unavailable.isError, true);
+    store.plan(scene.id, plan); store.edit(scene.id, "result = {}"); await store.settled();
+    store.review(scene.id, review(1, 95, true));
+    const chunk = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png" } });
+    assert.equal(chunk.isError, undefined);
+    assert.equal(Buffer.from((chunk.structuredContent as { data: string }).data, "base64").toString(), "render");
+    const compatibleChunk = await client.callTool({ name: "scene_view", arguments: { sceneId: scene.id, asset: { name: "best.png", offset: 0 } } });
+    assert.equal(Buffer.from((compatibleChunk.structuredContent as { data: string }).data, "base64").toString(), "render");
+    const beyond = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png", offset: 7 } });
+    assert.equal(beyond.isError, true);
   } finally { await client.close(); await server.close(); }
 });
