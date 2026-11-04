@@ -3,35 +3,50 @@
 Create and refine Blender scenes from reference images or text, inspect rendered
 evidence, and preview the best result inside a supporting chat client.
 
-ChatGPT or Codex supplies the language model and Agent loop. This package contains Skills,
-a Blender MCP service, an embedded Three.js viewer, and optional Codex agent
-templates. For demanding image-to-scene work, we recommend a paid ChatGPT plan
-with access to Plugins and GPT-6.1 Sol or GPT-6 Astra. Model and plugin
-availability vary by plan and workspace ([model guidance](https://learn.chatgpt.com/docs/models),
-[plugin availability](https://developers.openai.com/training/walkthroughs/plugins-and-skills)).
-For a prominent high-detail object, the host can use a separately available 3D
-generation tool and import its GLB. This package does not include a 3D generation
-provider or its credentials.
+## What's in the plugin
+
+The plugin packages the instructions, scene tools, Blender integration, and
+interactive preview needed to build and inspect a scene. This diagram shows the
+packaged parts and their connections:
 
 ```mermaid
 flowchart LR
-  U["User request + image"] --> H["ChatGPT / Codex host"]
-  S["Packaged Skills"] --> H
-  H -->|"optional asset request"| P["External 3D asset provider"]
-  P -->|"generated GLB"| H
-  H -->|"plan · edit · review"| M["Blender MCP service"]
-  M --> B["Dedicated Blender process"]
-  B --> C["Checkpoint + render + best scene"]
-  C --> M
-  M -->|"MCP App resource"| V["Three.js chat viewer"]
-  V -->|"refinement message"| H
+  subgraph plugin["CodexBlenderPlugin"]
+    P["Plugin metadata<br/>Install and connect"]
+    S["Skills<br/>Setup and scene workflow"]
+    M["MCP service<br/>Scene tools, jobs, checkpoints"]
+    B["Blender bridge<br/>Run, render, export"]
+    V["Three.js viewer<br/>Inspect, orbit, download"]
+    P -.->|"declares"| S
+    P -.->|"declares endpoint"| M
+    S -.->|"guides use of"| M
+    M <-->|"commands and results"| B
+    M -->|"serves scene and render"| V
+  end
 ```
+
+| Part | What it does | Main files |
+| --- | --- | --- |
+| Plugin metadata | Describes the plugin, its onboarding Skill, and the MCP connection. | [`plugin.json`](plugin.json), [`mcp.json`](mcp.json) |
+| Skills | Explain setup and guide scene planning, editing, visual review, and optional 3D asset discovery. | [`skills/blender-setup/`](skills/blender-setup/SKILL.md), [`skills/blender-scene/`](skills/blender-scene/SKILL.md) |
+| MCP service | Exposes scene tools, tracks jobs and review state, saves checkpoints, and provides artifact URLs. | [`src/server.ts`](src/server.ts), [`src/store.ts`](src/store.ts) |
+| Blender bridge | Executes scene code in a dedicated Blender process, then renders and exports the result. | [`blender/bridge.py`](blender/bridge.py), [`blender/export.py`](blender/export.py) |
+| Three.js viewer | Shows the render and orbitable GLB inside the chat, with scene downloads. | [`web/widget.ts`](web/widget.ts), [`web/widget.html`](web/widget.html) |
+
+Optional Codex agent templates are in [`codex/agents/`](codex/agents/). A separate
+3D generation tool can supply a detailed GLB for import; this plugin does not
+include a 3D asset provider or its credentials.
 
 ## Quick start
 
 Requirements: Node.js 22+, Blender 4.5+ with glTF export support, and a client that
 supports HTTP MCP. The chat viewer additionally requires MCP Apps support and
 WebGL 2. This release was tested with Blender 5.1.1 on macOS.
+
+For demanding image-to-scene work, we recommend a paid ChatGPT plan with access
+to Plugins and GPT-6.1 Sol or GPT-6 Astra. Model and plugin availability vary by
+plan and workspace ([model guidance](https://learn.chatgpt.com/docs/models),
+[plugin availability](https://developers.openai.com/training/walkthroughs/plugins-and-skills)).
 
 From the repository root:
 
