@@ -5,25 +5,9 @@ render and orbitable 3D preview.
 
 ## What's in the plugin
 
-The plugin packages the instructions, scene tools, Blender integration, and
-interactive preview needed to build and inspect a scene. This diagram shows the
-packaged parts and their connections:
+The five modules are grouped by responsibility:
 
-```mermaid
-flowchart LR
-  subgraph plugin["CodexBlenderPlugin"]
-    P["Plugin metadata<br/>Install and connect"]
-    S["Skills<br/>Setup and scene workflow"]
-    M["MCP service<br/>Scene tools, jobs, checkpoints"]
-    B["Blender bridge<br/>Run, render, export"]
-    V["Three.js viewer<br/>Inspect, orbit, download"]
-    P -.->|"declares"| S
-    P -.->|"declares endpoint"| M
-    S -.->|"guides use of"| M
-    M <-->|"commands and results"| B
-    M -->|"serves scene and render"| V
-  end
-```
+![Three color-coded layers of CodexBlenderPlugin modules](docs/plugin-modules.svg)
 
 | Part | What it does | Main files |
 | --- | --- | --- |

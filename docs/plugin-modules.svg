@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 320" role="img" aria-labelledby="title description">
+  <title id="title">CodexBlenderPlugin modules</title>
+  <desc id="description">Three layers: setup and guidance contains plugin metadata and Skills; scene coordination contains the MCP service; execution and preview contains the Blender bridge and Three.js viewer.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .layer { font-size: 18px; font-weight: 700; }
+    .module { font-size: 17px; font-weight: 700; fill: #192537; }
+    .role { font-size: 14px; fill: #475569; }
+  </style>
+
+  <rect x="12" y="12" width="936" height="92" rx="16" fill="#eaf3ff"/>
+  <rect x="12" y="12" width="8" height="92" rx="4" fill="#3975d8"/>
+  <text class="layer" x="38" y="64" fill="#205193">Setup &amp; guidance</text>
+  <rect x="250" y="26" width="312" height="64" rx="12" fill="#ffffff" stroke="#aac7ef"/>
+  <text class="module" x="270" y="53">Plugin metadata</text>
+  <text class="role" x="270" y="76">Install and connect</text>
+  <rect x="576" y="26" width="356" height="64" rx="12" fill="#ffffff" stroke="#aac7ef"/>
+  <text class="module" x="596" y="53">Skills</text>
+  <text class="role" x="596" y="76">Setup and scene workflow</text>
+
+  <rect x="12" y="114" width="936" height="92" rx="16" fill="#f3edff"/>
+  <rect x="12" y="114" width="8" height="92" rx="4" fill="#8b58cd"/>
+  <text class="layer" x="38" y="166" fill="#63399c">Scene coordination</text>
+  <rect x="250" y="128" width="682" height="64" rx="12" fill="#ffffff" stroke="#cdb7ed"/>
+  <text class="module" x="270" y="155">MCP service</text>
+  <text class="role" x="270" y="178">Scene tools, jobs and checkpoints</text>
+
+  <rect x="12" y="216" width="936" height="92" rx="16" fill="#e9f7f0"/>
+  <rect x="12" y="216" width="8" height="92" rx="4" fill="#269669"/>
+  <text class="layer" x="38" y="268" fill="#176743">Execution &amp; preview</text>
+  <rect x="250" y="230" width="312" height="64" rx="12" fill="#ffffff" stroke="#a9ddc4"/>
+  <text class="module" x="270" y="257">Blender bridge</text>
+  <text class="role" x="270" y="280">Build, render and export</text>
+  <rect x="576" y="230" width="356" height="64" rx="12" fill="#ffffff" stroke="#a9ddc4"/>
+  <text class="module" x="596" y="257">Three.js viewer</text>
+  <text class="role" x="596" y="280">Inspect, orbit and download</text>
+</svg>
