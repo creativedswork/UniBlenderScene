@@ -1,7 +1,7 @@
 {
   "name": "codex-blender-plugin",
   "version": "0.1.2",
-  "description": "Host-driven Blender scene creation with VIGA feedback and an embedded Three.js viewer.",
+  "description": "Generate and refine Blender scenes from images or text, with rendered previews, interactive 3D viewing, and .blend/GLB export.",
   "private": true,
   "type": "module",
   "engines": {
