@@ -54,25 +54,24 @@ The [scene Skill](skills/blender-scene/SKILL.md) describes this tool sequence:
 
 The service saves a checkpoint before each edit and exports the best reviewed scene.
 
-## Showcase: gamer bedroom from one photo
+## Showcase: gamer bedroom from multiple views
 
-This scene was built from one photo in Blender 5.1.1.
+The latest reconstruction used three reference views in Blender 5.1.1.
 
-| Input reference | Reviewed Blender render |
+| Reference room | Reviewed Blender render |
 | --- | --- |
-| ![Input photo of a gamer bedroom](docs/gameroom-reference.webp) | ![Latest Blender render of the gamer bedroom scene](docs/gameroom-showcase.webp) |
+| ![Reference image of a gamer bedroom](docs/gameroom-reference.webp) | ![Blender reconstruction with a lit desk, display shelves, mesh chair, and bed](docs/gameroom-showcase.webp) |
 
-The input photo is included with the user's permission. The request was to build
-a high-fidelity 3D scene matching the photo.
+The reference image is included with the user's permission. The request was to
+reconstruct the room as closely as possible, using the primary view for composition
+and the other views for equipment details and spatial layout.
 
-The room and chair were modeled in Blender. The monitor uses generated fantasy
-artwork. The reviewed scene was exported as `.blend` and GLB; static surfaces
-were baked into the GLB to bring the interactive preview's lighting closer to
-the Blender render. The current viewer traces scene lights, contact shadows,
-indirect light, and reflections; older GLBs need re-export to gain the exported
-Blender display transform. The Three.js preview was checked for orbit interaction.
-The scene is a reconstruction: the photo does not show the room's hidden sides.
-The `.blend` and GLB from this run remain local artifacts.
+Furniture, equipment, and accessories were modeled in Blender. The monitor uses
+artwork extracted from the supplied screen image. The result was reviewed across
+five rendered iterations and saved as `.blend` and GLB files. GLB loading, orbit
+interaction, and camera reset were checked in the bundled Three.js viewer.
+Small figures, fabric, and some materials remain simplified. The scene files
+remain local artifacts; this showcase includes only the render.
 
 ## Related research
 
