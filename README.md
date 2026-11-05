@@ -3,6 +3,25 @@
 Create and refine Blender scenes from reference images or text, then inspect the
 render and orbitable 3D preview.
 
+## Showcase: gamer bedroom from multiple views
+
+The latest reconstruction used three reference views in Blender 5.1.1.
+
+| Reference room | Reviewed Blender render |
+| --- | --- |
+| ![Reference image of a gamer bedroom](docs/gameroom-reference.webp) | ![Blender reconstruction with a lit desk, display shelves, mesh chair, and bed](docs/gameroom-showcase.webp) |
+
+The reference image is included with the user's permission. The request was to
+reconstruct the room as closely as possible, using the primary view for composition
+and the other views for equipment details and spatial layout.
+
+Furniture, equipment, and accessories were modeled in Blender. The monitor uses
+artwork extracted from the supplied screen image. The result was reviewed across
+five rendered iterations and saved as `.blend` and GLB files. GLB loading, orbit
+interaction, and camera reset were checked in the bundled Three.js viewer.
+Small figures, fabric, and some materials remain simplified. The scene files
+remain local artifacts; this showcase includes only the render.
+
 ## What's in the plugin
 
 The five modules are grouped by responsibility:
@@ -53,25 +72,6 @@ The [scene Skill](skills/blender-scene/SKILL.md) describes this tool sequence:
 | `scene_continue` | Refine an existing scene |
 
 The service saves a checkpoint before each edit and exports the best reviewed scene.
-
-## Showcase: gamer bedroom from multiple views
-
-The latest reconstruction used three reference views in Blender 5.1.1.
-
-| Reference room | Reviewed Blender render |
-| --- | --- |
-| ![Reference image of a gamer bedroom](docs/gameroom-reference.webp) | ![Blender reconstruction with a lit desk, display shelves, mesh chair, and bed](docs/gameroom-showcase.webp) |
-
-The reference image is included with the user's permission. The request was to
-reconstruct the room as closely as possible, using the primary view for composition
-and the other views for equipment details and spatial layout.
-
-Furniture, equipment, and accessories were modeled in Blender. The monitor uses
-artwork extracted from the supplied screen image. The result was reviewed across
-five rendered iterations and saved as `.blend` and GLB files. GLB loading, orbit
-interaction, and camera reset were checked in the bundled Three.js viewer.
-Small figures, fabric, and some materials remain simplified. The scene files
-remain local artifacts; this showcase includes only the render.
 
 ## Related research
 
