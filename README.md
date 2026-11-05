@@ -15,7 +15,7 @@ The five modules are grouped by responsibility:
 | Skills | Explain setup and guide scene planning, editing, visual review, and optional 3D asset discovery. | [`skills/blender-setup/`](skills/blender-setup/SKILL.md), [`skills/blender-scene/`](skills/blender-scene/SKILL.md) |
 | MCP service | Exposes scene tools, tracks jobs and review state, saves checkpoints, and provides artifact URLs. | [`src/server.ts`](src/server.ts), [`src/store.ts`](src/store.ts) |
 | Blender bridge | Executes scene code in a dedicated Blender process, then renders and exports the result. | [`blender/bridge.py`](blender/bridge.py), [`blender/export.py`](blender/export.py) |
-| Three.js viewer | Shows the render and orbitable GLB inside the chat, with scene downloads. | [`web/widget.ts`](web/widget.ts), [`web/widget.html`](web/widget.html) |
+| Three.js viewer | Shows the render and a progressive path-traced GLB preview inside the chat, with scene downloads. | [`web/widget.ts`](web/widget.ts), [`web/widget.html`](web/widget.html) |
 
 A separately configured 3D generation tool can supply a detailed GLB for import.
 The plugin does not bundle a 3D asset provider or its credentials.
@@ -68,7 +68,9 @@ a high-fidelity 3D scene matching the photo.
 The room and chair were modeled in Blender. The monitor uses generated fantasy
 artwork. The reviewed scene was exported as `.blend` and GLB; static surfaces
 were baked into the GLB to bring the interactive preview's lighting closer to
-the Blender render. The Three.js preview was checked for orbit interaction.
+the Blender render. The current viewer traces scene lights, contact shadows,
+indirect light, and reflections; older GLBs need re-export to gain the exported
+Blender display transform. The Three.js preview was checked for orbit interaction.
 The scene is a reconstruction: the photo does not show the room's hidden sides.
 The `.blend` and GLB from this run remain local artifacts.
 

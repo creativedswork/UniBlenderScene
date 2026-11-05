@@ -29,6 +29,29 @@ floor.data.materials.append(floor_material)
 floor["codex_bake_lighting"] = 128
 floor["codex_preview_emissive_tint"] = [1.0, 1.0, 1.0]
 
+# Keep the legacy baked floor while placing a diffuse receiver over its center.
+# The latter must show the area light's actual contact shadow in the web preview.
+bpy.ops.mesh.primitive_plane_add(size=8, location=(0, 0, 0.002))
+receiver = bpy.context.object
+receiver.name = "ShadowReceiver"
+receiver.data.materials.append(floor_material)
+
+# Export must bake procedural PBR inputs without baking scene lighting into them.
+bpy.ops.mesh.primitive_cube_add(size=0.35, location=(1.8, 0, 0.175))
+swatch = bpy.context.object
+swatch.name = "ProceduralSwatch"
+swatch_material = bpy.data.materials.new("Procedural swatch")
+swatch_material.use_nodes = True
+swatch_shader = swatch_material.node_tree.nodes.get("Principled BSDF")
+noise = swatch_material.node_tree.nodes.new("ShaderNodeTexNoise")
+noise.inputs["Scale"].default_value = 4
+ramp = swatch_material.node_tree.nodes.new("ShaderNodeValToRGB")
+ramp.color_ramp.elements[0].color = (0.12, 0.05, 0.03, 1)
+ramp.color_ramp.elements[1].color = (0.35, 0.18, 0.08, 1)
+swatch_material.node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+swatch_material.node_tree.links.new(ramp.outputs["Color"], swatch_shader.inputs["Base Color"])
+swatch.data.materials.append(swatch_material)
+
 bpy.ops.object.camera_add(location=(6, -7, 5))
 camera = bpy.context.object
 camera.name = "Camera"

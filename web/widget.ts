@@ -4,11 +4,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
-import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
-import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { calibrate } from "./calibration.js";
+import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
+import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 
 type Snapshot = {
   id: string; prompt: string; stage: string; iteration: number; renderUrl: string | null; bestRenderUrl: string | null;
@@ -17,23 +14,23 @@ type Snapshot = {
   artifacts: { name: string; url: string }[];
 };
 type Profile = {
-  version: number; colorManagement: { viewTransform: string; exposure: number };
+  version: number; colorManagement: { viewTransform: string; exposure: number; displayLut?: { uri: string; size: number; maxLinear: number } };
   render: { resolutionX: number; resolutionY: number; filmTransparent: boolean };
   world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number };
-  camera: { name: string } | null;
-  lightMapping: { intensityScale: number; maxShadowLights: number; shadowPowerRatio: number };
+  camera: { name: string; projectionMatrix?: number[]; lens?: number; dof?: { enabled: boolean; focusDistance: number; fStop: number; blades: number; rotation: number; ratio: number } } | null;
   bakedObjects?: string[];
   bakedTints?: Record<string, number[]>;
-  lights: { name: string; type: string; color: number[]; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
+  lights: { name: string; type: string; color: number[]; energy: number; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const app = new App({ name: "CodexBlenderPlugin viewer", version: "0.1.0" }, {});
+const app = new App({ name: "CodexBlenderPlugin viewer", version: "0.1.2" }, {});
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
 let timer: ReturnType<typeof setTimeout> | undefined;
 let viewer: {
   renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
-  controls: OrbitControls; composer: EffectComposer; ao: GTAOPass; position: THREE.Vector3; target: THREE.Vector3;
-  textures: THREE.Texture[]; resize: ResizeObserver; aspect: number; calibration?: SVGSVGElement;
+  controls: OrbitControls; tracer: WebGLPathTracer; denoise: FullScreenQuad; denoiseTarget?: THREE.WebGLRenderTarget;
+  display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
+  position: THREE.Vector3; target: THREE.Vector3; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
 } | undefined;
 const message = (text: string) => { el("message").textContent = text; };
 const artifact = (name: string) => snapshot?.artifacts.find((item) => item.name === name)?.url;
@@ -87,10 +84,9 @@ function assetURL(name: string, version: string): Promise<string> {
 
 function dispose() {
   if (!viewer) return;
-  viewer.renderer.setAnimationLoop(null);
+  clearInterval(viewer.frameTimer);
   viewer.resize.disconnect();
   viewer.controls.dispose();
-  viewer.calibration?.remove();
   viewer.scene.traverse((object) => {
     if (object instanceof THREE.Mesh) {
       object.geometry.dispose();
@@ -102,9 +98,13 @@ function dispose() {
     if (object instanceof THREE.Light) object.dispose();
   });
   for (const texture of viewer.textures) texture.dispose();
-  viewer.composer.passes.forEach((pass) => pass.dispose());
-  viewer.composer.dispose();
+  viewer.tracer.dispose();
+  viewer.denoise.material.dispose(); viewer.denoise.dispose();
+  viewer.denoiseTarget?.dispose();
+  viewer.display?.material.dispose(); viewer.display?.dispose();
+  if (viewer.gpuFence) (viewer.renderer.getContext() as WebGL2RenderingContext).deleteSync(viewer.gpuFence);
   viewer.renderer.dispose();
+  viewer.renderer.forceContextLoss();
   el("canvas").replaceChildren();
   viewer = undefined;
 }
@@ -119,12 +119,10 @@ function setMode(value: string) {
 }
 
 function normalized(name: string) { return name.replace(/\s/g, "_").replace(/[\[\].:/]/g, ""); }
-function applyLights(model: THREE.Group, profile: Profile, extent: number, center: THREE.Vector3) {
+function applyLights(model: THREE.Group, profile: Profile) {
   RectAreaLightUniformsLib.init();
   const imported: THREE.Light[] = [];
   model.traverse((object) => { if (object instanceof THREE.Light) imported.push(object); });
-  const shadowNames = new Set(profile.lights.filter((light) => light.useShadow)
-    .sort((a, b) => b.webPower - a.webPower).slice(0, profile.lightMapping.maxShadowLights).map((light) => light.name));
   for (const definition of profile.lights) {
     const index = imported.findIndex((light) => normalized(light.name) === normalized(definition.name));
     const marker = imported.splice(index >= 0 ? index : 0, 1)[0];
@@ -137,7 +135,8 @@ function applyLights(model: THREE.Group, profile: Profile, extent: number, cente
     }
     marker.parent.add(holder); marker.parent.remove(marker);
     const color = new THREE.Color().setRGB(...definition.color.slice(0, 3) as [number, number, number], THREE.LinearSRGBColorSpace);
-    const power = definition.webPower * profile.lightMapping.intensityScale;
+    // Path tracing uses Blender's source energy; raster lumen scaling overexposes it.
+    const power = Math.max(0, definition.energy ?? definition.webPower / (683 * 0.012));
     let light: THREE.DirectionalLight | THREE.PointLight | THREE.SpotLight | THREE.RectAreaLight;
     if (definition.type === "SUN") light = new THREE.DirectionalLight(color, power);
     else if (definition.type === "SPOT") {
@@ -146,33 +145,46 @@ function applyLights(model: THREE.Group, profile: Profile, extent: number, cente
     } else if (definition.type === "AREA") {
       light = new THREE.RectAreaLight(color, 1, Math.max(0.01, definition.size),
         ["RECTANGLE", "ELLIPSE"].includes(definition.shape) ? Math.max(0.01, definition.sizeY) : Math.max(0.01, definition.size));
+      (light as THREE.RectAreaLight & { isCircular?: boolean }).isCircular = ["DISK", "ELLIPSE"].includes(definition.shape);
       light.power = power;
     } else { light = new THREE.PointLight(color); light.power = power; }
     holder.add(light);
     if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
       light.target.position.set(0, 0, -1); holder.add(light.target);
     }
-    if (shadowNames.has(definition.name)) {
-      let shadowLight: THREE.DirectionalLight | THREE.PointLight | THREE.SpotLight;
-      if (light instanceof THREE.RectAreaLight) {
-        light.power = power * (1 - profile.lightMapping.shadowPowerRatio);
-        const distance = holder.getWorldPosition(new THREE.Vector3()).distanceTo(center);
-        const angle = THREE.MathUtils.clamp(Math.atan2(extent * 1.5, Math.max(distance, 0.01)), 0.15, 1.2);
-        shadowLight = new THREE.SpotLight(color, 1, 0, angle, 0.4);
-        shadowLight.power = power * profile.lightMapping.shadowPowerRatio;
-        shadowLight.target.position.set(0, 0, -1); holder.add(shadowLight, shadowLight.target);
-      } else shadowLight = light;
-      shadowLight.castShadow = true;
-      shadowLight.shadow.mapSize.set(1024, 1024);
-      shadowLight.shadow.camera.near = Math.max(0.01, extent / 10000);
-      shadowLight.shadow.camera.far = Math.max(20, extent * 10);
-      shadowLight.shadow.normalBias = Math.max(0.0005, extent * 0.0005);
-      shadowLight.shadow.bias = -0.0002;
-      if (shadowLight instanceof THREE.DirectionalLight) {
-        Object.assign(shadowLight.shadow.camera, { left: -extent, right: extent, top: extent, bottom: -extent });
-      }
-    }
+    if (definition.useShadow && "castShadow" in light) light.castShadow = true;
   }
+}
+
+async function displayTransform(profile: Profile, textures: THREE.Texture[]): Promise<FullScreenQuad | undefined> {
+  const definition = profile.colorManagement.displayLut;
+  if (!definition) return;
+  const lut = await new THREE.TextureLoader().loadAsync(definition.uri);
+  lut.colorSpace = THREE.NoColorSpace;
+  lut.minFilter = lut.magFilter = THREE.LinearFilter;
+  lut.generateMipmaps = false;
+  textures.push(lut);
+  const material = new THREE.ShaderMaterial({
+    toneMapped: false, depthTest: false, depthWrite: false,
+    uniforms: {
+      source: { value: null }, displayLut: { value: lut },
+      lutSize: { value: definition.size }, maxLinear: { value: definition.maxLinear },
+    },
+    vertexShader: "varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}",
+    fragmentShader: `
+      uniform sampler2D source,displayLut;
+      uniform float lutSize,maxLinear;
+      varying vec2 vUv;
+      void main(){
+        vec4 color=texture2D(source,vUv);
+        vec3 p=pow(clamp(color.rgb/maxLinear,0.0,1.0),vec3(1.0/3.0))*(lutSize-1.0);
+        float b=floor(p.b);
+        vec2 a=vec2((p.r+b*lutSize+0.5)/(lutSize*lutSize),(p.g+0.5)/lutSize);
+        vec2 c=vec2((p.r+min(b+1.0,lutSize-1.0)*lutSize+0.5)/(lutSize*lutSize),a.y);
+        gl_FragColor=vec4(mix(texture2D(displayLut,a).rgb,texture2D(displayLut,c).rgb,fract(p.b)),color.a);
+      }`,
+  });
+  return new FullScreenQuad(material);
 }
 
 async function loadModel(url: string) {
@@ -185,10 +197,11 @@ async function loadModel(url: string) {
     const gltf = await new GLTFLoader().loadAsync(await assetURL("final.glb", url));
     if (artifact("final.glb") !== url) return;
     dispose();
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = profile.colorManagement.viewTransform.toLowerCase().includes("agx") ? THREE.AgXToneMapping : THREE.NoToneMapping;
+    renderer.toneMapping = profile.colorManagement.displayLut ? THREE.NoToneMapping :
+      profile.colorManagement.viewTransform.toLowerCase().includes("agx") ? THREE.AgXToneMapping : THREE.NoToneMapping;
     renderer.toneMappingExposure = 2 ** profile.colorManagement.exposure;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -207,12 +220,6 @@ async function loadModel(url: string) {
     const extent = bounds.isEmpty() ? 2 : Math.max(...bounds.getSize(new THREE.Vector3()).toArray(), 1);
     // A single 1024px shadow map across a wide landscape turns tiny grass and
     // flowers almost black. Use broad sky fill for these outdoor previews.
-    const wideOutdoor = !profile.world.environmentUri && extent > 100 && profile.lights.some((light) => light.type === "SUN");
-    if (wideOutdoor) {
-      renderer.shadowMap.enabled = false;
-      renderer.toneMapping = THREE.NoToneMapping;
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x9aaa76, 1.2));
-    }
     const bakedObjects = new Set((profile.bakedObjects ?? []).map(normalized));
     const bakedTints = new Map(Object.entries(profile.bakedTints ?? {}).map(([name, tint]) => [normalized(name), tint]));
     gltf.scene.traverse((object) => {
@@ -228,7 +235,7 @@ async function loadModel(url: string) {
         }
       }
     });
-    applyLights(gltf.scene, profile, extent, center);
+    applyLights(gltf.scene, profile);
     const textures: THREE.Texture[] = [];
     const world = profile.world;
     let environment: THREE.Texture;
@@ -242,9 +249,8 @@ async function loadModel(url: string) {
     }
     environment.colorSpace = THREE.LinearSRGBColorSpace;
     environment.mapping = THREE.EquirectangularReflectionMapping;
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromEquirectangular(environment).texture;
-    textures.push(environment, scene.environment); pmrem.dispose();
+    scene.environment = environment;
+    textures.push(environment);
     scene.environmentIntensity = world.strength;
     scene.environmentRotation.y = world.environmentRotationY;
     if (!profile.render.filmTransparent) {
@@ -255,50 +261,99 @@ async function loadModel(url: string) {
     gltf.scene.traverse((object) => { if (object instanceof THREE.Camera) sceneCameras.push(object); });
     const exportedCamera = sceneCameras.find((camera) => camera.name === normalized(profile.camera?.name ?? "")) ??
       sceneCameras[0] ?? gltf.cameras[0];
-    const camera = exportedCamera instanceof THREE.PerspectiveCamera || exportedCamera instanceof THREE.OrthographicCamera ?
-      exportedCamera : new THREE.PerspectiveCamera(45, 1, 0.01, extent * 100);
+    const camera: THREE.PerspectiveCamera | THREE.OrthographicCamera = exportedCamera instanceof THREE.OrthographicCamera ?
+      exportedCamera : new PhysicalCamera(exportedCamera instanceof THREE.PerspectiveCamera ? exportedCamera.fov : 45,
+        1, exportedCamera instanceof THREE.PerspectiveCamera ? exportedCamera.near : 0.01,
+        exportedCamera instanceof THREE.PerspectiveCamera ? exportedCamera.far : extent * 100);
     if (!exportedCamera) { camera.position.copy(center).add(new THREE.Vector3(extent * 1.5, extent, extent * 1.5)); camera.lookAt(center); }
     scene.updateMatrixWorld(true);
     if (exportedCamera) {
-      const position = camera.getWorldPosition(new THREE.Vector3()), rotation = camera.getWorldQuaternion(new THREE.Quaternion());
-      camera.removeFromParent(); scene.add(camera); camera.position.copy(position); camera.quaternion.copy(rotation);
+      const position = exportedCamera.getWorldPosition(new THREE.Vector3());
+      const rotation = exportedCamera.getWorldQuaternion(new THREE.Quaternion());
+      exportedCamera.removeFromParent(); scene.add(camera); camera.position.copy(position); camera.quaternion.copy(rotation);
+    }
+    if (camera instanceof PhysicalCamera && profile.camera?.dof) {
+      const dof = profile.camera.dof;
+      camera.bokehSize = dof.enabled ? (profile.camera.lens ?? 50) / Math.max(dof.fStop, 0.1) : 0;
+      camera.focusDistance = dof.focusDistance;
+      camera.apertureBlades = dof.blades;
+      camera.apertureRotation = dof.rotation;
+      camera.anamorphicRatio = dof.ratio;
     }
     const initialDirection = camera.getWorldDirection(new THREE.Vector3());
     const controls = new OrbitControls(camera, renderer.domElement);
-    const focusDistance = wideOutdoor ? Math.min(camera.position.distanceTo(center), extent * 0.02) : camera.position.distanceTo(center) || extent;
+    const focusDistance = camera.position.distanceTo(center) || extent;
     controls.target.copy(exportedCamera ? camera.position.clone().addScaledVector(initialDirection, focusDistance) : center);
     controls.enableDamping = true; controls.update();
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
-    const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { samples: 4 }));
-    composer.addPass(new RenderPass(scene, camera));
-    const ao = new GTAOPass(scene, camera, 512, 512);
-    ao.output = GTAOPass.OUTPUT.Default;
-    ao.updateGtaoMaterial({ radius: Math.min(0.08, extent * 0.005), distanceExponent: 1.5, thickness: 1, scale: 1, samples: 12 });
-    ao.blendIntensity = 0.3;
-    composer.addPass(ao); composer.addPass(new OutputPass());
+    const tracer = new WebGLPathTracer(renderer);
+    tracer.bounces = 8;
+    tracer.transmissiveBounces = 12;
+    tracer.filterGlossyFactor = 0.2;
+    tracer.renderScale = Math.min(1, 1 / renderer.getPixelRatio());
+    tracer.tiles.set(1, 1);
+    tracer.minSamples = 1;
+    tracer.renderDelay = 100;
+    tracer.dynamicLowRes = true;
+    tracer.textureSize.set(512, 512);
+    tracer.setScene(scene, camera);
+    tracer.renderToCanvas = false;
+    const display = await displayTransform(profile, textures);
+    const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 2, kSigma: 1, threshold: 0.07, toneMapped: !display }));
+    const denoiseTarget = display ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }) : undefined;
     const resize = new ResizeObserver(() => {
       const width = el("stage").clientWidth, height = el("stage").clientHeight;
       const w = Math.min(width, height * aspect), h = w / aspect;
-      renderer.setSize(w, h); composer.setSize(w, h);
+      renderer.setSize(w, h);
       if (camera instanceof THREE.PerspectiveCamera) camera.aspect = aspect;
       camera.updateProjectionMatrix();
+      if (profile.camera?.projectionMatrix?.length === 16) {
+        camera.projectionMatrix.fromArray(profile.camera.projectionMatrix);
+        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      }
+      tracer.updateCamera();
     });
     el("canvas").appendChild(renderer.domElement);
-    viewer = { renderer, scene, camera, controls, composer, ao, position: camera.position.clone(), target: controls.target.clone(), textures, resize, aspect };
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    const position = camera.position.clone(), target = controls.target.clone();
+    const previousPosition = position.clone(), previousQuaternion = camera.quaternion.clone();
+    const frameTimer = setInterval(() => {
+      if (mode !== "3d" || !viewer || viewer.tracer !== tracer) return;
+      controls.update();
+      if (viewer.gpuFence) {
+        if (gl.clientWaitSync(viewer.gpuFence, 0, 0) === gl.TIMEOUT_EXPIRED) return;
+        gl.deleteSync(viewer.gpuFence); viewer.gpuFence = undefined;
+      }
+      if (!camera.position.equals(previousPosition) || !camera.quaternion.equals(previousQuaternion)) {
+        tracer.updateCamera(); previousPosition.copy(camera.position); previousQuaternion.copy(camera.quaternion);
+      }
+      if (tracer.samples >= 512) return;
+      tracer.renderSample();
+      if (tracer.samples >= 4) {
+        (denoise.material as DenoiseMaterial).map = tracer.target.texture;
+        if (display && denoiseTarget) {
+          denoiseTarget.setSize(tracer.target.width, tracer.target.height);
+          renderer.setRenderTarget(denoiseTarget); denoise.render(renderer); renderer.setRenderTarget(null);
+          (display.material as THREE.ShaderMaterial).uniforms.source!.value = denoiseTarget.texture;
+          display.render(renderer);
+        } else denoise.render(renderer);
+      } else renderer.render(scene, camera);
+      renderer.domElement.dataset.samples = tracer.samples.toFixed(1);
+      viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
+      gl.flush();
+    }, 16);
+    viewer = { renderer, scene, camera, controls, tracer, denoise, denoiseTarget, display, frameTimer,
+      position, target, textures, resize, aspect };
     resize.observe(el("stage"));
-    renderer.setAnimationLoop(() => { if (mode === "3d") { controls.update(); composer.render(); } });
+    renderer.domElement.dataset.renderer = "path-tracing";
+    renderer.domElement.dataset.bounces = String(tracer.bounces);
+    renderer.domElement.dataset.displayTransform = display ? "blender-lut" : "three-tone-mapping";
+    renderer.domElement.dataset.samples = "0";
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
     el("empty").style.display = "none";
     setMode("3d");
-    const currentViewer = viewer;
-    void el<HTMLImageElement>("render").decode().then(() => {
-      requestAnimationFrame(() => {
-        if (viewer !== currentViewer) return;
-        composer.render();
-        try { currentViewer.calibration = calibrate(renderer.domElement, el<HTMLImageElement>("render")); } catch { /* Preview remains usable without calibration. */ }
-      });
-    }).catch(() => {});
+    renderer.render(scene, camera);
   } catch (error) {
     console.error("Scene preview failed:", error);
     message("3D preview could not be loaded. Use the render or download the Blender file.");

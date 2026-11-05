@@ -23,7 +23,7 @@ const widgetMeta = {
 };
 
 export function createMcpServer(store: SceneStore, origin: string): McpServer {
-  const server = new McpServer({ name: "CodexBlenderPlugin", version: "0.1.0" });
+  const server = new McpServer({ name: "CodexBlenderPlugin", version: "0.1.2" });
   const result = (scene: Scene): CallToolResult => {
     const snapshot = store.snapshot(scene, origin);
     return { content: [{ type: "text", text: JSON.stringify(snapshot) }], structuredContent: snapshot };

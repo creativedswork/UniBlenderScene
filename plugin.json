@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-blender-plugin",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Create and refine Blender scenes from images, optionally incorporate externally generated 3D assets, and inspect scenes in an interactive Three.js viewer.",
   "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
   "extensions": {

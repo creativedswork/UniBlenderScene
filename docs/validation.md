@@ -1,4 +1,30 @@
-# Validation — 0.1.0
+# Validation
+
+## 0.1.2 path-traced preview alignment — 2026-11-05
+
+Compared the local Canova commit `4f36073` with this plugin's GLB exporter and
+viewer. The preview now traces every exported light using its Blender energy,
+including area-light occlusion and indirect bounces. It uses a sampled Blender
+display transform instead of image-wide CSS color calibration, and exports the
+camera projection matrix and depth-of-field settings. The old three-light shadow
+limit, spot-light shadow proxy, and GTAO pass were removed.
+
+`npm run check`, `npm run build`, `npm test`, `npm run test:blender`, and
+`npm run test:viewer -- <evidenceDirectory>` passed. The Blender test used a
+dedicated Blender 5.1.1 bridge and confirmed the light energy, display LUT, and
+projection matrix in `render-profile.json`. The iframe test reached 32 path
+tracing samples with 8 bounces, loaded the Blender LUT, and exercised orbit,
+reset, mode switching, refinement, and downloads. The test scene included a
+diffuse floor patch to inspect its contact shadow; the browser screenshot was
+visually inspected. The exporter also bakes procedural base color, roughness,
+metallic, normal, and emission color inputs into PBR textures. The Blender test
+confirmed a procedural color texture in the GLB. The gamer-bedroom scene was
+re-exported with three material textures and checked in the bundled viewer with
+four scene lights, the Blender LUT, and orbit interaction. These checks do not
+establish pixel-level Cycles equivalence or full parity with Canova's exporter.
+
+## 0.1.0 release checks
+
 
 Checked on 2026-11-04 with Node.js 22.20.0, Blender 5.1.1, and Chromium
 148.0.7778.96 on macOS. The service used a separate Blender process, HTTP port,

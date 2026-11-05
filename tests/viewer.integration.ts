@@ -70,8 +70,12 @@ try {
   assert.equal(await canvas.count(), 1);
   await page.waitForFunction(() => {
     const frame = document.getElementById("viewer") as HTMLIFrameElement;
-    return frame.contentDocument?.querySelector("canvas")?.getAttribute("data-colorcalibrated") === "true";
-  }, undefined, { timeout: 10000 });
+    const canvas = frame.contentDocument?.querySelector("canvas");
+    return canvas?.getAttribute("data-renderer") === "path-tracing" &&
+      Number(canvas.getAttribute("data-samples")) >= 32;
+  }, undefined, { timeout: 60000 });
+  assert.equal(await canvas.getAttribute("data-bounces"), "8");
+  assert.equal(await canvas.getAttribute("data-display-transform"), "blender-lut");
   await canvas.screenshot({ path: resolve(root, "viewer-3d.png") });
   const first = await canvas.screenshot();
   const box = await canvas.boundingBox(); assert.ok(box);
@@ -120,7 +124,7 @@ try {
   assert.deepEqual(errors, []);
   await writeFile(resolve(root, "viewer-report.json"), JSON.stringify({
     status: "passed", browser: browser.version(),
-    checks: ["MCP AppBridge iframe handshake", "asset tool transfer with inaccessible direct URLs", "decoded render image", "WebGL GLB loading", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB and Blender downloads"],
+    checks: ["MCP AppBridge iframe handshake", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB and Blender downloads"],
     pageErrors: errors,
   }, null, 2));
   console.log(`Viewer integration passed; screenshots saved under ${root}`);

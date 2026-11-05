@@ -142,15 +142,22 @@ try {
   assert.ok(gltf.materials.some((material: { emissiveTexture?: unknown; emissiveFactor?: number[] }) =>
     material.emissiveTexture && material.emissiveFactor?.some((value) => value > 0)),
     "Opted-in floor must carry baked lighting in the GLB.");
+  assert.ok(gltf.materials.some((material: { name?: string; pbrMetallicRoughness?: { baseColorTexture?: unknown } }) =>
+    material.name?.startsWith("Procedural swatch") && material.pbrMetallicRoughness?.baseColorTexture),
+    "Procedural base color must become a GLB texture.");
   const glbChunk = await call("scene_asset_chunk", { sceneId: id, name: "final.glb", offset: 0 });
   assert.equal(glbChunk.isError, undefined);
   assert.deepEqual(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64"), bytes.subarray(0, 256 * 1024));
   const profileURL = exported.artifacts.find((file: { name: string }) => file.name === "render-profile.json").url;
   const profile = await (await fetch(profileURL)).json() as Record<string, any>;
   assert.equal(profile.camera.name, "__CodexBlenderActiveCamera");
+  assert.equal(profile.camera.projectionMatrix.length, 16);
+  assert.ok(profile.colorManagement.displayLut.uri.startsWith("data:image/png;base64,"));
   assert.equal(profile.lights[0].type, "AREA");
+  assert.ok(profile.lights[0].energy > 0);
   assert.deepEqual(profile.bakedObjects, ["Floor"]);
   assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
+  assert.ok(profile.materials.objects >= 1 && profile.materials.textures >= 1);
   const forbidden = await fetch(`${origin}/artifacts/${id}/run.json?token=invalid`); assert.equal(forbidden.status, 403);
   const unauthorizedGLB = await fetch(glb.url.replace(/token=[^&]+/, "token=invalid")); assert.equal(unauthorizedGLB.status, 403);
   await writeFile(join(root, "scene.json"), JSON.stringify(exported, null, 2));

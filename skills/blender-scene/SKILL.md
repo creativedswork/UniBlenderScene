@@ -45,10 +45,16 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    judgment; it is not a measured image-similarity score.
 8. Follow the returned stage. In `edit`, make the requested correction and repeat
    the render/review loop. In `completed` or `best_effort`, call `scene_export`,
-   poll `scene_view` for completion, then verify the exported GLB and interactive
-   viewer. Report the actual remaining gaps and provide the returned GLB, Blender
-   file, and render links. An export or viewer failure is a delivery issue; do not
-   spend a scene edit attempt to make a pre-export criterion pass.
+   poll `scene_view` for completion, then open and verify the bundled `scene_view`
+   Three.js viewer. Do not substitute a GLB-only page: it omits the exported
+   render profile, Blender display transform, and path-traced lighting. Reset
+   the viewer camera and compare a 3D screenshot with the approved
+   Blender render at the same crop. Recheck the major reference anchors, large
+   light and shadow regions, and prominent materials; also orbit to expose
+   missing or misplaced geometry. Report the actual remaining gaps and provide
+   the returned GLB, Blender file, and render links. An export or viewer failure
+   is a delivery issue; do not spend a scene edit attempt to make a pre-export
+   criterion pass.
 
 The service permits 5 regular edit attempts, extending to 8 only when the fifth
 review improves the best result and identifies repairable gaps. Two consecutive

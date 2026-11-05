@@ -1,6 +1,6 @@
 {
   "name": "codex-blender-plugin",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Host-driven Blender scene creation with VIGA feedback and an embedded Three.js viewer.",
   "private": true,
   "type": "module",
@@ -22,6 +22,7 @@
     "@modelcontextprotocol/ext-apps": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "three": "0.180.0",
+    "three-gpu-pathtracer": "^0.0.24",
     "zod": "^4.6.7"
   },
   "devDependencies": {
