@@ -10,8 +10,8 @@ below show iteration 15, after composition approval and material and lighting
 calibration against the primary reference.
 
 | Reference room | Refined Blender render |
-| --- | --- |
-| ![Reference image of a gamer bedroom](docs/gameroom-reference.webp) | ![Blender reconstruction with a lit desk, display shelves, mesh chair, and bed](docs/gameroom-showcase.webp) |
+| :---: | :---: |
+| <img src="docs/gameroom-reference.webp" alt="Reference image of a gamer bedroom" width="480" /> | <img src="docs/gameroom-showcase.webp" alt="Blender reconstruction with a lit desk, display shelves, mesh chair, and bed" width="480" /> |
 
 The reference image is included with the user's permission. The request was to
 reconstruct the room as closely as possible, using the primary view for composition
