@@ -6,9 +6,10 @@ render and interactive Three.js preview with a selectable scene tree.
 ## Showcase: gamer bedroom from multiple views
 
 This reconstruction uses three reference views in Blender 5.1.1. The images
-below show the current composition checkpoint, pending user approval.
+below show iteration 15, after composition approval and material and lighting
+calibration against the primary reference.
 
-| Reference room | Blender composition checkpoint |
+| Reference room | Refined Blender render |
 | --- | --- |
 | ![Reference image of a gamer bedroom](docs/gameroom-reference.webp) | ![Blender reconstruction with a lit desk, display shelves, mesh chair, and bed](docs/gameroom-showcase.webp) |
 
@@ -18,17 +19,20 @@ and the other views for equipment details and spatial layout.
 
 Standalone furniture, equipment, and accessories use externally generated GLB
 assets assembled in Blender, with procedural room surfaces and fittings. The
-monitor uses artwork extracted from the supplied screen image. The current
-checkpoint is iteration 8; material and lighting refinement is still pending.
-It does not yet establish a 1:1 reconstruction. Scene files remain local artifacts.
+monitor uses artwork extracted from the supplied screen image. Golden shelf
+lighting, cool gray window fill, wood surfaces, and the transparent speaker dome
+were refined while preserving the approved geometry and camera. Local wall
+brightness, curtain shadows, shelf shapes, and small generated details still
+differ from the reference; this is a best-effort reconstruction. Scene files
+remain local artifacts.
 
 ![Chrome Three.js preview with the chair selected in the scene tree, an orange 3D bounding box, and XYZ direction arrows](docs/gameroom-viewer.jpg)
 
-The Chrome screenshot shows the bundled viewer in a local MCP Apps host. Selecting
-the chair in the Scene Graph focuses it and displays its bounds; the selection
-stays aligned while orbiting. The review panel retains the five neutral views
-and composition decision controls. The browser host used for this check is a
-local session helper; it is not a packaged standalone preview server.
+The Chrome screenshot shows the updated GLB in the bundled viewer through a local
+MCP Apps host. Chair selection, its bounding box and XYZ arrows, and camera reset
+were checked after export. The preview uses the Blender display transform and
+progressive path tracing. The browser host used for this check is a local session
+helper; it is not a packaged standalone preview server.
 
 ## What's in the plugin
 
