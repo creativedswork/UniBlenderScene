@@ -9,9 +9,20 @@ This reconstruction uses three reference views in Blender 5.1.1. The images
 below show iteration 15, after composition approval and material and lighting
 calibration against the primary reference.
 
-| Reference room | Refined Blender render |
-| :---: | :---: |
-| <img src="docs/gameroom-reference.webp" alt="Reference image of a gamer bedroom" width="480" /> | <img src="docs/gameroom-showcase.webp" alt="Blender reconstruction with a lit desk, display shelves, mesh chair, and bed" width="480" /> |
+<table>
+  <tr>
+    <th width="50%">Reference room</th>
+    <th width="50%">Refined Blender render</th>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/gameroom-reference.webp" alt="Reference image of a gamer bedroom" width="480" />
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/gameroom-showcase.webp" alt="Blender reconstruction with a lit desk, display shelves, mesh chair, and bed" width="480" />
+    </td>
+  </tr>
+</table>
 
 The reference image is included with the user's permission. The request was to
 reconstruct the room as closely as possible, using the primary view for composition
