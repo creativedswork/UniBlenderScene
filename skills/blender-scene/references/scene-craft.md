@@ -2,11 +2,11 @@
 
 Use these checks for a visually detailed scene, especially one based on a
 reference image. They adapt methods from Scenario Labs'
-[Blender expert](https://github.com/scenario-labs/skills/tree/b8544b9c86e0685844cc6effbb27f3885f744d3a/skills/dcc/blender/scenario-blender-expert),
-[lighting and rendering](https://github.com/scenario-labs/skills/tree/b8544b9c86e0685844cc6effbb27f3885f744d3a/skills/dcc/blender/scenario-blender-lighting-rendering),
-and [export](https://github.com/scenario-labs/skills/tree/b8544b9c86e0685844cc6effbb27f3885f744d3a/skills/dcc/blender/scenario-blender-export)
-Skills. This reference uses this plugin's `scene_*` workflow; the Scenario MCP
-tools and helper scripts are not prerequisites.
+[Blender expert](https://github.com/scenario-labs/skills/tree/e24bc7d40be97b428e7b9fd467c415366e1dd974/skills/dcc/blender/scenario-blender-expert),
+[lighting and rendering](https://github.com/scenario-labs/skills/tree/e24bc7d40be97b428e7b9fd467c415366e1dd974/skills/dcc/blender/scenario-blender-lighting-rendering),
+and [export](https://github.com/scenario-labs/skills/tree/e24bc7d40be97b428e7b9fd467c415366e1dd974/skills/dcc/blender/scenario-blender-export)
+Skills. This reference uses this plugin's `scene_*` workflow; the packaged
+Scenario helpers are optional source material and its MCP tools are not used.
 
 ## Build from large shapes to detail
 
@@ -14,8 +14,12 @@ tools and helper scripts are not prerequisites.
   reference image, note the parts it hides and treat them as a reconstruction.
 - Block out the room and large objects first. Render from the target camera and
   check proportions, silhouettes, overlap, and floor contact before adding small
-  props or textures. Inspect another angle when a visible silhouette hides a
-  collision or floating object.
+  props or textures. For an attached reference, record 2-8 major object or region
+  boxes in image coordinates normalized to 0-1, using the same crop in the render.
+  Include any foreground object that substantially occludes the main subject.
+  Do not mark composition complete because all objects are present: compare each
+  box's left, top, right, and bottom edges with the reference. Inspect another
+  angle when a visible silhouette hides a collision or floating object.
 - Fix a failed blockout or misplaced object before refining its material. Use
   each `scene_get` render and `scene_review` to record what changed and which
   criterion still fails.

@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-blender-plugin",
-  "version": "0.1.2",
-  "description": "Create and refine Blender scenes from images, optionally incorporate externally generated 3D assets, and inspect scenes in an interactive Three.js viewer.",
+  "version": "0.2.1",
+  "description": "Build and review Blender scenes with Provider-first single-object modeling and user-approved composition.",
   "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
   "extensions": {
     "com.openai": {
@@ -12,10 +12,13 @@
         "developerName": "CreativeDSWork",
         "category": "Productivity",
         "shortDescription": "Build and preview Blender scenes",
-        "longDescription": "Plan, build and review Blender scenes from images or text. Incorporate detailed GLB assets when a separate 3D generation tool is available, then deliver a render and interactive viewer.",
-        "capabilities": ["Read", "Write"],
+        "longDescription": "Plan and verify multi-view spatial layouts, generate standalone objects with available 3D API Providers, and confirm composition before material and lighting stages. Deliver editable Blender scenes and an interactive preview.",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
         "defaultPrompt": [
-          "Build an orbitable Blender scene from this image. Check available 3D generation tools for prominent high-detail objects, confirm any credit cost before use, and show the render and interactive 3D result."
+          "Reconstruct this scene from all reference views. Use available 3D API Providers for standalone objects, confirm generation costs, verify spatial relationships, and pause after composition for my approval before materials."
         ]
       }
     }

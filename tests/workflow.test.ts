@@ -1,14 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { BlenderClient } from "../src/blender.js";
-import { allowedDownloadURL, SceneStore, type Plan } from "../src/store.js";
+import { allowedDownloadURL, requestsImageReference, SceneStore, validateSceneGraph, type Plan, type Scene, type SceneNode } from "../src/store.js";
 import { createMcpServer } from "../src/server.js";
+import { writeGraphExport } from "../src/graph-export.js";
 
 class FakeBlender extends BlenderClient {
   failNext = false;
@@ -20,6 +21,9 @@ class FakeBlender extends BlenderClient {
         matrixWorld: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
     }
     if (code.includes("obj = bpy.data.objects.get(")) throw new Error("Object not found");
+    if (code.includes('result = {"reviewViews": 5}')) for (const match of code.matchAll(/"([^"\n]+review-(?:main|front|side|top|perspective)\.png)"/g)) {
+      writeFileSync(match[1]!, Buffer.from("review"));
+    }
     for (const line of code.split("\n")) {
       const save = line.match(/save_as_mainfile\(filepath=(".*")\)/);
       if (save) writeFileSync(JSON.parse(save[1]!), this.value);
@@ -32,36 +36,170 @@ class FakeBlender extends BlenderClient {
 const plan: Plan = {
   summary: "A red cube", steps: ["Build and light a cube"], visualThreshold: 85,
   criteria: [{ id: "cube", description: "Cube is visible", severity: "blocker" }],
+  graph: [{ id: "cube", label: "Cube", kind: "object", parentId: null, description: "Primitive cube", blenderObjectNames: ["Cube"] }],
+  assets: [{ nodeId: "cube", kind: "structure", reason: "Simple primitive fixture" }],
 };
+const referenceWorkflow: Plan["workflow"] = { stages: [
+  { name: "composition", criterionIds: ["cube"], budget: 3 }, { name: "final", criterionIds: ["cube"], budget: 1 },
+] };
+function approveGraph(store: SceneStore, scene: Scene) {
+  store.reviewGraph(scene.id, { checks: ["coverage", "hierarchy", "spatial", "stage_checklists"].map((id) => ({ id, passed: true, evidence: "Reviewed fixture graph" })),
+    referenceEvidence: store.referenceImages(scene).map((r) => ({ reference: r.assetName, observation: "Fixture spatial relationship checked" })) });
+}
+function preparePlan(store: SceneStore, scene: Scene, value: Plan) {
+  store.plan(scene.id, value); approveGraph(store, scene);
+}
 function setup() {
   const blender = new FakeBlender();
   const root = mkdtempSync(join(tmpdir(), "codex-blender-unit-"));
   return { blender, store: new SceneStore(root, blender), root };
 }
-function review(iteration: number, score: number, passed = false) {
+function writeGlbFixture(directory: string, nodes: unknown[]) {
+  const json = Buffer.from(JSON.stringify({ nodes }));
+  const padded = Buffer.alloc(Math.ceil(json.length / 4) * 4, 0x20); json.copy(padded);
+  const glb = Buffer.alloc(20 + padded.length);
+  glb.write("glTF", 0); glb.writeUInt32LE(2, 4); glb.writeUInt32LE(glb.length, 8);
+  glb.writeUInt32LE(padded.length, 12); glb.writeUInt32LE(0x4e4f534a, 16); padded.copy(glb, 20);
+  writeFileSync(join(directory, "final.glb"), glb);
+}
+
+test("composition preview preserves approval state and keeps final export gated", async () => {
+  const { store } = setup();
+  const scene = store.create("Review a cube in 3D"); await store.settled();
+  assert.throws(() => store.export(scene.id, true), /composition checkpoint/);
+  preparePlan(store, scene, { ...plan, workflow: referenceWorkflow });
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, review(scene, 1, 95, true)); await store.settled();
+  assert.equal(scene.stage, "awaiting_review");
+  assert.throws(() => store.export(scene.id), /review/);
+  const blend = readFileSync(store.path(scene, "best.blend"));
+  const directory = store.path(scene, "previews/1"); mkdirSync(directory, { recursive: true });
+  writeGlbFixture(directory, [{ name: "Cube", mesh: 0, extras: { scene_node_id: "cube" } }, { name: "Camera", camera: 0 }]);
+  writeFileSync(join(directory, "render-profile.json"), JSON.stringify({ camera: { name: "Camera" } }));
+  store.export(scene.id, true); await store.settled();
+  assert.equal(scene.job?.status, "done", scene.error);
+  assert.equal(scene.stage, "awaiting_review");
+  assert.notEqual(scene.compositionApproved, true);
+  assert.equal(scene.previewedIteration, 1);
+  assert.equal(scene.exportedIteration, undefined);
+  assert.deepEqual(readFileSync(store.path(scene, "best.blend")), blend);
+  assert.ok(store.allowedFiles(scene).includes("previews/1/final.glb"));
+  assert.equal(JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")).outcome, "awaiting_review");
+  const job = scene.job?.id;
+  store.export(scene.id, true); assert.equal(scene.job?.id, job);
+  const restored = new SceneStore(store.root).get(scene.id);
+  assert.ok(store.allowedFiles(restored).includes("previews/1/final.glb"));
+  store.reviewDecision(scene.id, true);
+  assert.equal(scene.previewedIteration, undefined);
+  assert.equal(store.allowedFiles(scene).includes("previews/1/final.glb"), false);
+});
+function review(scene: Scene, iteration: number, score: number, passed = false) {
   return {
+    inspectionId: scene.inspection?.id,
+    referenceEvidence: (scene.references ?? (scene.reference ? [{ assetName: "reference" }] : [])).map((r) => ({ reference: r.assetName, observation: "Fixture reference inspected" })),
+    ...(scene.plan?.workflow ? { observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible cube", actual: "Fixture render", evidence: "Render", sceneEvidence: "Fixture inventory", referenceView: "reference", reason: "Mismatch", correction: "Fix cube", acceptance: "Cube visible" }] } : {}),
     iteration, criteria: [{ id: "cube", passed, evidence: "Rendered image inspected" }],
     visualScore: score, regressions: [], repairable: true, nextAction: "Improve lighting",
   };
 }
 
+test("single objects require provider discovery, local generated artifacts or explicit no-provider fallback", async () => {
+  const { store, root } = setup();
+  const scene = store.create("A chair"); await store.settled();
+  store.plan(scene.id, { ...plan, assets: [{ nodeId: "cube", kind: "object", reason: "Standalone chair" }] });
+  assert.throws(() => store.edit(scene.id, "pass"), /Graph review/);
+  approveGraph(store, scene);
+  assert.throws(() => store.edit(scene.id, "pass"), /asset strategy/);
+  store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], evidence: "Connected provider" });
+  assert.throws(() => store.edit(scene.id, "pass"), /downloaded local GLB/);
+  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: [], evidence: "API failed" }), /cannot become a Blender fallback/);
+  const invalid = join(store.path(scene, "."), "model.glb"); writeFileSync(invalid, "not a model");
+  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], provider: "meshy", taskId: "task-1", artifactPath: invalid, evidence: "Generated" }), /valid GLB/);
+  const bytes = Buffer.alloc(24); bytes.write("glTF");bytes.writeUInt32LE(2,4);bytes.writeUInt32LE(24,8);
+  const outside = join(root, "outside.glb");writeFileSync(outside,bytes);
+  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], provider: "meshy", taskId: "task-1", artifactPath: outside, evidence: "Generated" }), /workspace/);
+  writeFileSync(invalid,bytes);
+  store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], provider: "meshy", taskId: "task-1", artifactPath: invalid, evidence: "Provider task succeeded" });
+  assert.match(scene.assetStrategies![0]!.sha256!, /^[a-f0-9]{64}$/);
+  const restarted = new SceneStore(root, store.blender);
+  assert.equal(restarted.get(scene.id).assetStrategies![0]!.taskId, "task-1");
+  // A separate request can use Blender when discovery finds no applicable tool.
+  const fallback=store.create("Standalone object with no Provider");await store.settled();
+  preparePlan(store,fallback,{...plan,assets:[{nodeId:"cube",kind:"object",reason:"Standalone fixture"}]});
+  store.recordAsset(fallback.id, { nodeId: "cube", providers: [], evidence: "Host inventory has no applicable 3D API provider" });
+  store.edit(fallback.id,"pass");await store.settled();assert.equal(fallback.stage,"review");
+});
+
+test("graph review covers every view and failed spatial checks return to planning", async () => {
+  const { store } = setup();const scene=store.create("A room");await store.settled();
+  scene.references=[{assetName:"reference",fileId:"a",name:"front",mime:"image/png"},{assetName:"reference-2",fileId:"b",name:"side",mime:"image/png"}];
+  const p: Plan={...plan,workflow:referenceWorkflow};
+  store.plan(scene.id,p);
+  const checks=["coverage","hierarchy","spatial","stage_checklists"].map(id=>({id,passed:true,evidence:"Checked"}));
+  assert.throws(()=>store.reviewGraph(scene.id,{checks,referenceEvidence:[]}),/every supplied reference/);
+  store.reviewGraph(scene.id,{checks:checks.map(c=>({...c,passed:c.id!=="spatial"})),referenceEvidence:[{reference:"reference",observation:"Desk on rear wall"},{reference:"reference-2",observation:"Window perpendicular to desk"}]});
+  assert.equal(scene.stage,"planning");assert.throws(()=>store.edit(scene.id,"pass"),/Plan/);
+});
+
+test("composition approval cannot be disabled and exhausted failed composition still pauses", async () => {
+  const {store,root,blender}=setup();const scene=store.create("A room");await store.settled();
+  const workflow: NonNullable<Plan['workflow']>={stages:[{name:"composition",criterionIds:["cube"],budget:1},{name:"materials",criterionIds:["cube"],budget:1},{name:"final",criterionIds:["cube"],budget:1}]};
+  assert.throws(()=>store.plan(scene.id,{...plan,workflow:{...workflow,compositionApproval:false}}),/cannot be disabled/);
+  preparePlan(store,scene,{...plan,workflow});
+  assert.equal(scene.plan!.workflow!.compositionApproval,true);
+  store.edit(scene.id,"pass");await store.settled();store.review(scene.id,review(scene,1,0,false));await store.settled();
+  assert.equal(scene.stage,"awaiting_review");assert.equal(scene.workflowIndex,0);assert.deepEqual(scene.remainingGaps,["cube"]);
+  const restart=new SceneStore(root,blender);assert.equal(restart.get(scene.id).stage,"awaiting_review");
+  assert.throws(()=>restart.edit(scene.id,"pass"),/review/);assert.throws(()=>restart.export(scene.id),/review/);
+  restart.reviewDecision(scene.id,true);assert.equal(restart.get(scene.id).compositionApproved,true);
+  assert.equal(restart.get(scene.id).plan!.workflow!.stages[restart.get(scene.id).workflowIndex!]?.name,"materials");
+});
+
+test("budget-one failed edit can retry the same candidate without resetting the request", async()=>{
+  const {store,blender}=setup();const scene=store.create("Cube");await store.settled();
+  preparePlan(store,scene,{...plan,workflow:{stages:[{name:"final",criterionIds:["cube"],budget:1}]}});
+  blender.failNext=true;store.edit(scene.id,"bad python");await store.settled();
+  assert.equal(scene.iteration,0);assert.equal(scene.stage,"edit");
+  store.edit(scene.id,"fixed python");await store.settled();assert.equal(scene.iteration,1);
+  assert.throws(()=>store.review(scene.id,{...review(scene,1,90,true),inspectionId:"stale"}),/inspectionId/);
+  assert.throws(()=>store.review(scene.id,{...review(scene,1,90,true),observations:[{criterionId:"cube",nodeId:"cube",target:"Cube",actual:"Cube",evidence:"render"}]}),/sceneEvidence/);
+  store.review(scene.id,review(scene,1,90,true));assert.equal(scene.stage,"completed");
+});
+
+test("multi-view reviews reject omitted auxiliary evidence and unknown reference names", async()=>{
+  const {store}=setup();const scene=store.create("A room");await store.settled();
+  scene.references=[{assetName:"reference",fileId:"a",name:"front",mime:"image/png"},{assetName:"reference-2",fileId:"b",name:"side",mime:"image/png"}];
+  preparePlan(store,scene,{...plan,workflow:referenceWorkflow});store.edit(scene.id,"pass");await store.settled();
+  const r=review(scene,1,95,true);
+  assert.throws(()=>store.review(scene.id,{...r,referenceEvidence:r.referenceEvidence.slice(0,1)}),/every supplied reference/);
+  assert.throws(()=>store.review(scene.id,{...r,observations:r.observations!.map(o=>({...o,referenceView:"not-a-view"}))}),/supplied reference asset/);
+});
+
+test("legacy active workflows replan from the saved checkpoint after upgrade", async()=>{
+  const {store,root,blender}=setup();const scene=store.create("Legacy scene");await store.settled();
+  preparePlan(store,scene,plan);delete scene.plan!.assets;store.save(scene);
+  const restored=new SceneStore(root,blender).get(scene.id);
+  assert.equal(restored.stage,"planning");assert.match(restored.reviewFeedback!,/Workflow upgraded/);
+  assert.equal(readFileSync(store.path(scene,"current.blend"),"utf8"),"initial");
+});
+
 test("freezes criteria, rejects stale reviews, stops regression and restores best checkpoint", async () => {
   const { store, blender } = setup();
   const scene = store.create("A red cube"); await store.settled();
   assert.throws(() => store.edit(scene.id, "result = {}"), /Plan/);
-  store.plan(scene.id, plan);
+  preparePlan(store, scene, plan);
   assert.throws(() => store.plan(scene.id, plan), /frozen/);
   blender.value = "best-scene";
   store.edit(scene.id, "result = {}"); await store.settled();
   assert.equal(scene.stage, "review");
   assert.throws(() => store.edit(scene.id, "result = {}"), /review/);
-  assert.throws(() => store.review(scene.id, review(99, 80)), /latest/);
-  assert.throws(() => store.review(scene.id, { ...review(1, 80), criteria: [] }), /every/);
-  store.review(scene.id, review(1, 80));
+  assert.throws(() => store.review(scene.id, review(scene, 99, 80)), /latest/);
+  assert.throws(() => store.review(scene.id, { ...review(scene, 1, 80), criteria: [] }), /every/);
+  store.review(scene.id, review(scene, 1, 80));
   for (let iteration = 2; iteration <= 3; iteration++) {
     blender.value = `worse-${iteration}`;
     store.edit(scene.id, "result = {}"); await store.settled();
-    store.review(scene.id, review(iteration, 60));
+    store.review(scene.id, review(scene, iteration, 60));
   }
   assert.equal(scene.stage, "best_effort");
   assert.equal(scene.best?.iteration, 1);
@@ -75,10 +213,10 @@ test("freezes criteria, rejects stale reviews, stops regression and restores bes
 
 test("extends only improving repairable fifth review and enforces eight attempts", async () => {
   const { store } = setup();
-  const scene = store.create("A cube"); await store.settled(); store.plan(scene.id, plan);
+  const scene = store.create("A cube"); await store.settled(); preparePlan(store, scene, plan);
   for (let iteration = 1; iteration <= 8; iteration++) {
     store.edit(scene.id, "result = {}"); await store.settled();
-    store.review(scene.id, review(iteration, iteration * 10));
+    store.review(scene.id, review(scene, iteration, iteration * 10));
     assert.equal(scene.stage, iteration === 8 ? "best_effort" : "edit");
   }
   assert.equal(scene.extended, true);
@@ -87,7 +225,7 @@ test("extends only improving repairable fifth review and enforces eight attempts
 
 test("restores failed edits, refuses unfinished exports, accepts verified criteria", async () => {
   const { store, blender } = setup();
-  const scene = store.create("A cube"); await store.settled(); store.plan(scene.id, plan);
+  const scene = store.create("A cube"); await store.settled(); preparePlan(store, scene, plan);
   const before = readFileSync(store.path(scene, "current.blend"));
   blender.failNext = true;
   store.edit(scene.id, "invalid python"); await store.settled();
@@ -96,8 +234,189 @@ test("restores failed edits, refuses unfinished exports, accepts verified criter
   assert.deepEqual(readFileSync(store.path(scene, "current.blend")), before);
   assert.throws(() => store.export(scene.id), /review/);
   store.edit(scene.id, "result = {}"); await store.settled();
-  store.review(scene.id, review(2, 95, true));
+  store.review(scene.id, review(scene, 1, 95, true));
   assert.equal(scene.stage, "completed");
+});
+
+test("reference alignment blocks a high-scoring review until major regions match", async () => {
+  const { store } = setup();
+  const scene = store.create("Rebuild a room"); await store.settled();
+  scene.reference = { fileId: "photo", name: "Room", mime: "image/png" };
+  const referencePlan: Plan = {
+    ...plan, workflow: referenceWorkflow,
+    referenceAnchors: [
+      { id: "desk", description: "Main desk", targetBox: [0.1, 0.4, 0.8, 0.75] },
+      { id: "chair", description: "Foreground chair", targetBox: [0.55, 0.45, 0.9, 0.95] },
+    ],
+  };
+  assert.throws(() => store.plan(scene.id, plan), /two image-space anchors/);
+  preparePlan(store, scene, referencePlan);
+  store.edit(scene.id, "result = {}"); await store.settled();
+  const mismatch = {
+    ...review(scene, 1, 95, true),
+    referenceAlignment: [
+      { id: "desk", renderBox: [0.1, 0.4, 0.62, 0.75] as [number, number, number, number], evidence: "Desk ends too early" },
+      { id: "chair", renderBox: [0.55, 0.25, 0.9, 0.8] as [number, number, number, number], evidence: "Chair sits too high" },
+    ],
+  };
+  assert.throws(() => store.review(scene.id, review(scene, 1, 95, true)), /every reference anchor/);
+  store.review(scene.id, mismatch);
+  assert.equal(scene.stage, "edit");
+  assert.equal(scene.best?.alignmentMaxError, 0.2);
+  store.edit(scene.id, "result = {}"); await store.settled();
+  store.review(scene.id, {
+    ...review(scene, 2, 95, true),
+    referenceAlignment: [
+      { id: "desk", renderBox: [0.11, 0.42, 0.77, 0.74], evidence: "Desk now fills the planned frame" },
+      { id: "chair", renderBox: [0.56, 0.47, 0.88, 0.93], evidence: "Chair position matches" },
+    ],
+  });
+  assert.equal(scene.stage, "awaiting_review");
+  assert.ok(scene.best!.alignmentMaxError! < 0.08);
+});
+
+test("reference requests cannot silently create a text-only scene", () => {
+  const { store } = setup();
+  assert.equal(requestsImageReference("制作一个如图所示的场景"), true);
+  assert.equal(requestsImageReference("Rebuild this room from the attached photo"), true);
+  assert.equal(requestsImageReference("Create a room with a framed picture"), false);
+  assert.throws(() => store.create("制作一个如图所示的场景"), /reference or references/);
+  assert.equal(store.scenes.size, 0);
+});
+
+test("plans keep a bounded global contract", async () => {
+  const { store } = setup();
+  const scene = store.create("A room"); await store.settled();
+  assert.throws(() => store.plan(scene.id, {
+    ...plan,
+    criteria: Array.from({ length: 13 }, (_, index) => ({
+      id: `criterion-${index}`, description: "Visible", severity: "major" as const,
+    })),
+  }), /1-12 global criteria/);
+  assert.equal(scene.stage, "planning");
+});
+
+test("Scene Graph rejects duplicate names, unknown relations, and parent cycles", () => {
+  const nodes: SceneNode[] = [
+    { id: "root", label: "Root", kind: "group", parentId: null, blenderObjectNames: [], description: "All parts" },
+    { id: "cube", label: "Cube", kind: "object", parentId: "root", blenderObjectNames: ["Cube"], description: "Main subject" },
+  ];
+  validateSceneGraph(nodes);
+  assert.throws(() => validateSceneGraph([...nodes, { ...nodes[1]!, id: "other" }]), /object names/);
+  assert.throws(() => validateSceneGraph([{ ...nodes[0]!, parentId: "cube" }, nodes[1]!]), /cycle/);
+  assert.throws(() => validateSceneGraph([nodes[0]!, { ...nodes[1]!, relations: [{ targetId: "missing", description: "beside" }] }]), /relation target/);
+});
+
+test("staged review pauses at composition and resumes from the same checkpoint", async () => {
+  const { store, blender } = setup();
+  const scene = store.create("A cube"); await store.settled();
+  const graph: SceneNode[] = [{ id: "cube", label: "Cube", kind: "object", parentId: null,
+    blenderObjectNames: ["Cube"], description: "Main subject", status: "planned" }];
+  const stagedReview = (iteration: number, score: number) => ({ ...review(scene, iteration, score, true),
+    observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible cube", actual: "Cube shown",
+      evidence: "Rendered frame", sceneEvidence: "Fixture inventory" }] });
+  preparePlan(store, scene, { ...plan, graph, workflow: { compositionApproval: true, stages: [
+    { name: "geometry", criterionIds: ["cube"], budget: 1 },
+    { name: "composition", criterionIds: ["cube"], budget: 1 },
+    { name: "final", criterionIds: ["cube"], budget: 1 },
+  ] } });
+  store.edit(scene.id, "result = {}"); await store.settled();
+  store.review(scene.id, stagedReview(1, 90));
+  assert.equal(scene.workflowIndex, 1);
+  assert.equal(scene.stage, "edit");
+  store.updateGraph(scene.id, [{ ...graph[0]!, status: "built" }]);
+  store.edit(scene.id, "result = {}"); await store.settled();
+  blender.failNext = true;
+  store.review(scene.id, stagedReview(2, 91)); await store.settled();
+  assert.equal(scene.stage, "awaiting_review");
+  assert.equal(scene.job?.status, "failed");
+  assert.throws(() => store.reviewDecision(scene.id, true), /views are not ready/);
+  store.retryReviewViews(scene.id); await store.settled();
+  assert.equal(scene.reviewViews?.length, 5);
+  assert.throws(() => store.edit(scene.id, "result = {}"), /review/);
+  assert.throws(() => store.export(scene.id), /review/);
+  assert.equal(new SceneStore(store.root, blender).get(scene.id).stage, "awaiting_review");
+  store.reviewDecision(scene.id, false, "Move the camera", "composition");
+  assert.equal(scene.workflowIndex, 1);
+  assert.equal(scene.reviewFeedback, "Move the camera");
+  store.edit(scene.id, "result = {}"); await store.settled();
+  store.review(scene.id, stagedReview(3, 92)); await store.settled();
+  store.reviewDecision(scene.id, true);
+  assert.equal(scene.workflowIndex, 2);
+  assert.equal(scene.stage, "edit");
+  store.edit(scene.id, "result = {}"); await store.settled();
+  store.review(scene.id, stagedReview(4, 95));
+  assert.equal(scene.stage, "completed");
+});
+
+test("GLB export maps stable IDs across multiple meshes and rejects missing built nodes", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-graph-export-"));
+  const directory = join(root, "artifacts", "7"); mkdirSync(directory, { recursive: true });
+  const gltf = { nodes: [
+    { name: "Renamed subject", extras: { scene_node_id: "subject" }, children: [1, 2] },
+    { name: "Part A", mesh: 0 }, { name: "Part B", mesh: 1 }, { name: "Camera", camera: 0 },
+  ] };
+  writeGlbFixture(directory, gltf.nodes);
+  writeFileSync(join(directory, "render-profile.json"), JSON.stringify({ camera: { name: "Camera" } }));
+  writeFileSync(join(root, "best.blend"), "blend");
+  writeFileSync(join(root, "best.png"), "render");
+  const graph: SceneNode[] = [
+    { id: "root", label: "Root", kind: "group", parentId: null, blenderObjectNames: [], description: "All", status: "built" },
+    { id: "subject", label: "Subject", kind: "object", parentId: "root", blenderObjectNames: ["Original name"], description: "Main", status: "built" },
+  ];
+  writeGraphExport(directory, 7, graph, "completed", []);
+  const output = JSON.parse(readFileSync(join(directory, "scene-graph.json"), "utf8"));
+  assert.deepEqual(output.nodes[1].gltfNodeIndices, [1, 2]);
+  assert.equal(output.nodes[0].status, "renderable");
+  assert.equal(output.nodes[1].status, "renderable");
+  assert.equal(JSON.parse(readFileSync(join(directory, "render-profile.json"), "utf8")).iteration, 7);
+  assert.throws(() => writeGraphExport(directory, 7, [{ ...graph[1]!, id: "missing" }], "completed", []), /unknown Scene Graph ID|no GLB mesh/);
+});
+
+test("imports local Codex attachments only from approved directories", async () => {
+  const { store, root } = setup();
+  const previous = process.env.LOCAL_REFERENCE_ROOTS;
+  const outside = mkdtempSync(join(tmpdir(), "codex-reference-outside-"));
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  const front = join(root, "front.png"), side = join(root, "side.png");
+  writeFileSync(front, png); writeFileSync(side, png);
+  writeFileSync(join(outside, "outside.png"), png);
+  symlinkSync(join(outside, "outside.png"), join(root, "escape.png"));
+  writeFileSync(join(root, "invalid.png"), "not an image");
+  try {
+    delete process.env.LOCAL_REFERENCE_ROOTS;
+    const denied = store.create("A room", undefined, [{ local_path: front }]);
+    await store.settled();
+    assert.match(denied.error!, /LOCAL_REFERENCE_ROOTS/);
+    process.env.LOCAL_REFERENCE_ROOTS = root;
+    const scene = store.create("如图创建", undefined, [{ local_path: front }, { local_path: side, label: "side" }]);
+    await store.settled();
+    assert.equal(scene.job?.status, "done");
+    assert.deepEqual(store.referenceImages(scene).map((item) => item.name), ["front.png", "side.png"]);
+    assert.equal(scene.references![1]!.label, "side");
+    assert.deepEqual(readFileSync(store.path(scene, "reference-2")), png);
+    for (const [path, error] of [[join(root, "escape.png"), /LOCAL_REFERENCE_ROOTS/], [join(root, "invalid.png"), /PNG, JPG, or WebP/]] as const) {
+      const invalid = store.create("A room", undefined, [{ local_path: path }]);
+      await store.settled();
+      assert.match(invalid.error!, error);
+      assert.equal(invalid.references, undefined);
+    }
+    const server = createMcpServer(store, "http://localhost");
+    const client = new Client({ name: "local-attachments", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a); await client.connect(b);
+    try {
+      const created = await client.callTool({ name: "scene_create", arguments: { prompt: "A room", references: [{ local_path: front }] } }) as CallToolResult;
+      assert.equal(created.isError, undefined);
+      await store.settled();
+      assert.equal(store.get(created.structuredContent!.id as string).job?.status, "done");
+      const invalid = await client.callTool({ name: "scene_create", arguments: { prompt: "A room", references: [{ local_path: front, download_url: "https://files.oaiusercontent.com/x", file_id: "x" }] } });
+      assert.equal(invalid.isError, true);
+    } finally { await client.close(); await server.close(); }
+  } finally {
+    if (previous === undefined) delete process.env.LOCAL_REFERENCE_ROOTS;
+    else process.env.LOCAL_REFERENCE_ROOTS = previous;
+  }
 });
 
 test("validates file host boundary and excludes metadata from downloadable artifacts", async () => {
@@ -120,9 +439,11 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   await server.connect(a); await client.connect(b);
   try {
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 9);
+    assert.equal(tools.tools.length, 15);
+    assert.ok(tools.tools.some((tool) => tool.name === "scene_preview"));
     const create = tools.tools.find((tool) => tool.name === "scene_create")!;
-    assert.deepEqual(create._meta?.["openai/fileParams"], ["reference"]);
+    assert.deepEqual(create._meta?.["openai/fileParams"], ["reference", "references"]);
+    assert.deepEqual(tools.tools.find((tool) => tool.name === "scene_continue")?._meta?.["openai/fileParams"], ["references"]);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_view")?._meta?.["openai/outputTemplate"], "ui://codex-blender/viewer.html");
     const resources = await client.listResources();
     assert.equal(resources.resources[0]?.mimeType, "text/html;profile=mcp-app");
@@ -130,6 +451,10 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
     assert.equal(prompts.prompts[0]?.name, "blender-scene");
     const invalid = await client.callTool({ name: "scene_create", arguments: { prompt: "" } });
     assert.equal(invalid.isError, true);
+    for (const references of [[], Array.from({ length: 7 }, (_, index) => ({ download_url: "https://files.oaiusercontent.com/x.png", file_id: String(index) }))]) {
+      const invalid = await client.callTool({ name: "scene_create", arguments: { prompt: "A room", references } });
+      assert.equal(invalid.isError, true);
+    }
     const scene = store.create("A chair"); await store.settled();
     const inspected = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, objectName: "Chair" } }) as CallToolResult;
     const object = inspected.structuredContent?.inspectedObject as { rotationMode: string };
@@ -139,8 +464,8 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
     assert.equal(missing.isError, true);
     const unavailable = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png" } });
     assert.equal(unavailable.isError, true);
-    store.plan(scene.id, plan); store.edit(scene.id, "result = {}"); await store.settled();
-    store.review(scene.id, review(1, 95, true));
+    preparePlan(store, scene, plan); store.edit(scene.id, "result = {}"); await store.settled();
+    store.review(scene.id, review(scene, 1, 95, true));
     const chunk = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png" } });
     assert.equal(chunk.isError, undefined);
     assert.equal(Buffer.from((chunk.structuredContent as { data: string }).data, "base64").toString(), "render");
@@ -149,4 +474,80 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
     const beyond = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png", offset: 7 } });
     assert.equal(beyond.isError, true);
   } finally { await client.close(); await server.close(); }
+});
+
+test("multi-view references keep primary order, persist, and append atomically", async (t) => {
+  const png = Buffer.from("89504e470d0a1a0a01020304", "hex");
+  t.mock.method(globalThis, "fetch", async (input: URL | string) =>
+    new Response(String(input).includes("blocked") ? null : png, String(input).includes("blocked") ?
+      { status: 302, headers: { location: "https://unapproved.example/image.png" } } : { status: 200 }));
+  const { store, blender } = setup();
+  const image = (id: string) => ({ download_url: `https://files.oaiusercontent.com/${id}.png`, file_id: id, label: id });
+  assert.throws(() => store.create("A room", image("front"), [image("side")]), /not both/);
+  assert.throws(() => store.create("A room", undefined, [image("front"), image("front")]), /distinct/);
+  assert.throws(() => store.create("A room", undefined, []), /1-6/);
+  const scene = store.create("A room", undefined, [image("front"), image("side")]);
+  await store.settled();
+  assert.equal(scene.job?.status, "done");
+  const snapshot = store.snapshot(scene, "https://example.com") as { reference: { assetName: string }; references: { role: string; label: string; assetName: string }[] };
+  assert.deepEqual(snapshot.references.map((view) => [view.assetName, view.role, view.label]), [
+    ["reference", "primary", "front"], ["reference-2", "auxiliary", "side"],
+  ]);
+  assert.equal(snapshot.reference.assetName, "reference");
+  for (const view of store.referenceImages(scene)) assert.deepEqual(readFileSync(store.path(scene, view.assetName)), png);
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "multi-view-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const all = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id } }) as CallToolResult;
+    assert.equal(all.content.filter((item) => item.type === "image").length, 2);
+    const one = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, referenceName: "reference-2" } }) as CallToolResult;
+    assert.equal(one.content.filter((item) => item.type === "image").length, 1);
+    const chunk = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "reference-2" } });
+    assert.deepEqual(Buffer.from((chunk.structuredContent as { data: string }).data, "base64"), png);
+    assert.equal((chunk.structuredContent as { mimeType: string }).mimeType, "image/png");
+    const missing = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "reference-6" } });
+    assert.equal(missing.isError, true);
+  } finally { await client.close(); await server.close(); }
+  const anchors: Plan["referenceAnchors"] = [
+    { id: "left", description: "Left subject", targetBox: [0, 0, 0.5, 1] },
+    { id: "right", description: "Right subject", targetBox: [0.5, 0, 1, 1] },
+  ];
+  preparePlan(store, scene, { ...plan, workflow: referenceWorkflow, referenceAnchors: anchors });
+  store.edit(scene.id, "result = {}"); await store.settled();
+  store.review(scene.id, { ...review(scene, 1, 95, true), referenceAlignment: anchors.map((anchor) => ({
+    id: anchor.id, renderBox: anchor.targetBox, evidence: "Primary-view alignment inspected",
+  })) });
+  await store.settled();
+  store.reviewDecision(scene.id, true);
+  store.edit(scene.id, "result = {}"); await store.settled();
+  store.review(scene.id, { ...review(scene, 2, 95, true), referenceAlignment: anchors.map((anchor) => ({ id: anchor.id, renderBox: anchor.targetBox, evidence: "Fixture alignment" })) });
+  const best = scene.best;
+  assert.throws(() => store.continue(scene.id, "Too many views", Array.from({ length: 5 }, (_, index) => image(`extra-${index}`))), /1-6/);
+  assert.equal(scene.stage, "completed");
+  store.continue(scene.id, "New angles", [image("back"), image("blocked")]); await store.settled();
+  assert.equal(scene.job?.status, "failed");
+  assert.equal(scene.stage, "completed");
+  assert.equal(scene.best, best);
+  assert.equal(store.referenceImages(scene).length, 2);
+  assert.equal(store.allowedFiles(scene).includes("reference-3"), false);
+  store.continue(scene.id, "Correct depth", [image("back")]); await store.settled();
+  assert.equal(scene.stage, "planning");
+  assert.equal(scene.startIteration, 2);
+  assert.equal(scene.reference?.fileId, "front");
+  assert.deepEqual(store.referenceImages(scene).map((view) => view.fileId), ["front", "side", "back"]);
+  assert.equal(scene.best, undefined);
+  const restoredStore = new SceneStore(store.root, blender);
+  assert.equal(restoredStore.referenceImages(restoredStore.get(scene.id))[2]?.label, "back");
+  assert.equal(readFileSync(store.path(scene, "current.blend"), "utf8"), "initial");
+  const failed = store.create("A room", undefined, [image("valid"), image("blocked")]); await store.settled();
+  assert.equal(failed.job?.status, "failed");
+  assert.deepEqual(store.referenceImages(failed), []);
+  assert.equal(store.allowedFiles(failed).some((file) => file.startsWith("reference")), false);
+  // Legacy scenes with only reference metadata remain readable after restart.
+  const legacy = store.create("A chair"); await store.settled();
+  legacy.reference = { fileId: "legacy", name: "Old input", mime: "image/png" };store.save(legacy);
+  const legacyStore = new SceneStore(store.root, blender);
+  assert.equal(legacyStore.referenceImages(legacyStore.get(legacy.id))[0]?.assetName, "reference");
 });

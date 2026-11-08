@@ -6,6 +6,11 @@ subagent coordination. The MCP service executes Blender operations and enforces
 scene state.
 
 - Read `skills/blender-scene/SKILL.md` when creating or refining scenes.
+- Load the relevant top-level `skills/scenario-blender-*/SKILL.md` alongside
+  `blender-scene` for specialized production guidance. The Scenario Skills
+  contribute techniques; `blender-scene` owns the `scene_*` workflow and the
+  dedicated Blender bridge. Their `UPSTREAM.md` files are source references,
+  not alternate execution instructions.
 - Keep runtime data under `.canova/runs/`. Never commit generated scenes, secrets,
   environment files, logs, or personal connection settings. Commit a reference
   image only when the user explicitly authorizes it for a named public docs

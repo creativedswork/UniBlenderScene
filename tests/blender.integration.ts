@@ -62,6 +62,7 @@ const server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
     ...process.env, HOST: "127.0.0.1", PORT: String(port), PUBLIC_BASE_URL: origin,
     MCP_API_KEY: apiKey, BLENDER_MCP_PORT: String(blenderPort), RUNS_ROOT: join(root, ".canova/runs"),
     FILE_DOWNLOAD_HOSTS: `localhost:${filePort}`, NODE_EXTRA_CA_CERTS: certPath,
+    LOCAL_REFERENCE_ROOTS: root,
   }, stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -72,6 +73,22 @@ const transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
 });
 async function call(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   return await client.callTool({ name, arguments: args }) as CallToolResult;
+}
+async function planFixture(args: Record<string, any>) {
+  const s=(await call("scene_view",{sceneId:args.sceneId})).structuredContent as Record<string,any>;
+  const graph=args.graph ?? [{id:"cube",label:"Cube",kind:"object",parentId:null,blenderObjectNames:["RedCube"],description:"Primitive fixture"}];
+  const workflow=args.workflow ?? (s.references.length ? {stages:[{name:"composition",criterionIds:args.criteria.map((c:any)=>c.id),budget:2},{name:"final",criterionIds:args.criteria.map((c:any)=>c.id),budget:1}]} : undefined);
+  const p=await call("scene_plan",{...args,graph,workflow,assets:graph.filter((n:any)=>n.kind!=="group").map((n:any)=>({nodeId:n.id,kind:"structure",reason:"Simple cube test fixture"}))});
+  assert.equal(p.isError,undefined,JSON.stringify(p.content));
+  const g=await call("scene_plan_review",{sceneId:args.sceneId,checks:["coverage","hierarchy","spatial","stage_checklists"].map(id=>({id,passed:true,evidence:"Fixture graph checked"})),referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture geometry and camera checked"}))});
+  assert.equal(g.isError,undefined,JSON.stringify(g.content));
+  return p;
+}
+async function reviewFixture(args: Record<string,any>) {
+  const s=(await call("scene_view",{sceneId:args.sceneId})).structuredContent as Record<string,any>;
+  const observations=s.plan.workflow ? (args.observations ?? args.criteria.map((c:any)=>({criterionId:c.id,nodeId:"cube",target:"Visible cube",actual:"Cube shown",evidence:"Rendered fixture",reason:"Mismatch",correction:"Fix cube",acceptance:"Visible cube"}))).map((o:any)=>({...o,sceneEvidence:"Runtime inventory contains RedCube",...(s.references.length?{referenceView:s.references[0].assetName}:{})})) : undefined;
+  const r=await call("scene_review",{...args,inspectionId:s.inspection.id,observations,referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture spatial evidence checked"}))});
+  assert.equal(r.isError,undefined,JSON.stringify(r.content));return r;
 }
 async function poll(id: string, expectedStatus = "done"): Promise<Record<string, any>> {
   const deadline = Date.now() + 300000;
@@ -95,14 +112,18 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 9);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 15);
   const widget = await client.readResource({ uri: "ui://codex-blender/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
   const id = created.structuredContent!.id as string; await poll(id);
-  await call("scene_plan", {
+  await planFixture({
     sceneId: id, summary: "Red studio cube", steps: ["Build cube, floor, camera and area light"],
     criteria: [{ id: "red-cube", severity: "blocker", description: "Visible red cube on a lit floor" }], visualThreshold: 85,
+    graph: [
+      { id: "root", label: "Studio", kind: "group", parentId: null, blenderObjectNames: [], description: "Studio scene" },
+      { id: "cube", label: "Red cube", kind: "object", parentId: "root", blenderObjectNames: ["RedCube"], description: "Main subject", status: "built" },
+    ],
   });
   await call("scene_edit", { sceneId: id, code: await readFile("tests/scene.py", "utf8") });
   const rendered = await poll(id);
@@ -121,12 +142,13 @@ try {
   const missingObject = await call("scene_get", { sceneId: id, objectName: "MissingObject" });
   assert.equal(missingObject.isError, true);
   const badReview = await call("scene_review", {
+    inspectionId: "stale",
     sceneId: id, iteration: 99, criteria: [{ id: "red-cube", passed: true, evidence: "Stale" }],
     visualScore: 90, regressions: [], repairable: false, nextAction: "Export",
   });
   assert.equal(badReview.isError, true);
   await writeFile(join(root, "render.png"), Buffer.from(evidence.content.find((item) => item.type === "image")!.data as string, "base64"));
-  const reviewed = await call("scene_review", {
+  const reviewed = await reviewFixture({
     sceneId: id, iteration: rendered.iteration,
     criteria: [{ id: "red-cube", passed: true, evidence: "Integration scene contains RedCube, floor, active camera and 512px render; visual review is performed separately." }],
     visualScore: 90, regressions: [], repairable: false, nextAction: "Export reviewed checkpoint",
@@ -137,6 +159,10 @@ try {
   assert.ok(glb);
   const glbResponse = await fetch(glb.url); assert.equal(glbResponse.status, 200);
   const bytes = Buffer.from(await glbResponse.arrayBuffer());
+  const graphURL = exported.artifacts.find((file: { name: string }) => file.name === "scene-graph.json").url;
+  const graph = await (await fetch(graphURL)).json();
+  assert.equal(graph.iteration, exported.exportedIteration);
+  assert.ok(graph.nodes.find((node: { id: string }) => node.id === "cube").gltfNodeIndices.length >= 1);
   assert.equal(bytes.toString("ascii", 0, 4), "glTF"); assert.equal(bytes.readUInt32LE(4), 2);
   const gltf = JSON.parse(bytes.subarray(20, 20 + bytes.readUInt32LE(12)).toString("utf8"));
   assert.ok(gltf.materials.some((material: { emissiveTexture?: unknown; emissiveFactor?: number[] }) =>
@@ -163,7 +189,49 @@ try {
   await writeFile(join(root, "scene.json"), JSON.stringify(exported, null, 2));
   await writeFile(join(root, "widget.html"), widget.contents[0]!.text as string);
   await writeFile(join(root, "final.glb"), bytes);
+  // A generated asset fixture exercises the provider contract without paid API calls.
+  const providerScene=(await call("scene_create",{prompt:"Standalone provider fixture"})).structuredContent!.id as string;
+  await poll(providerScene);
+  const providerPath=join(root,".canova/runs",providerScene,"provider.glb");await writeFile(providerPath,bytes);
+  const providerPlan=await call("scene_plan",{sceneId:providerScene,summary:"Import external fixture",steps:["Import"],visualThreshold:85,
+    criteria:[{id:"cube",severity:"major",description:"Imported object"}],
+    graph:[{id:"cube",label:"Imported object",kind:"object",parentId:null,description:"Provider fixture",blenderObjectNames:[]}],
+    assets:[{nodeId:"cube",kind:"object",reason:"Standalone generated object"}]});
+  assert.equal(providerPlan.isError,undefined,JSON.stringify(providerPlan.content));
+  await call("scene_plan_review",{sceneId:providerScene,checks:["coverage","hierarchy","spatial","stage_checklists"].map(id=>({id,passed:true,evidence:"Fixture graph checked"})),referenceEvidence:[]});
+  assert.equal((await call("scene_edit",{sceneId:providerScene,code:"pass"})).isError,true);
+  assert.equal((await call("scene_asset_strategy",{sceneId:providerScene,nodeId:"cube",providers:["fixture-provider"],evidence:"Provider available"})).isError,undefined);
+  assert.equal((await call("scene_edit",{sceneId:providerScene,code:"pass"})).isError,true);
+  const strategy=await call("scene_asset_strategy",{sceneId:providerScene,nodeId:"cube",providers:["fixture-provider"],provider:"fixture-provider",taskId:"fixture-task",artifactPath:providerPath,evidence:"Local GLB fixture standing in for a downloaded provider result"});
+  assert.equal(strategy.isError,undefined,JSON.stringify(strategy.content));
+  await call("scene_edit",{sceneId:providerScene,code:"pass"});const missingImport=await poll(providerScene,"failed");
+  assert.match(missingImport.error,/Import and tag/);assert.equal(missingImport.iteration,0);
+  const hash=(strategy.structuredContent as any).assetStrategies[0].sha256;
+  await call("scene_edit",{sceneId:providerScene,code:`
+bpy.ops.import_scene.gltf(filepath=${JSON.stringify(providerPath)})
+for obj in bpy.context.scene.objects:
+    if obj.type == 'MESH':
+        obj['scene_node_id']='cube'
+        obj['provider_task_id']='fixture-task'
+        obj['provider_asset_sha256']=${JSON.stringify(hash)}
+bpy.context.scene.camera=next(o for o in bpy.context.scene.objects if o.type=='CAMERA')
+bpy.context.scene.render.engine='CYCLES'
+bpy.context.scene.cycles.samples=4
+bpy.context.scene.render.resolution_x=128
+bpy.context.scene.render.resolution_y=128
+`});
+  const imported=await poll(providerScene);assert.equal(imported.iteration,1);assert.ok(imported.summary.objectCount>0);
   referenceBytes = await readFile(join(root, "render.png"));
+  await writeFile(join(root, "local-side.png"), referenceBytes);
+  const localReferenceScene = await call("scene_create", {
+    prompt: "Reconstruct the attached room views",
+    references: [{ local_path: join(root, "render.png"), label: "primary" }, { local_path: join(root, "local-side.png"), label: "side" }],
+  });
+  // Separate attachment paths can contain identical pixels; camera observations may overlap.
+  const localReceived = await poll(localReferenceScene.structuredContent!.id as string);
+  assert.equal(localReceived.references.length, 2);
+  const localEvidence = await call("scene_get", { sceneId: localReceived.id });
+  assert.equal(localEvidence.content.filter((item) => item.type === "image").length, 2);
   const referenceScene = await call("scene_create", {
     prompt: "Create a scene from the uploaded studio cube", reference: { download_url: `https://localhost:${filePort}/reference.png`, file_id: "integration-image", mime_type: "image/png", file_name: "reference.png" },
   });
@@ -172,11 +240,41 @@ try {
   assert.equal(received.reference.mime, "image/png");
   const transferred = Buffer.from(await (await fetch(received.reference.url)).arrayBuffer());
   assert.deepEqual(transferred, referenceBytes);
+  const multiReferenceScene = await call("scene_create", {
+    prompt: "Reconstruct one room from its primary and side views",
+    references: ["front", "side"].map((label) => ({
+      download_url: `https://localhost:${filePort}/${label}.png`, file_id: `multi-${label}`, file_name: `${label}.png`, label,
+    })),
+  });
+  const multi = await poll(multiReferenceScene.structuredContent!.id as string);
+  assert.deepEqual(multi.references.map((image: { role: string; label: string }) => [image.role, image.label]), [["primary", "front"], ["auxiliary", "side"]]);
+  const multiGet = await call("scene_get", { sceneId: multi.id });
+  assert.equal(multiGet.content.filter((item) => item.type === "image").length, 2);
+  for (const image of multi.references) {
+    const response = await fetch(image.url);
+    assert.equal(response.headers.get("content-type"), "image/png");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), referenceBytes);
+    assert.equal((await fetch(image.url.replace(/token=[^&]+/, "token=invalid"))).status, 403);
+  }
+  const sideChunk = await call("scene_asset_chunk", { sceneId: multi.id, name: "reference-2", offset: 0 });
+  assert.equal(sideChunk.isError, undefined);
+  assert.deepEqual(Buffer.from((sideChunk.structuredContent as { data: string }).data, "base64"), referenceBytes.subarray(0, 256 * 1024));
+  // Give the viewer fixture the images downloaded through the actual host-file path.
+  await writeFile(join(root, "scene.json"), JSON.stringify({ ...exported, reference: multi.reference, references: multi.references }, null, 2));
   const view = await call("scene_view", { sceneId: id }); assert.equal(view.structuredContent!.id, id);
-  await call("scene_continue", { sceneId: id, prompt: "Keep the red cube while refining the scene" });
-  await call("scene_plan", {
+  await call("scene_continue", { sceneId: id, prompt: "Keep the red cube while refining the scene", references: [{
+    download_url: `https://localhost:${filePort}/new-view.png`, file_id: "continued-view", label: "New view",
+  }] });
+  const continued = await poll(id);
+  assert.equal(continued.stage, "planning");
+  assert.equal(continued.references[0].fileId, "continued-view");
+  await planFixture({
     sceneId: id, summary: "Preserve the red cube", steps: ["Inspect and preserve cube"],
     criteria: [{ id: "red-cube", severity: "blocker", description: "The original RedCube remains intact" }], visualThreshold: 85,
+    referenceAnchors: [
+      { id: "cube", description: "Cube", targetBox: [0.3, 0.2, 0.7, 0.8] },
+      { id: "ground", description: "Ground", targetBox: [0, 0.6, 1, 1] },
+    ],
   });
   await call("scene_edit", { sceneId: id, code: 'bpy.data.objects["RedCube"].name = "Broken"\nraise RuntimeError("Intentional integration failure")' });
   const failure = await poll(id, "failed");
@@ -186,10 +284,70 @@ try {
     sceneId: id, code: 'assert bpy.data.objects.get("RedCube") is not None\nassert bpy.data.objects.get("Broken") is None',
   });
   await poll(id);
+  const stagedCreated = await call("scene_create", { prompt: "Staged red cube" });
+  const stagedId = stagedCreated.structuredContent!.id as string; await poll(stagedId);
+  await planFixture({ sceneId: stagedId, summary: "Staged cube", steps: ["Build", "Compose", "Review"],
+    criteria: [{ id: "cube", severity: "blocker", description: "Red cube remains visible" }], visualThreshold: 80,
+    graph: [{ id: "cube", label: "Red cube", kind: "object", parentId: null, blenderObjectNames: ["RedCube"], description: "Main cube", status: "built" }],
+    workflow: { compositionApproval: true, stages: [
+      { name: "geometry", criterionIds: ["cube"], budget: 1 },
+      { name: "composition", criterionIds: ["cube"], budget: 1 },
+      { name: "materials", criterionIds: ["cube"], budget: 1 },
+      { name: "lighting", criterionIds: ["cube"], budget: 1 },
+      { name: "final", criterionIds: ["cube"], budget: 1 },
+    ] },
+  });
+  const stagedReview = (iteration: number) => ({ sceneId: stagedId, iteration,
+    criteria: [{ id: "cube", passed: true, evidence: "RedCube visible in render" }],
+    observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible red cube", actual: "Red cube visible",
+      evidence: "Rendered PNG and Blender object summary" }],
+    visualScore: 90, regressions: [], repairable: false, nextAction: "Continue stage" });
+  await call("scene_edit", { sceneId: stagedId, code: await readFile("tests/scene.py", "utf8") });
+  await poll(stagedId); await reviewFixture(stagedReview(1));
+  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.objects['RedCube'].data.vertices[0].co.x += 0.2"});
+  const scopeFailure=await poll(stagedId,"failed");assert.match(scopeFailure.error,/Stage scope violation/);assert.equal(scopeFailure.iteration,1);
+  await call("scene_edit", { sceneId: stagedId, code: "pass" });
+  await poll(stagedId); await reviewFixture(stagedReview(2));
+  const awaiting = await poll(stagedId);
+  await writeFile(join(root,"composition.json"),JSON.stringify(awaiting,null,2));
+  assert.equal(awaiting.stage, "awaiting_review");
+  assert.equal((await call("scene_export", { sceneId: stagedId })).isError, true);
+  const checkpointPath = join(root, ".canova/runs", stagedId, "best.blend");
+  const checkpoint = await readFile(checkpointPath);
+  assert.equal((await call("scene_preview", { sceneId: stagedId })).isError, undefined);
+  const preview = await poll(stagedId);
+  assert.equal(preview.stage, "awaiting_review");
+  assert.notEqual(preview.compositionApproved, true);
+  assert.equal(preview.previewedIteration, 2);
+  assert.equal(preview.exportedIteration, undefined);
+  assert.deepEqual(await readFile(checkpointPath), checkpoint);
+  const previewChunk = await call("scene_asset_chunk", { sceneId: stagedId, name: "final.glb", offset: 0 });
+  assert.equal(previewChunk.isError, undefined);
+  assert.equal(Buffer.from((previewChunk.structuredContent as { data: string }).data, "base64").toString("ascii", 0, 4), "glTF");
+  for (const name of awaiting.reviewViews) {
+    const chunk = await call("scene_asset_chunk", { sceneId: stagedId, name, offset: 0 });
+    assert.equal(chunk.isError, undefined);
+    assert.ok((chunk.structuredContent as { size: number }).size > 1000);
+  }
+  const approval = await call("scene_review_decision", { sceneId: stagedId, approved: true });
+  assert.equal(approval.structuredContent?.stage, "edit");
+  await call("scene_edit",{sceneId:stagedId,code:"bpy.context.scene.camera.location.x += 1"});
+  assert.match((await poll(stagedId,"failed")).error,/frozen placement/);
+  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.45"});
+  await poll(stagedId);await reviewFixture(stagedReview(3));
+  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.2"});
+  assert.match((await poll(stagedId,"failed")).error,/frozen materials/);
+  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.objects['Key'].data.energy=1400"});
+  await poll(stagedId);await reviewFixture(stagedReview(4));
+  await call("scene_edit",{sceneId:stagedId,code:"bpy.context.scene.camera.location.x += 1"});
+  assert.match((await poll(stagedId,"failed")).error,/frozen placement/);
+  await call("scene_edit", { sceneId: stagedId, code: "pass" });
+  await poll(stagedId); await reviewFixture(stagedReview(5));
+  assert.equal((await call("scene_view", { sceneId: stagedId })).structuredContent?.stage, "completed");
   const report = {
-    status: "passed", tools: tools.tools.length, sceneId: id,
+    status: "passed", tools: tools.tools.length, sceneId: id, reviewPreviewVerified: true,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
-    checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS host-file image transfer", "new-request continuation", "failed-edit checkpoint recovery"],
+    checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "continued scene reference input", "failed-edit checkpoint recovery"],
   };
   await writeFile(join(root, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, evidenceDirectory: root }, null, 2));

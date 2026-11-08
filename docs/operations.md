@@ -55,6 +55,25 @@ npm start
 run on the same machine or share the same absolute run directory. Scene data is
 stored under `.canova/runs/<scene-id>/` by default.
 
+## Open the interactive preview
+
+Use `scene_view` in a client that supports MCP Apps and WebGL 2. The tool's
+embedded viewer includes the Scene Graph, orbit controls, render/3D switching,
+and composition review controls. For a scene in `awaiting_review`, first call
+`scene_preview` with its `sceneId` and poll `scene_view` until the job finishes.
+This prepares review assets without approving composition or enabling final
+export. Completed scenes use `scene_export` before opening the viewer.
+
+Chrome can display the viewer when a browser MCP Apps host connects it to the
+service. The service URL `http://127.0.0.1:4312/mcp` is a protocol endpoint, not
+a preview page. This package does not start a standalone browser host or assign
+a browser preview URL. The README screenshot was checked in a local session
+host; that temporary address is not a deployment endpoint.
+
+Review assets are stored under `previews/<iteration>/` inside the scene run;
+final exports use `artifacts/<iteration>/`. Both include the GLB, render profile,
+Scene Graph, and manifest. Keep these runtime files outside Git.
+
 ## Connect a remote service
 
 A remote plugin connection needs a reachable HTTPS service; the bundled local

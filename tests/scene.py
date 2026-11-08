@@ -7,6 +7,7 @@ bpy.ops.object.delete(use_global=False)
 bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 1))
 cube = bpy.context.object
 cube.name = "RedCube"
+cube["scene_node_id"] = "cube"
 bevel = cube.modifiers.new("Soft edges", "BEVEL")
 bevel.width = 0.08
 bevel.segments = 3

@@ -1,6 +1,6 @@
 {
   "name": "codex-blender-plugin",
-  "version": "0.1.2",
+  "version": "0.2.1",
   "description": "Generate and refine Blender scenes from images or text, with rendered previews, interactive 3D viewing, and .blend/GLB export.",
   "private": true,
   "type": "module",

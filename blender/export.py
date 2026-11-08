@@ -340,7 +340,7 @@ try:
     bpy.ops.export_scene.gltf(
         filepath=os.path.join(directory, "final.glb"),
         export_format="GLB", use_active_scene=True, use_visible=True,
-        export_apply=True, export_cameras=True, export_lights=True,
+        export_apply=True, export_cameras=True, export_lights=True, export_extras=True,
     )
     result = {"objects": len(scene.objects)}
 finally:

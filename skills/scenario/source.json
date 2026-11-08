@@ -1,0 +1,210 @@
+{
+  "repository": "https://github.com/scenario-labs/skills",
+  "revision": "e24bc7d40be97b428e7b9fd467c415366e1dd974",
+  "license": "MIT",
+  "installedAt": "2026-11-04",
+  "skills": [
+    {
+      "name": "scenario-blender-animation",
+      "sourcePath": "skills/dcc/blender/scenario-blender-animation",
+      "files": {
+        "references/critique.md": "d812f1ee483966c3b93d4fd933c34848657306978b7ce3f4e914c4cba77b7244",
+        "references/expert-notes.md": "5c585656542ca88cb2464632a9ebfd30ae758883a6a17a06845f6fb7b2036c46",
+        "references/procedures.md": "36696af04b74c7633908bbfcb817f1b5a1d51beae6e4d030e985e771be13b418",
+        "references/sources.md": "5266fdfec83f22dfe2ac8e03f96faf0a2fc1a06b5a61cf118e1eaffe1daf4cd1",
+        "scripts/bx_anim.py": "7df38e0d5c3349fc66e228aa981c5da7bbeaed3af90586a235f1a5b7e742dfe2",
+        "UPSTREAM.md": "7000c7bab1569343ee8e50ca41e34de03ec0cb7dde1e4ed6ed04a19b117caf67"
+      },
+      "localPath": "skills/scenario-blender-animation"
+    },
+    {
+      "name": "scenario-blender-blockout",
+      "sourcePath": "skills/dcc/blender/scenario-blender-blockout",
+      "files": {
+        "references/audits.md": "84410eb289e0ac344383fcda72d156fcde859f1765cbe6648800713d0d820511",
+        "references/cast.md": "57e381c91bc622c31e2c9bfa7bbcb8de893fa3cef256cc73bd647eaca120c810",
+        "references/contract.md": "05ffa5fc70c21bd5c95058068c3b41770c102feb97ebedd25553f3aeb3673dd9",
+        "references/examples.md": "f2734569b67b3d30e0065339228004a655a34de109ffe8c19675343ff241dabd",
+        "references/handoff.md": "a418ef898c5b7200de1d6f329a2bd4c59461cf0c3cf7c4188299df4c18193e5c",
+        "references/levels.md": "6d20e7466c832dafad2e543f12934d1f669317f19b35cec4eb045a8bdc7aa89d",
+        "references/plugin.md": "2d43c5ba81f1fb694f505496c4dd753a53f7a587dbaf1c3742822a80f1cade61",
+        "scripts/bx_blockout.py": "fd5011762c6c58b51495a21522be6d572d47dd574510eedba47c0e1742a3e95a",
+        "scripts/bx_kits.py": "17cc4ea523106604c07327a291a921cdff2c20636896d2d8b84724fff7c9a992",
+        "scripts/examples/ex_common.py": "cc252e8d63499dc5f13069ca6ff9f59b89a8971a0712429cc0e4f57ff5b91f8a",
+        "scripts/examples/ex1_watchmaker.py": "bfa426be719790c6d24e8247c68ac8ff470e6b1b2842c9f649d82b35fc67dab9",
+        "scripts/examples/ex2_saltflat.py": "db5886bb56b6164e4eeaeb6d4c811fc705928f0824176f0290925b604c214414",
+        "scripts/examples/ex3_bridge.py": "dd8f51eb0ce18eae45d6287204cc9976801fbd90c9e5f80efdf06a2b866b55a9",
+        "scripts/examples/ex4_sky_islands.py": "11552e6498ebd1f0b82b59bb1bf00e94602129e8ca6854e76daa24a3c76fa776",
+        "UPSTREAM.md": "12c8f87cd41e9f6239faa43cdb44b9fbdde16e2e5facba44d768f80e10e0213d"
+      },
+      "localPath": "skills/scenario-blender-blockout"
+    },
+    {
+      "name": "scenario-blender-expert",
+      "sourcePath": "skills/dcc/blender/scenario-blender-expert",
+      "files": {
+        "references/blender-5.2-deltas.md": "a62d17344b968501b46f333ddc9badb8ebdb6c8a23cc1be32c07aff0d85d909d",
+        "references/bpy-reliability.md": "d5b138c58fc66fe6bb1709cfd1748d5ceb959bd8e7b34460e4ca9a622af698f9",
+        "scripts/bx_audit.py": "a2c99225730b1b44eade7033ae600f17c29c94ce9992a6cf7030d2dfcbaebf6b",
+        "scripts/bx_gui.py": "d5c020f27d2714f7f773da30cfa190017be453a621bb45f1eccececa3a33d60c",
+        "scripts/bx_review.py": "5b274739b2a8ed26b3fe144e0d6ed15e51aee8e52b2852b51d5f6f464e939106",
+        "UPSTREAM.md": "049f0ecd4bbbdc3e6ee09beac9ce5f262d6970f6932221e20e0420bf492bd5f2"
+      },
+      "localPath": "skills/scenario-blender-expert"
+    },
+    {
+      "name": "scenario-blender-export",
+      "sourcePath": "skills/dcc/blender/scenario-blender-export",
+      "files": {
+        "references/engines.md": "33ca4e048d8544f85614ce61d0d3aa8959ae3bddf9e7ca1b7a365dc17126973c",
+        "scripts/bx_export.py": "f79feaf66769aa22a3c4a5b775d0de6dd8530708b69bb9afce06e6034678636a",
+        "UPSTREAM.md": "742d381564dd1709b6054ea92caf6d48566a91ffa1d8032415fc3d1f6200d475"
+      },
+      "localPath": "skills/scenario-blender-export"
+    },
+    {
+      "name": "scenario-blender-geometry-nodes",
+      "sourcePath": "skills/dcc/blender/scenario-blender-geometry-nodes",
+      "files": {
+        "references/critique.md": "7ef7b95d7b74853895d225ff791b5954e42f50a4b2da620d763f9caef7eb6693",
+        "references/expert-notes.md": "7447c291501f18d97fbcf239d6367ff87a119d4be801903232d61b09594f7863",
+        "references/procedures.md": "b90765f73dc254c964ed0af87d64a5c660d2e1c9fcb06b471ab21aeafc652fdc",
+        "references/sources.md": "138196d033430138ab7a322ad213168d8bf3604647ff70443cab293ec61bd5cd",
+        "scripts/bx_gn.py": "b325317f54e1e944f33f1af91e141c20bd5ebe7d3a3c487738fa70fd725639e0",
+        "UPSTREAM.md": "2cac914718e24041734a15fa54b0cb1bd2d5a3e9a19570fd6ac34dc507722b7e"
+      },
+      "localPath": "skills/scenario-blender-geometry-nodes"
+    },
+    {
+      "name": "scenario-blender-grease-pencil",
+      "sourcePath": "skills/dcc/blender/scenario-blender-grease-pencil",
+      "files": {
+        "references/critique.md": "af87d2c4a18f46825d47482dcba305d4ed7795f2a1b25102e017c90d1e7efb41",
+        "references/expert-notes.md": "75433ac5bd2bc36719bff588d21d30fa34c72308ac05f9d729d2c25973b1b46c",
+        "references/procedures.md": "8aa7faaf29c1cd1df0c6f121a2cbaa7d46eec99693fabaa37544eda7b62f8e96",
+        "references/sources.md": "6c7e84a7912375a7df4996ede3e95bcfa4ac797636270420b9034f4c89f572a4",
+        "scripts/bx_gp.py": "60333346c7ab8c894870d00e6fac692496f9a76ff89595b585a41a22a055e07c",
+        "UPSTREAM.md": "507f60992492c9d63b498494aaeab2f0a76ca35d92e31c18e1ce29470d36169d"
+      },
+      "localPath": "skills/scenario-blender-grease-pencil"
+    },
+    {
+      "name": "scenario-blender-hair",
+      "sourcePath": "skills/dcc/blender/scenario-blender-hair",
+      "files": {
+        "references/critique.md": "6703f13c42b9d072b886aa8ee7e9dd9834b829b842cf893c2e0ddaa4b970fdaf",
+        "references/expert-notes.md": "079a90ef257d0664c47c6d3266825367fd38e6a5516c84bf2a2943cf89a49889",
+        "references/procedures.md": "17d1ea9ef1758d81f4f22178c4990f1b1f56e16a3d813097b76504147870ebfd",
+        "references/sources.md": "9aab7622c80322128b9727c2c7d5d1385d8f560e1b5da2e3fc4caedfc8fa0fc6",
+        "scripts/bx_hair.py": "903ab71cc8ad4a45b90fa1c639f981a6c9ddbc29c91627296675e5d203e22512",
+        "UPSTREAM.md": "2cb34c57d4b8cb4f6e8154e5d337a308ecb66df52cab4b16ba49e9a26caf5e3b"
+      },
+      "localPath": "skills/scenario-blender-hair"
+    },
+    {
+      "name": "scenario-blender-hard-surface",
+      "sourcePath": "skills/dcc/blender/scenario-blender-hard-surface",
+      "files": {
+        "references/critique.md": "d89e787000aa25a2503b6e3adb21d9a84610bca5e86697644be48b8709b76ee7",
+        "references/expert-notes.md": "bcd97b8ae3fd9989e49b455616316d9f95393d1d78664f888fb62ca74451a6fc",
+        "references/procedures.md": "88ec288388ab63a7db256f8bb90ad242a2a78ac2ce08cfdf39372e5cc6536111",
+        "references/sources.md": "f410fb1c53afa9079aa1efcd380f1c4706eaac52a4bc4d6bd7e8922063054920",
+        "scripts/bx_hardsurface.py": "a7eb60b356c16609573ea8bb0005cd1278e908dcd7593eb7ff1f749ceb7b9999",
+        "UPSTREAM.md": "2bfcc5fbab235b0aa6f94d73d9c01521b0143c89a5dc7ba994fa49ee0f3d2510"
+      },
+      "localPath": "skills/scenario-blender-hard-surface"
+    },
+    {
+      "name": "scenario-blender-lighting-rendering",
+      "sourcePath": "skills/dcc/blender/scenario-blender-lighting-rendering",
+      "files": {
+        "references/critique.md": "c5ce3c0ceed71ce5635cefff90c445a912e4776d25b74afe9076ef649d2268a0",
+        "references/expert-notes.md": "646d153bd4fe0c4f9dda42f438f2b73428488502776120825482cb9449decb5b",
+        "references/procedures.md": "f8578a9c9738d5610c9bdc7638287e96d2ce2b955c21b089083b5855de0df2e8",
+        "references/sources.md": "a2944499cc3efc7dc5cd051a8362b3b162625c5d213f05255cbe4326ad4b4cfb",
+        "scripts/bx_light.py": "6f6624765f2afdfebc0efc4b77313fee3cacef9e7d983bcb3a95c88c8fa2f8f2",
+        "UPSTREAM.md": "2d428bcf7d7af12be58a680dc670fb965335b742bb7fa69fc560870a7a45403a"
+      },
+      "localPath": "skills/scenario-blender-lighting-rendering"
+    },
+    {
+      "name": "scenario-blender-previs-storyboard",
+      "sourcePath": "skills/dcc/blender/scenario-blender-previs-storyboard",
+      "files": {
+        "references/critique.md": "6fa0e16993da3852327f5d077bb55015f38d608a6aebfd02ef25f588b5fcbe09",
+        "references/expert-notes.md": "f0278d0d1d85b4b42486a9e1b5c21442eaff72f9d26e3bb725516ba37287ee93",
+        "references/procedures.md": "8a5688e27882bb462e8a01cec1d1b0738d18f22efffd58f2479b162143c616ac",
+        "references/sources.md": "4519a47d4d30b4bdde0a317c0186144d8a8396d0a7ea9f81f4c07de1c6db8db6",
+        "scripts/bx_previs.py": "8fdbcfb77f42bbfaac403bff5a163d0a7f741e2813c671172c5f068f607572ad",
+        "UPSTREAM.md": "6cd8d335f2c98d05d2a03f1440224531c8ac082ad1b21ac5ab513d926b261d22"
+      },
+      "localPath": "skills/scenario-blender-previs-storyboard"
+    },
+    {
+      "name": "scenario-blender-retopology",
+      "sourcePath": "skills/dcc/blender/scenario-blender-retopology",
+      "files": {
+        "references/critique.md": "95fa8d3c6be6e760521f904f34e3db63690c1afaad8759b31ea6922bd7ed0ad1",
+        "references/expert-notes.md": "3d89481d68b64c49839ecde97fc87fabce224381de493e399500892fdfcd8b31",
+        "references/procedures.md": "0350751a8985e3606c2287ae0f1aea3c21790f62617c190e5b4d449dc9736b97",
+        "references/sources.md": "cf814b8cf4ac66328681b8e2ab7ef2468ec3ddbdb25c7c8105920c915511c446",
+        "scripts/bx_retopo.py": "81bc2063c7c9ebe69c80b54041d1b70ce7c2fd47538a1d475cc0943f785f3266",
+        "UPSTREAM.md": "2578f4de892cd107df8aefa8892ccf1b348a1720a6ae2e9798b6ae0120362f08"
+      },
+      "localPath": "skills/scenario-blender-retopology"
+    },
+    {
+      "name": "scenario-blender-rigging",
+      "sourcePath": "skills/dcc/blender/scenario-blender-rigging",
+      "files": {
+        "references/critique.md": "366c6403bd5aae35fb6a583519316d0027b54400ab0889abe9279b53f4249898",
+        "references/expert-notes.md": "c7169124cf98ee027682cf9f36040329365ab984896c741696639497cf8bb58e",
+        "references/face-shapes.md": "2f178f59ecd83f99c2b6173e16d2a41e82d208b941bf41149062f101246f196c",
+        "references/procedures.md": "a42ffe66ee75f4963f4b48922e1464e5d9207afdfc8341feab0a03dde6fb61ed",
+        "references/sources.md": "2f5dedda8d34476e9a9b71e1b7bac69b653c3613f87a575edaa7660b8d7270ac",
+        "scripts/bx_rig.py": "33a0a60ca321245b9016938953a884b76f8ac78fd34f4d11d42a8135881749ce",
+        "UPSTREAM.md": "21f40e2bd29e110f0a8ae32204f74a866e292431b5769e002783b3a1ac13e3c6"
+      },
+      "localPath": "skills/scenario-blender-rigging"
+    },
+    {
+      "name": "scenario-blender-sculpting",
+      "sourcePath": "skills/dcc/blender/scenario-blender-sculpting",
+      "files": {
+        "references/critique.md": "4289b53500cf6d20998276280c397132dd9b7532e4327796f5ec5c7698c4a2ef",
+        "references/expert-notes.md": "5d53505160bf048186e63f35cecc25800fd0389da10f094469a5c21028d599b5",
+        "references/procedures.md": "ea32ebb2682a90389fa760e76a6a52403a539b0af42c3e4cbddf948a0fcf4c6b",
+        "references/sources.md": "a845b86bed121bf1f3c6c1c771b28f0198c1da8e2ea715d345f9dafa2fbcd7ed",
+        "scripts/bx_sculpt.py": "3921f0a2fde493be94ae0c454d3e5cafc1433e0dc5be08adc6763d78a3d4f603",
+        "UPSTREAM.md": "7ac5f27f2ddd320f38f9d47993eedaa8f0e5988b0004ef64ea7d1e188bbdb699"
+      },
+      "localPath": "skills/scenario-blender-sculpting"
+    },
+    {
+      "name": "scenario-blender-texturing-shading",
+      "sourcePath": "skills/dcc/blender/scenario-blender-texturing-shading",
+      "files": {
+        "references/critique.md": "454eb32ef7e93f0fc1434b98f47a108539de8b1846696ccfd096322e7f33845c",
+        "references/expert-notes.md": "d03e0b14a3dc3904ec8e540ce8e6aa64154295fe01127d39df1597bb3fa900b7",
+        "references/procedures.md": "9d28a48e59f7917d88a0749d18a2a71b2e7dbf5730fc3777613383143a8c7c9f",
+        "references/sources.md": "56470f26b9d060ff6081c62364bb9795347c99c16277a3d5a2f5571c3ea32c82",
+        "scripts/bx_materials.py": "15877d81bea8d2c95e1393b7c6ce8c96182fdb1a8d26dfa6bfbaf2d88886e72b",
+        "UPSTREAM.md": "a178cdb8cee1e0406d0eacd577aa9fcc3bce5766abcf8fba274f55b8c4aebe3a"
+      },
+      "localPath": "skills/scenario-blender-texturing-shading"
+    },
+    {
+      "name": "scenario-blender-uv-baking",
+      "sourcePath": "skills/dcc/blender/scenario-blender-uv-baking",
+      "files": {
+        "references/critique.md": "d056073cab49930d4029878ee04e4c33fbbd382311893e8cba8ee905f59fa5c9",
+        "references/expert-notes.md": "d3d9ee3e33a5e6ce1faff9cbb99bbf9032b5e63159e899fae9bf61f07df80b03",
+        "references/procedures.md": "e11de11d218bdad29230c87a724dc58ab17b50cb2f9c4d2d897b29d57c3a890a",
+        "references/sources.md": "0003089cb12c626b0a4fb85a49222917f4beebda7b67ad85872c1ec11f2ae7b8",
+        "scripts/bx_uvbake.py": "fea0c2ebaf3a82897e28750afdea613d96949ca0dc018db8c3f88bb023a04451",
+        "UPSTREAM.md": "46896959cd9220989eae6ec253c19c8733d5dd587011ccda7f75ddd11a288a61"
+      },
+      "localPath": "skills/scenario-blender-uv-baking"
+    }
+  ]
+}
