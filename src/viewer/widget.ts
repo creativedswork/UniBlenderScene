@@ -18,9 +18,12 @@ type Snapshot = {
   artifacts: { name: string; url: string }[];
   plan?: { graph?: GraphNode[]; workflow?: { stages: { name: string }[] } }; workflowIndex?: number;
   reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
+  workflowState?: { phase: string | null; status: string; compositionApproved: boolean; presentation: {
+    mode: "structural" | "appearance"; purpose: "work" | "confirmation" | "delivery"; source: string; iteration: number;
+  } };
 };
 type Profile = {
-  version: number; colorManagement: { viewTransform: string; exposure: number; displayLut?: { uri: string; size: number; maxLinear: number } };
+  version: number; previewMode?: string; source?: { kind: string; purpose: string; phase: string | null; iteration: number }; colorManagement: { viewTransform: string; exposure: number; displayLut?: { uri: string; size: number; maxLinear: number } };
   render: { resolutionX: number; resolutionY: number; filmTransparent: boolean };
   world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number };
   camera: { name: string; projectionMatrix?: number[]; lens?: number; dof?: { enabled: boolean; focusDistance: number; fStop: number; blades: number; rotation: number; ratio: number } } | null;
@@ -29,7 +32,7 @@ type Profile = {
   lights: { name: string; type: string; color: number[]; energy: number; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const app = new App({ name: "CodexBlenderPlugin viewer", version: "0.2.1" }, {});
+const app = new App({ name: "UniBlenderScene viewer", version: "0.3.3" }, {});
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
 let referenceListKey = "", reviewImagesKey = "";
 let graphNodes: GraphNode[] = [], selectedNodeId = "";
@@ -391,10 +394,16 @@ async function loadModel(url: string) {
     const profileResponse = await fetch(profileURL);
     if (!profileResponse.ok) throw new Error("Export profile could not be loaded.");
     const profile = await profileResponse.json() as Profile;
+    const state = snapshot?.workflowState, expectedPresentation = state?.presentation;
+    if (expectedPresentation?.mode === "structural" && (profile.previewMode !== "structural" ||
+        profile.source?.kind !== expectedPresentation.source || profile.source.purpose !== expectedPresentation.purpose ||
+        profile.source.iteration !== expectedPresentation.iteration || profile.source.phase !== state?.phase)) {
+      throw new Error("Regenerate the structural gray preview with scene_preview before reviewing composition.");
+    }
     const graphResponse = await fetch(await assetURL("scene-graph.json", url));
     if (!graphResponse.ok) throw new Error("Scene Graph could not be loaded.");
     const exportedGraph = await graphResponse.json() as GraphFile;
-    if (exportedGraph.iteration !== (snapshot?.exportedIteration ?? snapshot?.previewedIteration) ||
+    if (exportedGraph.iteration !== (expectedPresentation?.iteration ?? snapshot?.exportedIteration ?? snapshot?.previewedIteration) ||
       (profile as Profile & { iteration?: number }).iteration !== exportedGraph.iteration) {
       throw new Error("Preview files belong to different iterations.");
     }
@@ -405,6 +414,7 @@ async function loadModel(url: string) {
     if (selectedNodeId && !graphNodes.some((node) => node.id === selectedNodeId)) selectedNodeId = "";
     renderGraph();
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.domElement.dataset.previewMode = profile.previewMode ?? "final";
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = profile.colorManagement.displayLut ? THREE.NoToneMapping :
@@ -615,15 +625,23 @@ function receive(data: unknown) {
     renderGraph();
   }
   const busy = next.job && ["queued", "running"].includes(next.job.status);
+  const state = next.workflowState, presentation = state?.presentation;
+  const structural = presentation?.mode === "structural", pending = next.stage === "awaiting_review";
   el("status").textContent = busy ? next.job!.kind === "references" ? "Loading reference views" :
     next.job!.kind === "create" ? "Preparing scene" : next.job!.kind === "preview" ? "Preparing 3D review preview" : `${next.job!.kind === "export" ? "Exporting" : "Rendering"} scene` :
     next.error ? "Scene needs attention" : next.stage === "completed" ? "Ready" :
     next.stage === "best_effort" ? "Best version" : next.stage === "awaiting_review" ? "Confirm composition" :
     next.stage === "review" ? "Awaiting review" :
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
-  el("review-panel").hidden = next.stage !== "awaiting_review";
-  el("review-gaps").textContent = (next.remainingGaps?.length ? `Remaining differences: ${next.remainingGaps.join(", ")}. ` : "") + "Review geometry, wall directions and camera. Auxiliary views hide walls and ceilings to reveal the layout.";
-  if (next.stage === "awaiting_review" && !busy && next.reviewViews) {
+  if (!busy && !next.error && presentation) el("status").textContent = `${state!.phase ?? "Planning"} / ${state!.status} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  el("review-panel").hidden = !pending && !(structural && next.reviewViews?.length);
+  el("review-panel").querySelector("h2")!.textContent = pending ? "Confirm geometry and composition" : "Structural work preview — not approved";
+  for (const name of ["review-approve", "review-composition", "review-geometry", "review-feedback"]) {
+    const control = el<HTMLButtonElement | HTMLInputElement>(name);
+    control.hidden = !pending; control.disabled = Boolean(busy);
+  }
+  el("review-gaps").textContent = (next.remainingGaps?.length ? `Remaining differences: ${next.remainingGaps.join(", ")}. ` : "") + `${pending ? "Review" : "Work draft: review"} geometry, wall directions and camera in neutral gray. Original materials are preserved for later stages. Auxiliary views hide walls and ceilings to reveal the layout.`;
+  if (structural && !busy && next.reviewViews) {
     const key = `${next.id}:${next.iteration}:${next.job?.id ?? ""}:${next.reviewViews.join(",")}`;
     if (key !== reviewImagesKey) {
       reviewImagesKey = key;
@@ -639,14 +657,20 @@ function receive(data: unknown) {
   el<HTMLButtonElement>("send").disabled = busy || !["completed", "best_effort"].includes(next.stage);
   const render = ["completed", "best_effort"].includes(next.stage) ? next.bestRenderUrl : next.renderUrl;
   if (render) {
-    const name = ["completed", "best_effort"].includes(next.stage) ? "best.png" : "render";
+    const name = structural && next.reviewViews?.includes("review-main.png") ? "review-main.png" : ["completed", "best_effort"].includes(next.stage) ? "best.png" : "render";
     el("empty").textContent = "Loading scene render";
-    void assetURL(name, `${next.iteration}:${next.best?.iteration ?? 0}`).then((url) => {
-      if (snapshot?.id !== next.id) return;
+    void assetURL(name, `${next.stage}:${next.iteration}:${next.best?.iteration ?? 0}:${next.job?.id ?? ""}`).then((url) => {
+      if (snapshot?.id !== next.id || snapshot?.stage !== next.stage) return;
       el<HTMLImageElement>("render").src = url;
+      el("render").dataset.asset = name;
       el("empty").style.display = "none";
       setMode(mode);
     }).catch((error) => { console.error("Scene render failed:", error); message("Scene render could not be loaded."); });
+  } else {
+    el("render").removeAttribute("src");
+    el("render").style.display = "none";
+    el("empty").textContent = structural ? "Preparing structural gray views" : "Current-stage render is not ready";
+    el("empty").style.display = "grid";
   }
   const views = referenceViews(next);
   const key = `${next.id}:${JSON.stringify(views)}`;

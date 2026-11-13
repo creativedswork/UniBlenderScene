@@ -10,6 +10,9 @@ if (url.username || url.password || url.search || url.hash) {
   throw new Error("Use an origin without credentials, query parameters, or fragments.");
 }
 const manifest = JSON.parse(await readFile("mcp.json", "utf8"));
-manifest.mcpServers["codex-blender"].url = `${url.origin}/mcp`;
+manifest.mcpServers["uni-blender-scene"].url = `${url.origin}/mcp`;
+const claude = JSON.parse(await readFile("harnesses/claude-code/mcp.json", "utf8"));
+claude.mcpServers["uni-blender-scene"].url = `${url.origin}/mcp`;
 await writeFile("mcp.json", `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(`Configured ${url.origin}/mcp; set PUBLIC_BASE_URL to the same origin.`);
+await writeFile("harnesses/claude-code/mcp.json", `${JSON.stringify(claude, null, 2)}\n`);
+console.log(`Configured Codex and Claude Code at ${url.origin}/mcp; set PUBLIC_BASE_URL to the same origin.`);

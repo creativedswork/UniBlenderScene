@@ -14,7 +14,7 @@ and the builder does not review its own work when the roles are split. Only the
 coordinator may begin a new user request or export the final result. Pass scene
 ID, current iteration, the frozen criteria, and relevant evidence to each role.
 
-Optional Codex agent templates are in `codex/agents/`. Copy them into the target
+Optional Codex agent templates are in `harnesses/codex/agents/`. Copy them into the target
 project's `.codex/agents/` to register the roles in Codex. They remain templates
 until installed; portable plugin installation does not automatically register
 these TOML files. ChatGPT hosts may use different delegation APIs or run the

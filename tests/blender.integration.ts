@@ -2,15 +2,18 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createServer as netServer } from "node:net";
 import { createServer as httpsServer } from "node:https";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { BlenderClient } from "../src/service/blender.js";
+import { testBoundedRevisionGuard } from "./bounded-revision.integration.js";
+import { testGuardPerformance } from "./guard-performance.integration.js";
 
-const root = await mkdtemp(join(tmpdir(), "codex-blender-integration-"));
+await mkdir(".canova/runs", { recursive: true });
+const root = await mkdtemp(resolve(".canova/runs/blender-integration-"));
 const binary = process.env.BLENDER_BIN ?? (process.platform === "darwin" ? "/Applications/Blender.app/Contents/MacOS/Blender" : "blender");
 async function freePort(): Promise<number> {
   const server = netServer();
@@ -53,11 +56,11 @@ const fileServer = httpsServer({ key: await readFile(keyPath), cert: await readF
 });
 await new Promise<void>((done) => fileServer.listen(0, "127.0.0.1", done));
 const filePort = (fileServer.address() as { port: number }).port;
-const blender = spawn(binary, ["--background", "--factory-startup", "--python", resolve("blender/bridge.py"), "--", "--port", String(blenderPort)], { stdio: ["ignore", "pipe", "pipe"] });
+const blender = spawn(binary, ["--background", "--factory-startup", "--python", resolve("runtime/blender/bridge.py"), "--", "--port", String(blenderPort)], { stdio: ["ignore", "pipe", "pipe"] });
 let blenderLog = "";
 blender.stdout!.on("data", (data) => { blenderLog += data.toString(); });
 blender.stderr!.on("data", (data) => { blenderLog += data.toString(); });
-const server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
+const server = spawn(process.execPath, ["--import", "tsx", "src/service/server.ts"], {
   env: {
     ...process.env, HOST: "127.0.0.1", PORT: String(port), PUBLIC_BASE_URL: origin,
     MCP_API_KEY: apiKey, BLENDER_MCP_PORT: String(blenderPort), RUNS_ROOT: join(root, ".canova/runs"),
@@ -112,8 +115,8 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 15);
-  const widget = await client.readResource({ uri: "ui://codex-blender/viewer.html" });
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 16);
+  const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
   const id = created.structuredContent!.id as string; await poll(id);
@@ -130,6 +133,12 @@ try {
   assert.equal(rendered.stage, "review");
   const evidence = await call("scene_get", { sceneId: id });
   assert.ok(evidence.content.some((item) => item.type === "image" && item.data.length > 10000));
+  const renderOnly = await call("scene_get", { sceneId: id, images: "render" });
+  assert.equal(renderOnly.content.filter((item) => item.type === "image").length, 1);
+  assert.deepEqual(renderOnly.content.find((item) => item.type === "image"), evidence.content.find((item) => item.type === "image"));
+  const stateOnly = await call("scene_get", { sceneId: id, images: "none" });
+  assert.equal(stateOnly.content.some((item) => item.type === "image"), false);
+  assert.equal(stateOnly.structuredContent!.id, id);
   assert.ok(rendered.summary.objects.some((object: { name: string }) => object.name === "RedCube"));
   assert.ok(rendered.summary.objectCount >= rendered.summary.objects.length);
   const inspected = await call("scene_get", { sceneId: id, objectName: "RedCube" });
@@ -250,6 +259,9 @@ bpy.context.scene.render.resolution_y=128
   assert.deepEqual(multi.references.map((image: { role: string; label: string }) => [image.role, image.label]), [["primary", "front"], ["auxiliary", "side"]]);
   const multiGet = await call("scene_get", { sceneId: multi.id });
   assert.equal(multiGet.content.filter((item) => item.type === "image").length, 2);
+  const referenceOnly = await call("scene_get", { sceneId: multi.id, images: "references", referenceName: "reference-2" });
+  assert.equal(referenceOnly.content.filter((item) => item.type === "image").length, 1);
+  assert.deepEqual(Buffer.from(referenceOnly.content.find((item) => item.type === "image")!.data as string, "base64"), referenceBytes);
   for (const image of multi.references) {
     const response = await fetch(image.url);
     assert.equal(response.headers.get("content-type"), "image/png");
@@ -298,22 +310,51 @@ bpy.context.scene.render.resolution_y=128
     ] },
   });
   const stagedReview = (iteration: number) => ({ sceneId: stagedId, iteration,
-    criteria: [{ id: "cube", passed: true, evidence: "RedCube visible in render" }],
-    observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible red cube", actual: "Red cube visible",
+    criteria: [{ id: "cube", passed: true, evidence: "Cube geometry is visible; original red source material is preserved" }],
+    observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible cube geometry", actual: "Cube geometry visible in gray rendering",
       evidence: "Rendered PNG and Blender object summary" }],
     visualScore: 90, regressions: [], repairable: false, nextAction: "Continue stage" });
   await call("scene_edit", { sceneId: stagedId, code: await readFile("tests/scene.py", "utf8") });
-  await poll(stagedId); await reviewFixture(stagedReview(1));
+  const geometry = await poll(stagedId);
+  assert.equal(geometry.workflowState.phase, "geometry");
+  assert.deepEqual(geometry.workflowState.presentation, { mode: "structural", purpose: "work", source: "current", iteration: 1, contentIteration: 1 });
+  const geometryPng = await readFile(join(root, ".canova/runs", stagedId, geometry.render));
+  assert.equal(geometryPng[25], 0, "Geometry edits automatically render grayscale PNGs");
+  const geometrySource = await readFile(join(root, ".canova/runs", stagedId, "current.blend"));
+  await call("scene_preview", { sceneId: stagedId });
+  const workPreview = await poll(stagedId);
+  assert.equal(workPreview.stage, "review");
+  assert.equal(workPreview.workflowState.phase, "geometry");
+  assert.equal(workPreview.workflowState.presentation.purpose, "work");
+  assert.equal(workPreview.iteration, 1);
+  assert.equal(workPreview.startIteration, geometry.startIteration);
+  assert.equal(workPreview.compositionApproved, false);
+  assert.deepEqual(await readFile(join(root, ".canova/runs", stagedId, "current.blend")), geometrySource);
+  const workProfile = JSON.parse(await readFile(join(root, ".canova/runs", stagedId, "previews/1/render-profile.json"), "utf8"));
+  assert.deepEqual(workProfile.source, { kind: "current", purpose: "work", phase: "geometry", iteration: 1, contentIteration: 1 });
+  await writeFile(join(root, "geometry.json"), JSON.stringify(workPreview, null, 2));
+  assert.equal((await call("scene_review_decision", { sceneId: stagedId, approved: true })).isError, true);
+  assert.equal((await call("scene_export", { sceneId: stagedId })).isError, true);
+  await reviewFixture(stagedReview(1));
   await call("scene_edit",{sceneId:stagedId,code:"bpy.data.objects['RedCube'].data.vertices[0].co.x += 0.2"});
   const scopeFailure=await poll(stagedId,"failed");assert.match(scopeFailure.error,/Stage scope violation/);assert.equal(scopeFailure.iteration,1);
   await call("scene_edit", { sceneId: stagedId, code: "pass" });
   await poll(stagedId); await reviewFixture(stagedReview(2));
   const awaiting = await poll(stagedId);
-  await writeFile(join(root,"composition.json"),JSON.stringify(awaiting,null,2));
   assert.equal(awaiting.stage, "awaiting_review");
+  assert.match(awaiting.renderUrl, /review-main\.png/);
+  assert.equal(awaiting.bestRenderUrl, awaiting.renderUrl);
+  const grayImage = await call("scene_get", { sceneId: stagedId, images: "render" });
+  const mainGray = await readFile(join(root, ".canova/runs", stagedId, "review-main.png"));
+  assert.deepEqual(Buffer.from(grayImage.content.find((item) => item.type === "image")!.data as string, "base64"), mainGray);
+  const grayAlias = await fetch(awaiting.bestRenderUrl.replace("review-main.png", "best.png"));
+  assert.equal(grayAlias.status, 200);
+  assert.deepEqual(Buffer.from(await grayAlias.arrayBuffer()), mainGray, "Existing best.png URLs must serve structural evidence while awaiting approval");
   assert.equal((await call("scene_export", { sceneId: stagedId })).isError, true);
   const checkpointPath = join(root, ".canova/runs", stagedId, "best.blend");
   const checkpoint = await readFile(checkpointPath);
+  const currentPath = join(root, ".canova/runs", stagedId, "current.blend");
+  const workingScene = await readFile(currentPath);
   assert.equal((await call("scene_preview", { sceneId: stagedId })).isError, undefined);
   const preview = await poll(stagedId);
   assert.equal(preview.stage, "awaiting_review");
@@ -321,6 +362,38 @@ bpy.context.scene.render.resolution_y=128
   assert.equal(preview.previewedIteration, 2);
   assert.equal(preview.exportedIteration, undefined);
   assert.deepEqual(await readFile(checkpointPath), checkpoint);
+  assert.deepEqual(await readFile(currentPath), workingScene);
+  const previewDirectory = join(root, ".canova/runs", stagedId, "previews/2");
+  const structuralBytes = await readFile(join(previewDirectory, "final.glb"));
+  const structuralGltf = JSON.parse(structuralBytes.subarray(20, 20 + structuralBytes.readUInt32LE(12)).toString("utf8"));
+  assert.equal(structuralGltf.images?.length ?? 0, 0, "Structural GLB must omit texture images");
+  assert.equal(structuralGltf.textures?.length ?? 0, 0);
+  assert.ok(structuralGltf.materials.length > 0);
+  for (const material of structuralGltf.materials) {
+    const color = material.pbrMetallicRoughness.baseColorFactor;
+    assert.ok(Math.abs(color[0] - color[1]) < 1e-6 && Math.abs(color[1] - color[2]) < 1e-6);
+    assert.equal(color[3], 1);
+    assert.equal(material.pbrMetallicRoughness.baseColorTexture, undefined);
+    assert.equal(material.emissiveTexture, undefined);
+  }
+  const profilePath = join(previewDirectory, "render-profile.json");
+  const structuralProfile = JSON.parse(await readFile(profilePath, "utf8"));
+  assert.equal(structuralProfile.previewMode, "structural");
+  assert.equal(structuralProfile.world.environmentUri, null);
+  assert.deepEqual(structuralProfile.bakedObjects, []);
+  assert.equal(structuralProfile.materials.textures, 0);
+  assert.equal(structuralProfile.camera.dof.enabled, false);
+  assert.ok(structuralProfile.lights.every((light: { color: number[] }) => light.color.every((value) => value === 1)));
+  // A cached pre-upgrade preview must be hidden and rebuilt, even for the same iteration.
+  await writeFile(profilePath, JSON.stringify({ ...structuralProfile, previewMode: undefined }));
+  await writeFile(join(previewDirectory, "final.glb"), bytes);
+  const legacy = await call("scene_view", { sceneId: stagedId });
+  assert.equal((legacy.structuredContent!.artifacts as { name: string }[]).some((item) => item.name === "final.glb"), false);
+  await call("scene_preview", { sceneId: stagedId });
+  const regenerated = await poll(stagedId);
+  assert.equal(JSON.parse(await readFile(profilePath, "utf8")).previewMode, "structural");
+  assert.deepEqual(await readFile(checkpointPath), checkpoint);
+  await writeFile(join(root,"composition.json"),JSON.stringify(regenerated,null,2));
   const previewChunk = await call("scene_asset_chunk", { sceneId: stagedId, name: "final.glb", offset: 0 });
   assert.equal(previewChunk.isError, undefined);
   assert.equal(Buffer.from((previewChunk.structuredContent as { data: string }).data, "base64").toString("ascii", 0, 4), "glTF");
@@ -333,7 +406,7 @@ bpy.context.scene.render.resolution_y=128
   assert.equal(approval.structuredContent?.stage, "edit");
   await call("scene_edit",{sceneId:stagedId,code:"bpy.context.scene.camera.location.x += 1"});
   assert.match((await poll(stagedId,"failed")).error,/frozen placement/);
-  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.45"});
+  await call("scene_edit",{sceneId:stagedId,code:"assert bpy.data.objects['RedCube'].data.materials[0].name == 'Red'\nassert bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value[0] > 0.5\nbpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.45"});
   await poll(stagedId);await reviewFixture(stagedReview(3));
   await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.2"});
   assert.match((await poll(stagedId,"failed")).error,/frozen materials/);
@@ -344,8 +417,19 @@ bpy.context.scene.render.resolution_y=128
   await call("scene_edit", { sceneId: stagedId, code: "pass" });
   await poll(stagedId); await reviewFixture(stagedReview(5));
   assert.equal((await call("scene_view", { sceneId: stagedId })).structuredContent?.stage, "completed");
+  await call("scene_export", { sceneId: stagedId });
+  const finalStage = await poll(stagedId);
+  const finalStageBytes = await readFile(join(root, ".canova/runs", stagedId, `artifacts/${finalStage.exportedIteration}/final.glb`));
+  const finalStageGltf = JSON.parse(finalStageBytes.subarray(20, 20 + finalStageBytes.readUInt32LE(12)).toString("utf8"));
+  assert.ok(finalStageGltf.textures.length > 0, "Final export retains the original textures after structural approval");
+  assert.ok(finalStageGltf.materials.some((material: any) => {
+    const color = material.pbrMetallicRoughness?.baseColorFactor;
+    return color && color[0] > color[1] * 2 && color[0] > color[2] * 2;
+  }), "The red source material must survive gray preview generation");
+  const boundedRevisionCases = await testBoundedRevisionGuard(new BlenderClient("127.0.0.1", blenderPort), root);
+  const guardPerformance = await testGuardPerformance(new BlenderClient("127.0.0.1", blenderPort), root);
   const report = {
-    status: "passed", tools: tools.tools.length, sceneId: id, reviewPreviewVerified: true,
+    status: "passed", tools: tools.tools.length, sceneId: id, reviewPreviewVerified: true, boundedRevisionCases, guardPerformance,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
     checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "continued scene reference input", "failed-edit checkpoint recovery"],
   };

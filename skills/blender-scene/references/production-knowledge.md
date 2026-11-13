@@ -37,9 +37,9 @@ creation, edits, checkpoints, rendering, review, and export inside this plugin's
 
 | Knowledge operation | Plugin operation |
 | --- | --- |
-| Scene or object summary | `scene_get`, optionally with `objectName` |
+| Scene or object summary | `scene_get` with `images: "none"`, optionally with `objectName` |
 | One bounded Blender mutation | `scene_edit` |
-| Camera render evidence | `scene_get` after `scene_edit` finishes |
+| Camera render evidence | `scene_get` with `images: "render"` once after `scene_edit` finishes |
 | Global critique and next edit | `scene_review` |
 | Historical best and rollback | `SceneStore` review state |
 | Deliverable export | `scene_export` |

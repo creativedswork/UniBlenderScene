@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type { SceneNode } from "./store.js";
 
 type GltfNode = { name?: string; mesh?: number; camera?: number; children?: number[];
@@ -14,7 +14,10 @@ export function readGlbNodes(path: string): GltfNode[] {
   return json.nodes ?? [];
 }
 
-export function writeGraphExport(directory: string, iteration: number, graph: SceneNode[], outcome: string, gaps: string[]): void {
+export function writeGraphExport(directory: string, iteration: number, graph: SceneNode[], outcome: string, gaps: string[],
+  source: { blend: string; render: string; kind: string; purpose: string; phase: string | null;
+    revisionId?: string; contentIteration?: number } = { blend: "best.blend", render: "best.png", kind: "best", purpose: "delivery", phase: null },
+  sceneDirectory = resolve(directory, "../..")): void {
   const glb = join(directory, "final.glb");
   const nodes = readGlbNodes(glb);
   const index = new Map<string, number[]>();
@@ -54,10 +57,17 @@ export function writeGraphExport(directory: string, iteration: number, graph: Sc
   const graphData = { version: 1, iteration, glbSha256, nodes: output };
   writeFileSync(join(directory, "scene-graph.json"), JSON.stringify(graphData, null, 2));
   profile.iteration = iteration;
+  profile.source = { kind: source.kind, purpose: source.purpose, phase: source.phase, iteration,
+    ...(source.revisionId ? { revisionId: source.revisionId } : {}),
+    ...(source.contentIteration !== undefined ? { contentIteration: source.contentIteration } : {}) };
   writeFileSync(profilePath, JSON.stringify(profile, null, 2));
   const hash = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
+  const render = relative(directory, resolve(sceneDirectory, source.render)).replaceAll("\\", "/");
+  const blend = relative(directory, resolve(sceneDirectory, source.blend)).replaceAll("\\", "/");
   writeFileSync(join(directory, "manifest.json"), JSON.stringify({ version: 1, iteration, outcome, remainingGaps: gaps,
-    glbSha256, bestBlendSha256: hash(resolve(directory, "../../best.blend")),
-    bestRenderSha256: hash(resolve(directory, "../../best.png")),
-    files: ["../../best.blend", "../../best.png", "final.glb", "render-profile.json", "scene-graph.json"] }, null, 2));
+    previewMode: profile.previewMode,
+    source: profile.source, glbSha256, sourceBlendSha256: hash(resolve(directory, blend)),
+    sourceRenderSha256: hash(resolve(directory, render)),
+    ...(source.blend === "best.blend" ? { bestBlendSha256: hash(resolve(directory, blend)), bestRenderSha256: hash(resolve(directory, render)) } : {}),
+    files: [...(source.blend === "best.blend" ? [blend] : []), render, "final.glb", "render-profile.json", "scene-graph.json"] }, null, 2));
 }

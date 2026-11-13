@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 const baseline = JSON.parse(await readFile(new URL("./scenario-skill-sources.json", import.meta.url), "utf8"));
-const headers = { Accept: "application/vnd.github+json", "User-Agent": "CodexBlenderPlugin-upstream-check" };
+const headers = { Accept: "application/vnd.github+json", "User-Agent": "UniBlenderScene-upstream-check" };
 
 async function latestCommit(source) {
   const url = new URL(`https://api.github.com/repos/${baseline.repository}/commits`);

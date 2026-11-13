@@ -1,0 +1,8 @@
+{
+  "name": "uni-blender-scene",
+  "owner": { "name": "CreativeDSWork" },
+  "metadata": { "description": "Shared Blender scene workflows for agent harnesses." },
+  "plugins": [
+    { "name": "uni-blender-scene", "source": "./", "description": "Build and preview Blender scenes across agent harnesses." }
+  ]
+}

@@ -8,6 +8,33 @@ description: Build or refine Blender scenes from text or reference images, revie
 Use the host model for planning, Python generation, and visual review. The MCP
 service owns scenes, checkpoints, convergence decisions, rendering, and export.
 
+For a scene request, this Skill coordinates the whole scene. Provider generation
+is an asset substep; after successful delivery, return to the
+[asset workflow](references/assets.md) and continue the frozen scene plan.
+A standalone Provider delivery does not complete the scene request.
+
+Use each response's `workflowState` as the authority. `phase` is the production
+stage; `status` is the operation state. `presentation` identifies the required
+mode, purpose, source and iteration. Do not infer the phase from conversation
+text, image appearance, file names or `stage` alone. On resume, read `scene_view`
+and follow that state without resetting it.
+When operating a scene, never edit `run.json`, `stage` or `workflowIndex` directly,
+and never overwrite images to simulate a completed stage. Only the scene tools
+may transition the stored workflow.
+
+Geometry and composition automatically render gray work images. Use
+`scene_review_views` or `scene_preview` to show the current working iteration
+before it has passed review; the latter also prepares missing five-view evidence
+and a gray GLB. These are work drafts, can contain reported defects and do not
+advance the workflow, consume edit rounds or authorize approval. When status is
+`awaiting_review`, the source becomes the preserved composition checkpoint and
+the purpose becomes confirmation. Only this status permits a user approval.
+Materials, lighting and final work use appearance renders. Completed/best-effort
+delivery uses the selected best version. Label deliveries with the returned
+phase, purpose and source iteration. Never substitute old views or a colored
+working render when current gray evidence is unavailable; generate the required
+evidence through the service or report that it is not ready.
+
 1. For a new scene, call `scene_create` with the user's request and every supplied
    host file object in `references` (1-6 images of the same scene). Respect the
    user's primary-view choice; otherwise use attachment order. Put the primary
@@ -16,7 +43,8 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    when viewpoints are known; leave unknown viewpoints unspecified. The legacy
    `reference` field accepts one image; use only one input form. Never invent
    file IDs or download URLs. Resolve missing attachments before creating an
-   image-based scene. In local Codex, pass an attached image's absolute path as
+   image-based scene. In a local harness such as Codex or Claude Code, pass an
+   attached image's absolute path as
    `local_path` instead of a download object; omit `file_id`. The service must
    allow its directory through `LOCAL_REFERENCE_ROOTS`. If needed, copy only the
    supplied attachments into an approved `.canova/runs/.../inputs/` directory.
@@ -24,12 +52,15 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    the new request, and optional new `references` to append auxiliary views;
    the existing primary view is preserved, with at most 6 images in total.
 2. Poll `scene_view` while `job.status` is `queued` or `running`; it omits image
-   bytes. Call `scene_get` once the job finishes to inspect the scene and any
-   render. Stop on a failed job; inspect its error and correct the cause before
+   bytes. After creation, use `scene_get` with `images: "references"` to inspect
+   the inputs; after an edit, use `images: "render"` once for its new render.
+   Use `images: "none"` for metadata without images. Stop on a failed job; inspect its error and correct the cause before
    retrying. A failed create requires a new scene. If Blender recovery failed,
    restart the dedicated bridge and service before doing further work.
-3. Inspect every labeled reference returned by `scene_get`; use `referenceName`
-   to read individual images when needed. Reconcile all views into one spatial
+3. Inspect every labeled reference once before planning; use `referenceName`
+   to revisit a particular view only when its visual evidence is needed again.
+   Reuse reference observations while the images remain in active context; after
+   compaction or a new conversation, reload the views required for the next check. Reconcile all views into one spatial
    layout before modeling: identify shared objects, wall/window planes, depth
    order, and occlusions. Auxiliary views are observations of the same scene,
    not alternative compositions. Record uncertain or conflicting relationships
@@ -60,7 +91,8 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    views are supplied, include observable spatial criteria for their shared
    objects and planes; verify these using object transforms and the orbitable
    scene as well as the primary render. Verify GLB loading
-   and viewer interaction after export, outside `scene_review`.
+   and, when the host supports MCP Apps, viewer interaction after export,
+   outside `scene_review`.
    Every plan requires `graph` and `assets`; full reconstruction also requires
    ordered `workflow` stages ending in final.
    Give every graph node a stable ID, parent, kind, label, description and direct
@@ -68,6 +100,10 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    composition (3), materials (3), lighting (2), final (2), with criterion IDs
    for each stage. Reconstruction requires composition; its user confirmation
    cannot be disabled. Stage budgets apply to the whole scene.
+   Geometry/composition criteria must test shape, dimensions, placement,
+   occlusion and camera in gray evidence. Assign material/color and lighting
+   criteria to their appearance stages; do not fail gray evidence for lacking
+   textures or colored light.
    For a localized refinement, include only affected stages followed by final.
    Before construction, perform a separate read-only graph verification pass
    against every reference through `scene_plan_review`. Submit coverage,
@@ -88,8 +124,8 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    hidden status as the scene develops; node IDs cannot change. An object node
    may map to multiple Blender objects. Mark an object `built` only when its
    visible mesh should appear in the exported GLB.
-6. Poll `scene_view` until the edit finishes, then call `scene_get`. Inspect the
-   returned image and object summary against the primary reference, spatial
+6. Poll `scene_view` until the edit finishes, then call `scene_get` with
+   `images: "render"` once. Inspect the returned image and object summary against the primary reference, spatial
    relationships visible in every auxiliary view, and every
    frozen criterion. Use `scene_get` with `objectName` after the job finishes when
    an imported object's transform is not in the abbreviated summary. Do not
@@ -116,25 +152,35 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
    composition and final reviews.
 8. Follow the returned stage. In `edit`, make the requested correction and repeat
    the render/review loop. In `completed` or `best_effort`, call `scene_export`,
-   poll `scene_view` for completion, then open and verify the bundled `scene_view`
-   Three.js viewer. Do not substitute a GLB-only page: it omits the exported
-   render profile, Blender display transform, and path-traced lighting. Reset
-   the viewer camera and compare a 3D screenshot with the approved
-   Blender render at the same crop. Recheck the major reference anchors, large
-   light and shadow regions, and prominent materials; also orbit to compare
-   depth, window/wall placement, and occlusion with each auxiliary view. Report
-   the actual remaining gaps and provide
-   the returned GLB, Blender file, and render links. An export or viewer failure
-   is a delivery issue; do not spend a scene edit attempt to make a pre-export
-   criterion pass.
-   In `awaiting_review`, show the five neutral views. For interactive inspection,
-   call `scene_preview`, poll `scene_view` for completion, then verify tree
-   selection and orbit in the bundled viewer. This prepares review assets without
+   poll `scene_view` for completion, and provide the returned GLB, Blender file,
+   and render links. In an MCP Apps host, open the bundled `scene_view` Three.js
+   viewer, reset its camera and compare a 3D screenshot with the reviewed Blender
+   render at the same crop. Recheck major reference anchors, light and shadow
+   regions, and prominent materials; orbit to check depth, window/wall placement,
+   and occlusion against auxiliary views. Do not substitute a GLB-only page: it
+   omits the exported render profile, Blender display transform, and path-traced
+   lighting. In a CLI without MCP Apps, use the inspected render and report that
+   interactive viewing needs an MCP Apps host. Do not claim viewer
+   verification from an export alone. Report remaining gaps; an export or viewer
+   failure is a delivery issue, not a reason to spend a scene edit attempt on a
+   pre-export criterion.
+   In `awaiting_review`, show the neutral gray main image and five review views.
+   `scene_get` selects the checkpoint evidence, which may differ from the latest
+   working iteration; follow `workflowState.presentation.iteration`.
+   Call `scene_preview` and
+   poll `scene_view` for review assets. In an MCP Apps host, verify tree selection
+   and orbit in the bundled viewer; in a CLI, present the returned review links.
+   This prepares review assets without
    approving composition or advancing the stage. Wait for the user's explicit
    decision through `scene_review_decision`. Approval
    resumes the next stage from the checkpoint; revision returns to geometry or
    composition with feedback. Do not call `scene_edit` or `scene_export` while waiting.
    If view generation failed, call `scene_review_views` to retry.
+   The review GLB uses gray surfaces and neutral studio lighting on an export
+   copy; original materials and lights stay in the source `.blend` for later
+   stages. Do not strip them from the working scene to make a white model.
+   Re-run `scene_preview` after an upgrade to replace a stale source, phase or
+   iteration cache. Use work previews for geometry revisions before confirmation.
 
 Non-staged requests permit 5 regular successful edit attempts, extending to 8 only when the fifth
 review improves the best result and identifies repairable gaps. Two consecutive
@@ -157,3 +203,63 @@ If the host supports subagents and the user authorizes them, read
 [host orchestration](references/orchestration.md). Otherwise perform both roles
 sequentially in the current host. Never add a separate language model provider or
 self-hosted Agent loop.
+
+## Image history budget
+
+Always select `scene_get.images` explicitly: `references` for initial reference
+inspection, `render` for each new render, and `none` for metadata. Use
+`referenceName` for one particular reference. Omission retains the legacy
+all-images response; avoid it in iterative work. Do not read the same render
+again through `Read`, screenshots, or another image tool unless a new visual
+question requires it. The viewer can show images to the user without requiring
+the model to repeatedly ingest them.
+
+Count image blocks from every source in the current conversation, including
+`Read`, screenshots, external Provider results, references and render reviews.
+Repeated copies count again. Use the host's count when available, otherwise
+keep a conservative running estimate. The observed TTADK GPT route rejects
+requests above 50 images; checkpoint around 35 to leave room for references,
+five-view review and final evidence. Use a lower budget if the active provider
+requires it. A smaller image still counts as an image.
+
+Before the next visual batch could exceed that budget, write a text handoff to
+`.canova/runs/<scene-id>/handoff.md`: scene ID, current stage/iteration, frozen
+plan and criterion IDs, reference labels, image paths, observed differences,
+composition approval state, and next tool action. Keep signed URLs and credentials
+out of the handoff. Use host compaction only if it actually removes old image
+blocks; otherwise continue in a fresh conversation with that handoff. Read
+`scene_view` first and reload only the visual evidence needed for the next step.
+If file writing or context switching is unavailable, return the handoff text
+and ask the operator to save it and open a fresh conversation.
+Do not restart the scene, reset stage budgets, or record approval during a
+conversation handoff. Do not use `scene_continue` merely to change conversations.
+
+## Explicit finite revisions
+
+When the user explicitly authorizes additional local repair rounds, use
+`scene_revise`, not `scene_continue`, empty edits or a fabricated passing review.
+Read `scene_view` first and bind its exact phase, status, iteration and updatedAt
+with a unique requestId. Supply the additional 1–8 round grant, feedback and
+non-group graph node scope. A rejection of structure alone grants no rounds.
+The service archives previous checkpoints/state and tracks successful revision
+edits separately; original planned budgets, old spending and reviews remain.
+Unknown legacy spending is reported as unknown, never invented as spare rounds.
+Failed transactions reuse their candidate and do not spend a successful round.
+
+Only scoped geometry and local placement may change. Unrelated objects, main
+camera/crop, existing material graphs and lights remain protected. Keep graph
+semantics fixed; update only scoped object mappings after a verified import.
+A revision grant does not authorize paid Provider tasks or unseen reference
+uploads. Confirm those under the selected Provider's rules.
+
+Revision preview evidence includes its revision ID and content iteration;
+restoring an older checkpoint does not rewind global iteration or refund rounds.
+When the finite repair closes, the service creates a fresh zero-edit composition
+inspection. Review its actual gray image and frozen composition anchors; then
+await explicit approval. Never reuse a stale geometry inspection as composition
+evidence or interpret budget exhaustion as geometry acceptance.
+
+The service cannot delete images already retained by a host. If the host reports
+an image-count error, retrying the same history or resizing its files does not
+reduce that count. Recover through a fresh conversation when compaction fails.
+Never skip a required visual review or fabricate evidence to stay under budget.

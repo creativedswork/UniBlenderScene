@@ -4,7 +4,7 @@
 
 本方案借鉴 `Agen3D/canova_code_server` 的分阶段生成与复核机制，形成适用于文字生成、参考图重建和已有场景修改的通用流程。对于需要完整重建的任务，建议按“确认视觉目标 → Scene Graph → 几何 → 构图确认 → 材质 → 灯光 → 全局复核 → 导出与预览”执行；具体阶段和轮数由任务计划配置。生成期间，`.blend` 是可编辑场景的权威状态；Blender 渲染图是视觉验收依据；GLB、渲染配置和 Three.js 预览用于交互检查与交付。
 
-当前 `CodexBlenderPlugin` 已有独立 Blender bridge、`SceneStore`、编辑前检查点、最佳候选、Blender 渲染、GLB 导出和渐进式 Three.js 预览。新增工作的重点是分阶段计划与确认、结构化复核，以及让初始化时建立的 Scene Graph 在预览中成为可操作的对象列表。保留现有 host-driven 架构：宿主模型负责规划、生成代码和视觉判断，MCP 服务负责场景状态、执行顺序、检查点、导出与数据校验。参见 [`src/store.ts`](../src/store.ts)、[`skills/blender-scene/SKILL.md`](../skills/blender-scene/SKILL.md) 和 [`web/widget.ts`](../web/widget.ts)。
+当前 `UniBlenderScene` 已有独立 Blender bridge、`SceneStore`、编辑前检查点、最佳候选、Blender 渲染、GLB 导出和渐进式 Three.js 预览。新增工作的重点是分阶段计划与确认、结构化复核，以及让初始化时建立的 Scene Graph 在预览中成为可操作的对象列表。保留现有 host-driven 架构：宿主模型负责规划、生成代码和视觉判断，MCP 服务负责场景状态、执行顺序、检查点、导出与数据校验。参见 [`src/service/store.ts`](../src/service/store.ts)、[`skills/blender-scene/SKILL.md`](../skills/blender-scene/SKILL.md) 和 [`src/viewer/widget.ts`](../src/viewer/widget.ts)。
 
 下文“参考项目”表示本机 `Agen3D/canova_code_server` 中已存在的行为；“本插件要求”表示本仓库的目标行为。参考项目位于另一个仓库，其路径仅用于定位代码，不是本插件的依赖。Scene Graph、节点列表和对象框选是跨生成策略的能力，不绑定某一种算法。
 
@@ -31,7 +31,7 @@ flowchart LR
 
 ### 视觉目标
 
-有参考图时，保留一张主视角和最多五张辅助视角；主视角确定相机与构图，辅助视角帮助判断深度、遮挡和对象关系。纯文字请求可以先形成待用户确认的概念图；确认后再开始较长的场景建设。概念图生成属于可选的宿主能力，不作为 Blender MCP 服务内置的模型或 Provider。当前插件已经支持最多六张同场景参考图，但没有内置概念图确认流程。参见 [`README.md`](../README.md) 和 [`src/store.ts`](../src/store.ts)。
+有参考图时，保留一张主视角和最多五张辅助视角；主视角确定相机与构图，辅助视角帮助判断深度、遮挡和对象关系。纯文字请求可以先形成待用户确认的概念图；确认后再开始较长的场景建设。概念图生成属于可选的宿主能力，不作为 Blender MCP 服务内置的模型或 Provider。当前插件已经支持最多六张同场景参考图，但没有内置概念图确认流程。参见 [`README.md`](../README.md) 和 [`src/service/store.ts`](../src/service/store.ts)。
 
 ### 图谱数据格式
 
@@ -81,6 +81,20 @@ flowchart LR
 
 需要交互检查时，在 `awaiting_review` 调用 `scene_preview`，再通过 `scene_view` 查看进度和结果。服务从最佳检查点生成配套 GLB、渲染配置、Scene Graph 和 manifest，保存于 `previews/<iteration>/`。预览不批准构图、不推进阶段或消耗编辑轮数，也不修改最佳 `.blend` 和渲染图；最终 `scene_export` 仍受完成状态限制。
 
+### 明确追加的有限返修
+
+`scene_revise` 用于用户明确授权的几何／构图局部返修。宿主先读取实时
+`scene_view`，绑定 phase、status、iteration、updatedAt 与唯一 requestId，
+再提交节点范围、反馈和额外 1–8 轮。服务归档既有状态与检查点，将新增消耗
+与原阶段预算分开记录，不清空历史、不退款式回退轮数、不重开场景。未知旧账
+标为未知，不推测可用额度；重复请求不会再次追加。拒绝结构本身不补满预算。
+
+返修保护范围外几何、摆放、主相机／画幅、既有材质图与灯光；共享网格改动
+影响无关对象时回滚。允许更新范围内对象映射，不改变冻结图谱语义。
+灰模预览记录 revisionId 和实际内容版本，保存于该返修的独立目录，避免覆盖
+旧阶段预览。返修停止后以选定内容生成新的只读构图检查，不赠送构图编辑轮次；
+仍需真实构图审查与用户明确批准。返修授权不是付费资产生成或外部上传授权。
+
 ### 完整场景复核
 
 最终复核检查本次任务的全部标准和相关回归。参考项目为完整重建预留两轮全局修复；本插件可按任务复杂度配置，但修复应沿用同一个全局最佳候选和预算，不重开阶段以取得额外轮数。复核保留实际 Blender 状态、渲染图和必要的对应区域颜色／明暗数据；区域测量辅助判断材质、灯光或曝光问题，不自动代表视觉通过。结果区分 `completed` 与带剩余差距的 `best_effort`。
@@ -99,7 +113,7 @@ flowchart LR
 | `scene-graph.json` | 与该次 GLB 配对的节点层级、稳定 ID、映射和完成状态。 |
 | `manifest.json` | 文件、迭代、结果、剩余差距与版本对应关系。 |
 
-沿用当前 [`blender/export.py`](../blender/export.py) 的独立副本导出、PBR 纹理烘焙、相机／灯光／环境与显示 LUT，沿用 [`web/widget.ts`](../web/widget.ts) 的 GLB 加载、渐进路径追踪、OrbitControls、降噪和静态图切换。补充导出一致性检查：可见对象与图谱映射、相机矩阵与投影、灯光类型和有效能量，以及 `scene-graph.json`、GLB 和 manifest 的迭代号必须一致。导出不应修改权威 `.blend`。
+沿用当前 [`runtime/blender/export.py`](../runtime/blender/export.py) 的独立副本导出、PBR 纹理烘焙、相机／灯光／环境与显示 LUT，沿用 [`src/viewer/widget.ts`](../src/viewer/widget.ts) 的 GLB 加载、渐进路径追踪、OrbitControls、降噪和静态图切换。补充导出一致性检查：可见对象与图谱映射、相机矩阵与投影、灯光类型和有效能量，以及 `scene-graph.json`、GLB 和 manifest 的迭代号必须一致。导出不应修改权威 `.blend`。
 
 Three.js 预览仍是交互检查工具。复杂 Blender Shader、体积效果和 Cycles 专用节点不一定能由 glTF 或浏览器路径追踪等价表达；需要时烘焙可映射的表面通道，并在交付中说明残余差异。不要用浏览器画面代替 Blender 渲染判定场景已达到视觉标准。参考项目的转换与校验位于 `canova_code_server/scripts/export-preview-materials.py` 和 `canova_code_server/scripts/validate-preview-glb.py`。
 
