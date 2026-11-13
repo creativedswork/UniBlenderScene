@@ -1,5 +1,21 @@
 # Validation
 
+## Official Claude Code entry point — 2026-11-13
+
+Current setup instructions and `npm run test:claude` use the official `claude`
+CLI directly. The smoke runner defaults to the `sonnet` model alias and records
+the resolved model ID; `CLAUDE_BIN` and `CLAUDE_MODEL` select the executable and
+model. It does not require a separate launcher or gateway.
+
+The older model runs below used Claude Code through a third-party gateway with
+a non-Claude upstream model. Those results remain historical evidence for that
+route; they are not official Claude model end-to-end validation. Replacing the
+runner does not turn those earlier runs into new passing results.
+
+For this change, type checking, the viewer build and all 30 unit tests passed.
+The CLI flags were checked against the installed Claude Code help and official
+documentation. The model-backed smoke test was not rerun.
+
 ## Pre-submission checks — 2026-11-13
 
 The local submission check passed `npm run check`, `npm run build` and all
@@ -115,7 +131,7 @@ references once, and retrieve each new render without repeating every reference.
 | Unit tests | 22 passed | `npm test`; six-reference selector regression and invalid combinations included |
 | Blender output selection | Passed | `npm run test:blender`; `.canova/runs/blender-integration-8c2klA/` |
 | Browser viewer | Passed | `npm run test:viewer -- .canova/runs/blender-integration-8c2klA` |
-| TTADK Claude Code / `gpt-6.1-sol` | Passed | `npm run test:claude`; `.canova/runs/claude-integration-Hw1cjI/result.json` |
+| Claude Code via historical third-party gateway | Passed for that route only | `.canova/runs/claude-integration-Hw1cjI/result.json` |
 | Native Claude manifests | Passed | Plugin validator retains the documented repository `CLAUDE.md` warning; marketplace validation passed |
 
 The unit fixture contains six references and one render: legacy/all returns
@@ -126,7 +142,7 @@ render, and no client-history deletion or server-side deduplication is implied.
 Selection leaves scene state and budgets unchanged. Real Blender checks verify
 that selected render/reference bytes match the PNG assets.
 
-The Claude smoke run used low effort, loaded the shared Skill, explicitly
+The historical gateway smoke run used low effort, loaded the shared Skill, explicitly
 selected `none` for initial state and `render` for finished visual evidence,
 completed review and GLB export, and emitted one image block in its tool-result
 messages. It produced a 269,928-byte PNG and 115,376-byte GLB. This small supplied-
@@ -143,8 +159,8 @@ installation, service deployment and public publication were not performed.
 
 ## 0.3.0 multi-harness packaging — 2026-11-08
 
-Checked locally with Node.js 22.20.0, Blender 5.1.1, Claude Code 2.1.187,
-and TTADK 1.0.28. The project and plugin identity is now UniBlenderScene /
+Checked locally with Node.js 22.20.0, Blender 5.1.1 and Claude Code 2.1.187
+through a third-party gateway. The project and plugin identity is now UniBlenderScene /
 `uni-blender-scene`. The existing GitHub repository has not been renamed or
 published by these checks.
 
@@ -155,7 +171,7 @@ published by these checks.
 | Native Claude manifests | Passed | `claude plugin validate .claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` |
 | Real Blender workflow | Passed | `npm run test:blender`; `.canova/runs/blender-integration-Nin6FT/` |
 | MCP Apps browser viewer | Passed | `npm run test:viewer -- .canova/runs/blender-integration-Nin6FT` |
-| TTADK Claude Code, GPT-6.1 Sol | Passed | `npm run test:claude`; `.canova/runs/claude-integration-5cfxCp/result.json` |
+| Claude Code via historical third-party gateway | Passed for that route only | `.canova/runs/claude-integration-5cfxCp/result.json` |
 | Dual-harness ZIP | Passed | `npm run pack:plugin`; required entries present and runtime/secret exclusions checked |
 
 The native manifest validator warns that root `CLAUDE.md` is not installed
@@ -173,9 +189,9 @@ explicit approval, scope rollback, and failed-edit recovery. It produced a
 bundled viewer with these artifacts, including selection bounds and world axes,
 orbit, render/3D switching, review controls, and artifact transfers.
 
-The Claude run used `ttadk claude -m gpt-6.1-sol` with session-local plugin
+The historical Claude Code run used a third-party gateway with session-local plugin
 loading, low reasoning effort, and Read/Skill plus this plugin's MCP tools.
-Initialization and result model usage both identified `gpt-6.1-sol`; the MCP
+Initialization and result model usage both identified the non-Claude upstream model; the MCP
 connection was connected and all 17 shared Skills were discovered. The model
 loaded `blender-scene`, read the supplied `tests/scene.py` fixture, then called
 create, plan, graph verification, edit, image retrieval, review, export, and
@@ -188,7 +204,7 @@ The model attempted an optional `scene_graph` status update during review, which
 the service rejected because graph mutation requires editing state. It reported
 the rejection and completed review/export. The generated mesh still carries
 `scene_node_id`, and export derives the renderable graph mapping from GLB data.
-Early attempts encountered an empty TTADK model list, a test prompt that triggered
+Early attempts encountered an empty gateway model list, a test prompt that triggered
 the image-request guard, and a model-run timeout; these are not counted as passed
 end-to-end runs. The final run above completed with exit status 0.
 

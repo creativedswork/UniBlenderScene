@@ -67,24 +67,25 @@ try {
   await ready("service", server, "MCP listening");
   const prompt = `Use /uni-blender-scene:blender-scene for a small primitive smoke test: a red cube on a lit floor. This is not a full reconstruction and has no reference images. For scene_create, set prompt to exactly "A red cube on a warm floor under studio lighting." Keep test instructions out of that scene prompt. Use a simple non-staged plan, one criterion for a visible red cube, visualThreshold 70, and graph node cube mapped to RedCube. Classify cube as structure because it is a simple geometric primitive. Read ${join(root, "scene.py")} and submit that complete code through scene_edit. Use only the plugin's scene_* tools for scene operations, never execute Blender directly. Pass all four graph verification checks before editing. Poll scene_view for asynchronous jobs, use scene_get with images=none for metadata and images=render once to inspect the actual PNG before scene_review; always select images explicitly and do not reread the render through Read, bind inspection.id, record honest evidence, then export if completed/best_effort. Return render and artifact links and state that the CLI does not verify the interactive MCP Apps viewer. Do not use subagents, external asset providers, edit repository files, or approve a composition checkpoint. If image inspection or any required tool fails, report the failure instead of claiming success.`;
   await writeFile(join(root, "prompt.txt"), prompt);
-  const claude = launch("claude", process.env.TTADK_BIN ?? "ttadk", [
-    "claude", "-m", "gpt-6.1-sol", "--", "-p", "--plugin-dir", plugin,
+  const requestedModel = process.env.CLAUDE_MODEL ?? "sonnet";
+  const claude = launch("claude", process.env.CLAUDE_BIN ?? "claude", [
+    "--model", requestedModel, "-p", "--plugin-dir", plugin,
     "--output-format", "stream-json", "--verbose", "--no-session-persistence",
     "--effort", "low",
     "--permission-mode", "dontAsk", "--tools", "Read,Skill",
     "--allowedTools", "Read,Skill,mcp__plugin_uni-blender-scene_uni-blender-scene__*",
     "--setting-sources", "", "--max-budget-usd", "3",
-  ], { cwd: root, env: { ...process.env, TTADK_MODEL_FETCH_TIMEOUT: process.env.TTADK_MODEL_FETCH_TIMEOUT ?? "15000" } });
+  ], { cwd: root });
   const code = await new Promise<number | null>((done, fail) => {
     claude.once("exit", done); claude.once("error", fail);
     claude.stdin!.end(prompt);
   });
-  assert.equal(code, 0, `TTADK Claude failed; see ${root}/claude.log`);
+  assert.equal(code, 0, `Claude Code failed; see ${root}/claude.log`);
   const events = logs.get("claude")!.split("\n").flatMap((line) => {
     try { return [JSON.parse(line)]; } catch { return []; }
   });
   const init = events.find((event) => event.type === "system" && event.subtype === "init");
-  assert.equal(init?.model, "gpt-6.1-sol");
+  assert.ok(typeof init?.model === "string" && init.model.length > 0, "Claude Code must report its resolved model");
   assert.ok(init.plugins?.some((entry: { name: string }) => entry.name === "uni-blender-scene"));
   assert.ok(init.skills?.some((name: string) => name.includes("blender-scene")));
   const calls = events.flatMap((event) => event.message?.content ?? []).filter((block) => block.type === "tool_use");
@@ -111,7 +112,7 @@ try {
   assert.equal(glb.toString("ascii", 0, 4), "glTF");
   const render = await readFile(join(sceneRoot, scene.render));
   assert.ok(render.length > 10000);
-  const evidence = { status: "passed", model: init.model, sceneId: scene.id, renderBytes: render.length,
+  const evidence = { status: "passed", harness: "Claude Code", requestedModel, model: init.model, sceneId: scene.id, renderBytes: render.length,
     glbBytes: glb.length, imageBlocks, toolCalls: calls.map((call) => call.name), evidenceDirectory: root,
     interactiveViewerVerified: false };
   await writeFile(join(root, "result.json"), JSON.stringify(evidence, null, 2));

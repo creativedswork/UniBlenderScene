@@ -101,12 +101,13 @@ The plugin does not bundle a 3D asset provider or its credentials.
 > Create a Blender scene matching this image. Preserve the camera composition,
 > lighting and main objects, then show the interactive 3D result.
 
-To use Claude Code through TTADK with the requested model, run
-`ttadk claude -m gpt-6.1-sol -- --plugin-dir /absolute/path/to/UniBlenderScene`.
-TTADK must make that model available for Claude Code; model access is separate
-from plugin installation. Run this command from the scene project. See
+To use Claude Code, run
+`claude --plugin-dir /absolute/path/to/UniBlenderScene`
+from the scene project. Sign in through Claude Code and use its configured model,
+or select one with `--model sonnet`. See the official
+[CLI reference](https://code.claude.com/docs/en/cli-reference),
 [scene project setup](docs/operations.md#claude-code) and
-[CLI validation](docs/operations.md#validate-claude-code-with-ttadk).
+[CLI validation](docs/operations.md#validate-claude-code).
 
 ## Repository layout
 
@@ -256,10 +257,12 @@ Do not combine these selectors with incompatible image modes. Poll with
 Avoid reading that same PNG again through the host's image-reading tool.
 
 Image limits apply to the conversation sent to the model, including repeated
-tool results. The shared Skill asks the host to count images from all sources and checkpoint
-around 35 images on the observed 50-image TTADK route. This is host guidance,
-not a server-enforced conversation quota. The service cannot remove historical
-images from Claude Code; see [image-history recovery](docs/operations.md#image-history-and-recovery).
+tool results. The shared Skill asks the host to count images from all sources,
+respect the active model's image limit and reserve room for the next review.
+When that limit is unknown, around 35 images is a conservative workflow
+checkpoint, not a Claude Code limit or a server-enforced quota. The service cannot
+remove historical images from Claude Code; see
+[image-history recovery](docs/operations.md#image-history-and-recovery).
 
 The embedded viewer lets users select and enlarge any reference. In clients
 that expose file upload, select multiple images, choose the primary view, then

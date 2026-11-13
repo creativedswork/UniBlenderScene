@@ -81,7 +81,7 @@ Use `/mcp` to check the service connection before requesting a scene. Loading th
 plugin does not start the HTTP service or Blender. A healthy connection does not
 prove that a scene job will succeed; scene tool failures still need diagnosis.
 
-## Validate Claude Code with TTADK
+## Validate Claude Code
 
 From the repository root, validate both native manifests:
 
@@ -94,23 +94,31 @@ Start the service as described below, then launch an interactive session from
 the separate scene project:
 
 ```bash
-ttadk claude -m gpt-6.1-sol -- --plugin-dir /absolute/path/to/UniBlenderScene
+claude --plugin-dir /absolute/path/to/UniBlenderScene
 ```
 
-`-m` selects the TTADK model; arguments after `--` go to Claude Code. For the
-isolated render/export smoke test, return to the plugin checkout and run:
+Install and authenticate the official Claude Code CLI using its
+[setup instructions](https://code.claude.com/docs/en/setup).
+Use the configured model or select an available Claude model with `--model sonnet`
+or `/model`; see the official [model configuration](https://code.claude.com/docs/en/model-config)
+and [CLI reference](https://code.claude.com/docs/en/cli-reference).
+For the isolated render/export smoke test, return to the plugin checkout and run:
 
 ```bash
 npm run test:claude
 ```
 
 The test starts its own Blender bridge and service, loads a temporary copy of
-the native plugin, and runs TTADK with `gpt-6.1-sol`. It retains logs and scene
+the native plugin, and directly runs `claude --model sonnet` in print mode.
+Set `CLAUDE_BIN` to use another Claude Code executable or `CLAUDE_MODEL` to select
+an available Claude model alias or full model ID. It retains logs and scene
 artifacts under `.canova/runs/` and stops its child processes afterward. It
 checks plugin/Skill discovery, MCP tool calls, rendered output, and GLB export.
 It is an integration test run from the checkout, not the production workspace
 layout described above.
-This requires a working TTADK login and access to `gpt-6.1-sol` for Claude Code.
+This requires a working Claude Code login or supported API authentication and
+access to the selected model. The smoke test makes model requests and uses
+`--max-budget-usd 3` to cap estimated API spend.
 
 ## Run the local service
 
@@ -225,11 +233,12 @@ references and the render. Image selection does not change review requirements,
 scene state, checkpoints, or iteration budgets. The MCP Apps viewer and artifact
 URLs continue to expose the stored images independently of these tool responses.
 
-The observed TTADK GPT route rejects requests containing more than 50 images.
 Repeated `Read`, screenshot, Provider and MCP image results can accumulate in
-conversation history. The shared Skill asks the host to count all of them and
-write a text handoff around 35 images. These instructions reduce unnecessary
-images but cannot guarantee that every harness prunes its history.
+conversation history. Limits depend on the active model and provider. The shared
+Skill asks the host to count all images and leave room for the next review batch.
+When the limit is unknown, write a text handoff around 35 images as a conservative
+workflow checkpoint; this is not a stated Claude Code limit. These instructions
+reduce unnecessary images but cannot guarantee that every harness prunes its history.
 
 Before clearing a long conversation, keep the scene ID and save a handoff under
 `.canova/runs/<scene-id>/handoff.md` with the stage/iteration, frozen plan,
