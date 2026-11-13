@@ -11,7 +11,7 @@ The repository contains `plugin.json`, `mcp.json`, and a marketplace definition
 at `.agents/plugins/marketplace.json`. Add this repository as a plugin source:
 
 ```bash
-codex plugin marketplace add creativedswork/CodexBlenderPlugin --ref main
+codex plugin marketplace add creativedswork/UniBlenderScene --ref main
 ```
 
 If you already cloned the repository, you can add its absolute path instead:
