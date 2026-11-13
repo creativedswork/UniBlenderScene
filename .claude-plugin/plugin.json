@@ -1,8 +1,8 @@
 {
   "name": "uni-blender-scene",
   "version": "0.3.3",
-  "description": "Build and review Blender scenes with Provider-first single-object modeling and user-approved composition.",
+  "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP.",
   "author": { "name": "CreativeDSWork" },
-  "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
+  "repository": "https://github.com/creativedswork/UniBlenderScene",
   "mcpServers": "./harnesses/claude-code/mcp.json"
 }

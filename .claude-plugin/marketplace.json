@@ -1,8 +1,8 @@
 {
   "name": "uni-blender-scene",
   "owner": { "name": "CreativeDSWork" },
-  "metadata": { "description": "Shared Blender scene workflows for agent harnesses." },
+  "metadata": { "description": "Blender scene creation and review across agent harnesses, with shared Skills and MCP." },
   "plugins": [
-    { "name": "uni-blender-scene", "source": "./", "description": "Build and preview Blender scenes across agent harnesses." }
+    { "name": "uni-blender-scene", "source": "./", "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP." }
   ]
 }

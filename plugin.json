@@ -2,8 +2,8 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "uni-blender-scene",
   "version": "0.3.3",
-  "description": "Build and review Blender scenes with Provider-first single-object modeling and user-approved composition.",
-  "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
+  "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP.",
+  "repository": "https://github.com/creativedswork/UniBlenderScene",
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/blender-setup/SKILL.md",
@@ -11,8 +11,8 @@
         "displayName": "UniBlenderScene",
         "developerName": "CreativeDSWork",
         "category": "Productivity",
-        "shortDescription": "Build and preview Blender scenes",
-        "longDescription": "Plan and verify multi-view spatial layouts, generate standalone objects with available 3D API Providers, and confirm composition before material and lighting stages. Deliver editable Blender scenes and an interactive preview.",
+        "shortDescription": "Blender scenes across agent harnesses",
+        "longDescription": "Use shared Skills and one MCP service across Codex and Claude Code. Plan scenes from images or text, source objects from separately configured 3D API Providers, and confirm gray composition previews before materials and lighting. Deliver editable Blender scenes, renders and GLBs, with interactive previews in MCP Apps hosts.",
         "capabilities": [
           "Read",
           "Write"

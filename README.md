@@ -1,12 +1,25 @@
 # UniBlenderScene
 
-Create and refine Blender scenes from reference images or text, then inspect the
-render and interactive Three.js preview with a selectable scene tree.
+A Blender scene creation and review plugin for agent harnesses, with native
+plugin entries for **Codex** and **Claude Code**.
 
-Codex and Claude Code load the same scene Skills and connect to the same MCP
-service. The model comes from the host harness. Claude Code's terminal can
-inspect render images and return `.blend`/GLB links; the embedded interactive
-viewer needs an MCP Apps host with WebGL 2.
+Turn reference images or text into editable Blender scenes. Both plugins share
+the same Skills, staged workflow and MCP service: plan the scene, build geometry,
+confirm composition in gray, then refine materials and lighting. Deliver renders,
+`.blend` files and GLBs, with an interactive Three.js viewer in compatible hosts.
+
+| Host | Integration | Visual review |
+| --- | --- | --- |
+| Codex | Portable plugin manifest and shared Skills | Renders and artifact links; interactive preview in an MCP Apps host |
+| Claude Code | Native plugin manifest and shared Skills | Render inspection and `.blend`/GLB links in the terminal |
+| Other agent harnesses | Connect to the MCP service and supply the scene workflow instructions | Depends on the host's image and MCP Apps support |
+
+The host supplies the model, planning, code generation and visual judgment. The
+service executes scene operations through a dedicated Blender process and enforces
+scene state, checkpoints, stage budgets and approval. Additional harnesses need
+their own MCP connection and instruction loading; native plugin packaging is
+provided for Codex and Claude Code. The embedded viewer requires MCP Apps and
+WebGL 2.
 
 ## Showcase: gamer bedroom from multiple views
 
@@ -113,8 +126,9 @@ docs/                      Setup, design, showcases, validation records
 ```
 
 The project identity is **UniBlenderScene** (`uni-blender-scene`, version 0.3.3).
-The GitHub repository still uses its existing `creativedswork/CodexBlenderPlugin`
-address. Existing run directories and Blender `codex_bake_lighting` /
+The canonical repository is
+[`creativedswork/UniBlenderScene`](https://github.com/creativedswork/UniBlenderScene).
+Existing run directories and Blender `codex_bake_lighting` /
 `codex_preview_emissive_tint` properties retain their names for saved-scene compatibility.
 
 ## Scene workflow
