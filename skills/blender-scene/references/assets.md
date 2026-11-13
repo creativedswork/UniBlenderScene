@@ -7,6 +7,16 @@ Room surfaces and simple geometric primitives may be declared `structure`;
 inspect and preserve already-built assets as `existing`. Do not classify a chair,
 headset or figurine as room structure to avoid the Provider workflow.
 
+For a scene request, the Provider owns object generation and this workflow owns
+scene assembly and review. Follow its authentication, cost, reference-image and
+output-choice requirements; reuse explicit user decisions within their authorized
+scope when its rules permit. Ask only for a required decision that remains
+unresolved. Do not add per-asset acceptance or ask whether to continue after a
+successful model download. A Provider's standalone delivery recommendation to
+inspect the model in Blender becomes the agent's import and inspection work here.
+Continue authorized work until the scene reaches `awaiting_review`, final
+delivery, or a concrete blocker; report the exact blocker when stopping early.
+
 1. Discover the host's 3D generation tools and read the selected Provider's
    instructions. For every `object` node, record the applicable tool IDs and
    discovery evidence through `scene_asset_strategy`. A nonempty Provider list
@@ -22,7 +32,10 @@ headset or figurine as room structure to avoid the Provider workflow.
    `scene_asset_strategy` with `nodeId`, discovered `providers`, `evidence`, the
    chosen `provider`, its `taskId` and the local `artifactPath`. The service
    validates workspace containment and the GLB container, and records a SHA-256.
-   Never record signed download URLs or API keys.
+   Never record signed download URLs or API keys. Continue resolving the other
+   planned object strategies; all must be resolved before `scene_edit` can import
+   and assemble the scene. Report each asset's completion as progress and perform
+   the next authorized action in the same turn, without waiting for "continue".
 4. If discovery finds no applicable Provider, call `scene_asset_strategy` with
    `providers: []` and specific discovery evidence. Only then model that object
    in Blender. The service trusts the host's capability inventory; it cannot
@@ -34,7 +47,9 @@ headset or figurine as room structure to avoid the Provider workflow.
    Inspect materials, dimensions, origin, rotation mode and evaluated placement;
    follow [Blender code guidance](blender-code.md#imported-glb-checks). Imported
    materials can accompany geometry; material refinement follows composition
-   approval. A Provider model is not proof of reference likeness.
+   approval. Structural review overrides their appearance on a preview copy;
+   preserve imported materials in the working scene. A Provider model is not
+   proof of reference likeness.
 6. Review the actual render and runtime inspection. A procedural proxy that
    cannot match the object remains a failed geometry criterion. Use Provider
    correction or report the unresolved result; do not silently accept it.

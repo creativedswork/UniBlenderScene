@@ -1,6 +1,6 @@
 {
-  "name": "codex-blender-plugin",
-  "version": "0.2.1",
+  "name": "uni-blender-scene",
+  "version": "0.3.3",
   "description": "Generate and refine Blender scenes from images or text, with rendered previews, interactive 3D viewing, and .blend/GLB export.",
   "private": true,
   "type": "module",
@@ -10,10 +10,11 @@
   "scripts": {
     "build": "tsx scripts/build.ts",
     "check": "tsc --noEmit",
-    "start": "node --env-file-if-exists=.env --import tsx src/server.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/service/server.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:blender": "node --import tsx tests/blender.integration.ts",
     "test:viewer": "node --import tsx tests/viewer.integration.ts",
+    "test:claude": "node --import tsx tests/claude.integration.ts",
     "check:scenario-skills": "node scripts/check-scenario-skills.mjs",
     "configure": "tsx scripts/configure.ts",
     "pack:plugin": "tsx scripts/package.ts"

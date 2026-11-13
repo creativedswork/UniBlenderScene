@@ -1,0 +1,8 @@
+{
+  "name": "uni-blender-scene",
+  "version": "0.3.3",
+  "description": "Build and review Blender scenes with Provider-first single-object modeling and user-approved composition.",
+  "author": { "name": "CreativeDSWork" },
+  "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
+  "mcpServers": "./harnesses/claude-code/mcp.json"
+}

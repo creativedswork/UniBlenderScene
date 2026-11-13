@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 await mkdir("dist", { recursive: true });
 const bundle = await build({
-  entryPoints: ["web/widget.ts"],
+  entryPoints: ["src/viewer/widget.ts"],
   bundle: true,
   format: "esm",
   platform: "browser",
@@ -12,7 +12,7 @@ const bundle = await build({
   minify: true,
   write: false,
 });
-const source = (await readFile("web/widget.html", "utf8"))
+const source = (await readFile("src/viewer/widget.html", "utf8"))
   .replace("<!--WIDGET_SCRIPT-->", () => `<script type="module">${bundle.outputFiles[0]!.text.replace(/<\/script/gi, "<\\/script")}</script>`);
 await writeFile(resolve("dist/widget.html"), source);
 console.log("Built dist/widget.html");

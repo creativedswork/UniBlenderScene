@@ -45,7 +45,7 @@ def execute_one(item):
     code, response = item
     try:
         namespace = {"bpy": bpy, "result": {}}
-        exec(compile(code, "<codex-blender>", "exec"), namespace)
+        exec(compile(code, "<uni-blender-scene>", "exec"), namespace)
         result = namespace.get("result", {})
         json.dumps(result, allow_nan=False)
         response.put({"status": "ok", "result": result})
@@ -65,7 +65,7 @@ parser.add_argument("--port", type=int, default=9877)
 args = parser.parse_args(arguments)
 server = Server(("127.0.0.1", args.port), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-print(f"CodexBlenderPlugin bridge ready on 127.0.0.1:{args.port}", flush=True)
+print(f"UniBlenderScene bridge ready on 127.0.0.1:{args.port}", flush=True)
 
 if bpy.app.background:
     while True:

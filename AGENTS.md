@@ -1,7 +1,8 @@
-# CodexBlenderPlugin
+# UniBlenderScene
 
-This repository packages a host-driven Blender workflow. ChatGPT or Codex supplies
-the language model, planning, Python generation, visual review, and any authorized
+This repository packages a host-driven Blender workflow. The agent harness
+(Codex, Claude Code, or ChatGPT) supplies the language model, planning, Python
+generation, visual review, and any authorized
 subagent coordination. The MCP service executes Blender operations and enforces
 scene state.
 

@@ -1,14 +1,14 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "codex-blender-plugin",
-  "version": "0.2.1",
+  "name": "uni-blender-scene",
+  "version": "0.3.3",
   "description": "Build and review Blender scenes with Provider-first single-object modeling and user-approved composition.",
   "repository": "https://github.com/creativedswork/CodexBlenderPlugin",
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/blender-setup/SKILL.md",
       "interface": {
-        "displayName": "CodexBlenderPlugin",
+        "displayName": "UniBlenderScene",
         "developerName": "CreativeDSWork",
         "category": "Productivity",
         "shortDescription": "Build and preview Blender scenes",

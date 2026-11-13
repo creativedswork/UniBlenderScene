@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .canova/
+canova_output/
 .env
 *.log
 *.zip

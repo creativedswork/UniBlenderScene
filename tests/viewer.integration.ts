@@ -10,6 +10,7 @@ if (!evidence) throw new Error("Pass the evidenceDirectory printed by npm run te
 const root = resolve(evidence);
 const snapshot = JSON.parse(await readFile(resolve(root, "scene.json"), "utf8"));
 const reviewSnapshot = JSON.parse(await readFile(resolve(root, "composition.json"), "utf8"));
+const workSnapshot = JSON.parse(await readFile(resolve(root, "geometry.json"), "utf8"));
 const files = new Map<string, string>();
 const include = (url: string | null) => {
   if (!url) return;
@@ -22,6 +23,8 @@ snapshot.references?.forEach((image: { url: string }) => include(image.url));
 snapshot.artifacts.forEach((item: { url: string }) => include(item.url));
 include(reviewSnapshot.renderUrl);include(reviewSnapshot.bestRenderUrl);
 reviewSnapshot.artifacts.forEach((item:{url:string})=>include(item.url));
+include(workSnapshot.renderUrl); include(workSnapshot.bestRenderUrl);
+workSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
 const host = await build({ entryPoints: ["tests/viewer-host.ts"], bundle: true, platform: "browser", format: "esm", write: false });
 const widget = await readFile("dist/widget.html");
 const server = createServer(async (request, response) => {
@@ -36,7 +39,8 @@ const server = createServer(async (request, response) => {
         "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' blob:;",
       }).end(widget.toString().replace("<head>", `<head><script>window.openai={uploadFile:async(file)=>({fileId:file.name}),getFileDownloadUrl:async({fileId})=>({downloadUrl:'https://files.oaiusercontent.com/'+encodeURIComponent(fileId)})};</script>`));
     } else if (path === "/scene") {
-      const selected=new URL(request.url!,"http://localhost").searchParams.has("review") ? reviewSnapshot : snapshot;
+      const query = new URL(request.url!, "http://localhost").searchParams;
+      const selected = query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       const rewrite = (url: string | null) => url ? `${origin}${new URL(url).pathname}` : null;
       response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
@@ -204,12 +208,42 @@ try {
   await frame.locator("#file").setInputFiles(Array.from({ length: 7 }, (_, index) => imageFile(`image-${index}.png`)));
   await frame.getByText("Use up to 6 PNG, JPEG or WebP images, each at most 20 MB.", { exact: true }).waitFor();
   assert.equal(await frame.locator("#reference-upload").isVisible(), false);
+  await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?work=1`);
+  await frame.locator("#review-panel").waitFor({ state: "visible" });
+  assert.equal(await frame.locator("#review-approve").isVisible(), false, "Work drafts must not offer approval");
+  assert.match(await frame.locator("#status").innerText(), /geometry.*work draft.*iteration 1.*structural/);
+  await page.waitForFunction(() => {
+    const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("canvas");
+    return canvas?.dataset.previewMode === "structural" && Number(canvas.dataset.samples) >= 32;
+  }, undefined, { timeout: 60000 });
+  await page.locator("#viewer").screenshot({ path: resolve(root, "viewer-geometry-draft.png") });
   await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?review=1`);
   await frame.locator("#review-panel").waitFor({state:"visible"});
   await page.waitForFunction(()=>{
     const images=(document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelectorAll<HTMLImageElement>("#review-images img");
     return images?.length===5 && Array.from(images).every(i=>i.naturalWidth>0);
   });
+  await frame.getByRole("button", { name: "Render", exact: true }).click();
+  await page.waitForFunction(() => {
+    const image = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector<HTMLImageElement>("#render");
+    return image?.dataset.asset === "review-main.png" && image.naturalWidth > 0;
+  });
+  const colorLeaks = await frame.locator("#render").evaluate((element) => {
+    const image = element as HTMLImageElement;
+    const canvas = document.createElement("canvas"); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d")!; context.drawImage(image, 0, 0);
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let colored = 0;
+    for (let i = 0; i < data.length; i += 4) if (Math.max(data[i]!, data[i + 1]!, data[i + 2]!) - Math.min(data[i]!, data[i + 1]!, data[i + 2]!) > 2) colored++;
+    return colored;
+  });
+  assert.equal(colorLeaks, 0, "The main composition image must be grayscale");
+  await frame.getByRole("button", { name: "3D", exact: true }).click();
+  await page.waitForFunction(() => {
+    const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("canvas");
+    return canvas?.dataset.previewMode === "structural" && Number(canvas.dataset.samples) >= 32;
+  }, undefined, { timeout: 60000 });
+  await frame.locator("canvas").screenshot({ path: resolve(root, "viewer-structural-3d.png") });
   await page.locator("#viewer").screenshot({path:resolve(root,"viewer-composition.png")});
   await frame.locator("#review-panel").screenshot({path:resolve(root,"viewer-composition-panel.png")});
   await frame.locator("#review-feedback").fill("Window must be perpendicular to the desk");

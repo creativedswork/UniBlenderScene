@@ -4,7 +4,8 @@ const frame = document.getElementById("viewer") as HTMLIFrameElement;
 const bridge = new AppBridge(null, { name: "Integration host", version: "1.0.0" }, {
   serverTools: {}, message: { text: {} }, openLinks: {},
 }, { hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] } });
-const snapshot = await (await fetch(new URLSearchParams(location.search).has("review") ? "/scene?review=1" : "/scene")).json();
+const query = new URLSearchParams(location.search);
+const snapshot = await (await fetch(query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
 const inaccessible = (url: string | null) => url ? `http://127.0.0.1:1${new URL(url).pathname}` : null;
 const widgetSnapshot = {
   ...snapshot,
@@ -17,6 +18,14 @@ bridge.oncalltool = async ({ name, arguments: args }) => {
   if (name === "scene_review_decision") {
     document.getElementById("sent")!.dataset.decision=JSON.stringify(args);
     widgetSnapshot.stage="edit";
+    const decision = args as { approved: boolean; returnTo?: string };
+    const phase = decision.approved ? "materials" : decision.returnTo ?? "composition";
+    widgetSnapshot.workflowState = { phase, status: "edit", compositionApproved: decision.approved, presentation: {
+      mode: ["geometry", "composition"].includes(phase) ? "structural" : "appearance",
+      purpose: "work", source: "current", iteration: widgetSnapshot.iteration,
+    } };
+    widgetSnapshot.reviewViews = []; widgetSnapshot.artifacts = [];
+    widgetSnapshot.renderUrl = null; widgetSnapshot.bestRenderUrl = null;
     return {content:[{type:"text",text:"Fixture review decision recorded"}],structuredContent:widgetSnapshot};
   }
   if (name === "scene_create" || name === "scene_continue") {

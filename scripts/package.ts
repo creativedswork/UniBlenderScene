@@ -3,7 +3,7 @@ import { readdir, stat, rm, rename } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const files: string[] = [];
-const excluded = new Set(["node_modules", ".git", ".canova", ".env", "__pycache__", ".DS_Store"]);
+const excluded = new Set(["node_modules", ".git", ".canova", "canova_output", ".env", "__pycache__", ".DS_Store"]);
 async function collect(directory = "."): Promise<void> {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (excluded.has(entry.name) || (entry.name.startsWith(".env") && entry.name !== ".env.example") ||
@@ -16,8 +16,8 @@ async function collect(directory = "."): Promise<void> {
 }
 await stat("dist/widget.html");
 await collect();
-const target = resolve("../CodexBlenderPlugin.zip");
-const temporary = resolve("../CodexBlenderPlugin.build.zip");
+const target = resolve("../UniBlenderScene.zip");
+const temporary = resolve("../UniBlenderScene.build.zip");
 await rm(temporary, { force: true });
 execFileSync("zip", ["-q", "-@", temporary], { input: `${files.sort().join("\n")}\n` });
 await rename(temporary, target);

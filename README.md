@@ -1,7 +1,12 @@
-# CodexBlenderPlugin
+# UniBlenderScene
 
 Create and refine Blender scenes from reference images or text, then inspect the
 render and interactive Three.js preview with a selectable scene tree.
+
+Codex and Claude Code load the same scene Skills and connect to the same MCP
+service. The model comes from the host harness. Claude Code's terminal can
+inspect render images and return `.blend`/GLB links; the embedded interactive
+viewer needs an MCP Apps host with WebGL 2.
 
 ## Showcase: gamer bedroom from multiple views
 
@@ -49,15 +54,15 @@ helper; it is not a packaged standalone preview server.
 
 The five modules are grouped by responsibility:
 
-![Three color-coded layers of CodexBlenderPlugin modules](docs/plugin-modules.svg)
+![Three color-coded layers of UniBlenderScene modules](docs/plugin-modules.svg)
 
 | Part | What it does | Main files |
 | --- | --- | --- |
-| Plugin metadata | Describes the plugin, its onboarding Skill, and the MCP connection. | [`plugin.json`](plugin.json), [`mcp.json`](mcp.json) |
+| Plugin metadata | Portable Codex entry and native Claude Code entry, sharing Skills and the service. | [`plugin.json`](plugin.json), [`mcp.json`](mcp.json), [`.claude-plugin/plugin.json`](.claude-plugin/plugin.json), [`harnesses/claude-code/mcp.json`](harnesses/claude-code/mcp.json) |
 | Skills | Explain setup and guide scene planning, editing, visual review, required single-object Provider discovery, and bundled Blender production techniques. | [`skills/blender-setup/`](skills/blender-setup/SKILL.md), [`skills/blender-scene/`](skills/blender-scene/SKILL.md), [`skills/scenario-blender-*/`](skills/scenario-blender-expert/SKILL.md) |
-| MCP service | Exposes scene tools, tracks jobs and review state, saves checkpoints, and provides artifact URLs. | [`src/server.ts`](src/server.ts), [`src/store.ts`](src/store.ts) |
-| Blender bridge | Executes scene code in a dedicated Blender process, then renders and exports the result. | [`blender/bridge.py`](blender/bridge.py), [`blender/export.py`](blender/export.py) |
-| Three.js viewer | Shows the render, progressive path-traced GLB preview, selectable scene tree, and composition review controls inside an MCP Apps host. | [`web/widget.ts`](web/widget.ts), [`web/widget.html`](web/widget.html) |
+| MCP service | Exposes scene tools, tracks jobs and review state, saves checkpoints, and provides artifact URLs. | [`src/service/server.ts`](src/service/server.ts), [`src/service/store.ts`](src/service/store.ts) |
+| Blender bridge | Executes scene code in a dedicated Blender process, then renders and exports the result. | [`runtime/blender/bridge.py`](runtime/blender/bridge.py), [`runtime/blender/export.py`](runtime/blender/export.py) |
+| Three.js viewer | Shows the render, progressive path-traced GLB preview, selectable scene tree, and composition review controls inside an MCP Apps host. | [`src/viewer/widget.ts`](src/viewer/widget.ts), [`src/viewer/widget.html`](src/viewer/widget.html) |
 
 Standalone objects must use an applicable separately configured 3D API Provider.
 Blender modeling is the fallback only when discovery finds no applicable Provider.
@@ -67,20 +72,50 @@ The plugin does not bundle a 3D asset provider or its credentials.
 
 ## Quick start
 
-1. Install **CodexBlenderPlugin** from the **Codex Blender** plugin source.
-   [Add the source](docs/operations.md#install-the-plugin-source) if it is not listed.
+1. In Codex, install **UniBlenderScene** from the **UniBlenderScene** plugin source.
+   In Claude Code, start from a separate scene project outside the plugin checkout
+   and pass `--plugin-dir /absolute/path/to/UniBlenderScene`, then invoke
+   `/uni-blender-scene:blender-setup` or `/uni-blender-scene:blender-scene`.
+   See [client installation](docs/operations.md#install-the-plugin-source).
 2. Start the [Blender MCP service](docs/operations.md#run-the-local-service), or
    [connect to a deployed service](docs/operations.md#connect-a-remote-service).
    The bundled connection points to `127.0.0.1`; installing the plugin does not
-   start Blender or the service.
+   start Blender or the service. To start both local processes together, use
+   [the local launcher](docs/operations.md#start-the-local-processes-together).
 3. Attach an image or describe a scene, then ask for a render and interactive 3D
    preview. For example:
 
 > Create a Blender scene matching this image. Preserve the camera composition,
 > lighting and main objects, then show the interactive 3D result.
 
-For complex image-to-scene work, we recommend a paid ChatGPT plan with plugin
-access and GPT-6.1 Sol or GPT-6 Astra ([model guidance](https://learn.chatgpt.com/docs/models)).
+To use Claude Code through TTADK with the requested model, run
+`ttadk claude -m gpt-6.1-sol -- --plugin-dir /absolute/path/to/UniBlenderScene`.
+TTADK must make that model available for Claude Code; model access is separate
+from plugin installation. Run this command from the scene project. See
+[scene project setup](docs/operations.md#claude-code) and
+[CLI validation](docs/operations.md#validate-claude-code-with-ttadk).
+
+## Repository layout
+
+```text
+plugin.json, mcp.json       Portable plugin entry for Codex
+.agents/plugins/           Codex marketplace
+.claude-plugin/            Claude Code manifest and marketplace
+skills/                    Shared scene workflow and production knowledge
+harnesses/                 Client-specific MCP configuration and agent templates
+src/service/               MCP tools, scene state, workflow checks, Blender client
+src/viewer/                MCP Apps Three.js viewer
+runtime/blender/           Dedicated Python bridge and export code
+scripts/                   Build, configure, package, upstream checks
+tests/                     Workflow, Blender, viewer, and harness validation
+docs/                      Setup, design, showcases, validation records
+.canova/runs/              Ignored local scenes and validation evidence
+```
+
+The project identity is **UniBlenderScene** (`uni-blender-scene`, version 0.3.3).
+The GitHub repository still uses its existing `creativedswork/CodexBlenderPlugin`
+address. Existing run directories and Blender `codex_bake_lighting` /
+`codex_preview_emissive_tint` properties retain their names for saved-scene compatibility.
 
 ## Scene workflow
 
@@ -98,7 +133,7 @@ The [scene Skill](skills/blender-scene/SKILL.md) describes this tool sequence:
 | `scene_review` | Review the render and select the best checkpoint |
 | `scene_review_decision` | Approve or revise the geometry and composition checkpoint |
 | `scene_review_views` | Retry generation of the five confirmation views |
-| `scene_preview` | Prepare the pending composition checkpoint for interactive 3D inspection without approving it |
+| `scene_preview` | Prepare current geometry/composition work or a pending checkpoint as a gray 3D preview without approving it |
 | `scene_export` | Export the best reviewed `.blend` and GLB after completion |
 | `scene_view` | Check progress and open the interactive viewer |
 | `scene_continue` | Refine an existing scene |
@@ -120,14 +155,48 @@ coordinates and measures them in each render. The service checks those submitted
 measurements and keeps composition open when a region edge differs by more than
 8% of the frame; it does not detect objects in images on its own.
 
+## Authoritative workflow state
+
+Every scene response includes `workflowState`. `phase` identifies the production
+stage; `status` identifies the operation state, such as `edit`, `review` or
+`awaiting_review`. `presentation` fixes the image mode, purpose, source and
+iteration. It is derived from the scene's persisted plan, workflow index and
+status; there is no second independently writable phase variable. Each scene
+has its own state, including after a service restart or a new agent conversation.
+
+| Production/state | Presentation | Source and purpose |
+| --- | --- | --- |
+| Geometry or composition, editing/reviewing | Gray main image; current five-view/GLB preview on request | Current working iteration; work draft |
+| Awaiting composition approval | Gray main image, five views and GLB | Preserved checkpoint; confirmation |
+| Materials, lighting or final work | Appearance render | Current working iteration; work draft |
+| Completed or best-effort delivery | Reviewed appearance | Selected best checkpoint; delivery |
+
+Geometry/composition edits automatically render gray images. `scene_review_views`
+and `scene_preview` can inspect incomplete work without advancing its phase,
+spending an edit round or approving it. Views, profiles and manifests identify
+their source and iteration; stale or wrong-mode artifacts are not offered as
+the current result. Work drafts never expose an approval button. Final export
+and explicit composition approval retain their existing state checks.
+
 ## Interactive 3D preview
 
-At the composition checkpoint (`awaiting_review`), call `scene_preview` with the
-scene ID, then poll `scene_view` until the preview job finishes. The viewer loads
-the best checkpoint's GLB, render profile, and Scene Graph. Preparing this preview
+During geometry/composition work or at its confirmation checkpoint, call
+`scene_preview` with the scene ID, then poll `scene_view` until the job finishes.
+The service generates missing five-view evidence and chooses the source from
+`workflowState`: current work during editing/review, preserved best checkpoint
+while `awaiting_review`. The viewer loads that iteration's GLB, render profile
+and Scene Graph. Preparing this preview
 preserves the checkpoint, pending approval, and stage budget. Final
 `scene_export` remains blocked until the workflow reaches `completed` or
 `best_effort`; only `scene_review_decision` records the user's decision.
+
+During structural confirmation, the main image and five review views use neutral
+gray shading. The review GLB replaces textures and material effects with opaque
+gray surfaces and neutral studio lighting on an export copy. Original materials,
+lights and `.blend` checkpoints are retained for downstream work and final export.
+Previously cached textured review GLBs are hidden until `scene_preview` regenerates
+them. Original `.blend` files keep their materials; work drafts expose previews,
+while checkpoint/final downloads may include the original `.blend`.
 
 The Scene Graph uses stable `scene_node_id` properties on Blender objects.
 Export includes `scene-graph.json` and `manifest.json`, and checks that built
@@ -157,7 +226,27 @@ depth, occlusion, and relative object positions. Each file can include a short
 still supported. Use `scene_continue.references` to append views to a delivered
 scene while preserving its primary image, with at most 6 references in total.
 
-`scene_get` returns all labeled images, or one image selected by `referenceName`.
+Select image content explicitly when using `scene_get`:
+
+| `images` | Returned image content |
+| --- | --- |
+| `render` | Latest render only; use once after each edit |
+| `references` | Reference views only; inspect once before planning |
+| `none` | No images; scene state and reference metadata remain available |
+| `all` | References and latest render; also the legacy behavior when omitted |
+
+`referenceName` selects one reference view, alone or with `images: "references"`.
+`objectName` returns object data without images, alone or with `images: "none"`.
+Do not combine these selectors with incompatible image modes. Poll with
+`scene_view`, then retrieve each finished render once with `images: "render"`.
+Avoid reading that same PNG again through the host's image-reading tool.
+
+Image limits apply to the conversation sent to the model, including repeated
+tool results. The shared Skill asks the host to count images from all sources and checkpoint
+around 35 images on the observed 50-image TTADK route. This is host guidance,
+not a server-enforced conversation quota. The service cannot remove historical
+images from Claude Code; see [image-history recovery](docs/operations.md#image-history-and-recovery).
+
 The embedded viewer lets users select and enlarge any reference. In clients
 that expose file upload, select multiple images, choose the primary view, then
 create a scene or add views to the current scene. The host model reconciles the
@@ -165,13 +254,13 @@ views during planning and spatial review; image-space alignment uses the primary
 view. This input support does not automatically estimate calibrated cameras or
 triangulate geometry.
 
-In local Codex, attach the images to the conversation and ask to use the Blender
+In local Codex or Claude Code, attach the images to the conversation and ask to use the Blender
 scene plugin. Each reference can use `local_path` instead of `download_url` and
 `file_id`. The local service must enable the image directories with
 `LOCAL_REFERENCE_ROOTS` (platform path separator). Local files are disabled by
 default; approved files are copied into the scene and checked for PNG/JPEG/WebP
 content and the 20 MB limit. Reinstall an updated local plugin, then restart
-Codex and use a new conversation to load its tools and instructions.
+the host and use a new conversation to load its tools and instructions.
 
 ## Related research
 

@@ -1,9 +1,9 @@
 {
-  "name": "codex-blender",
-  "interface": { "displayName": "Codex Blender" },
+  "name": "uni-blender-scene",
+  "interface": { "displayName": "UniBlenderScene" },
   "plugins": [
     {
-      "name": "codex-blender-plugin",
+      "name": "uni-blender-scene",
       "source": { "source": "local", "path": "./" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"

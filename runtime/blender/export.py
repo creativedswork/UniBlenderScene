@@ -7,10 +7,11 @@ import tempfile
 from array import array
 
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 
 source = __SOURCE_BLEND__
 directory = __OUTPUT_DIRECTORY__
+structural_preview = __STRUCTURAL_PREVIEW__
 bpy.ops.wm.open_mainfile(filepath=source)
 scene = bpy.context.scene
 
@@ -236,7 +237,64 @@ def display_lut(scene):
         bpy.data.images.remove(image)
 
 
+def prepare_structural_preview(scene):
+    material = bpy.data.materials.new("Structural gray")
+    material.use_nodes = True
+    material.diffuse_color = (0.7, 0.7, 0.7, 1)
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    shader.inputs["Base Color"].default_value = (0.7, 0.7, 0.7, 1)
+    shader.inputs["Roughness"].default_value = 0.8
+    for obj in list(scene.objects):
+        if obj.type == "LIGHT":
+            obj.data = obj.data.copy()
+            obj.data.energy = 0
+            obj.data.color = (1, 1, 1)
+        elif hasattr(obj.data, "materials"):
+            obj.data = obj.data.copy()
+            obj.data.materials.clear()
+            obj.data.materials.append(material)
+            for slot in obj.material_slots:
+                slot.link = "DATA"
+                slot.material = material
+            if obj.type == "MESH":
+                for polygon in obj.data.polygons:
+                    polygon.material_index = 0
+                for attribute in list(obj.data.color_attributes):
+                    obj.data.color_attributes.remove(attribute)
+    world = bpy.data.worlds.new("Structural studio")
+    world.use_nodes = True
+    world.node_tree.nodes.get("Background").inputs["Color"].default_value = (0.12, 0.12, 0.12, 1)
+    world.node_tree.nodes.get("Background").inputs["Strength"].default_value = 0.6
+    scene.world = world
+    meshes = [obj for obj in scene.objects if obj.type == "MESH" and not obj.hide_render]
+    focus = [obj for obj in meshes if min(obj.dimensions) > max(obj.dimensions) * 0.001] or meshes
+    points = [obj.matrix_world @ Vector(corner) for obj in focus for corner in obj.bound_box]
+    center = (Vector(tuple(min(p[i] for p in points) for i in range(3))) + Vector(tuple(max(p[i] for p in points) for i in range(3)))) / 2 if points else Vector((0, 0, 0))
+    radius = max(0.5, max(((point - center).length for point in points), default=1))
+    light = bpy.data.lights.new("Structural key", "AREA")
+    light.energy = 100 * radius * radius
+    light.size = radius * 2
+    key = bpy.data.objects.new("Structural key", light)
+    scene.collection.objects.link(key)
+    key.location = center + Vector((2, -3, 4)) * radius
+    key.rotation_euler = (center - key.location).to_track_quat("-Z", "Y").to_euler()
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.look = "None"
+    scene.view_settings.exposure = 0
+    scene.view_settings.gamma = 1
+    scene.render.film_transparent = False
+    scene.use_nodes = False
+    if scene.camera:
+        scene.camera.data = scene.camera.data.copy()
+        scene.camera.data.dof.use_dof = False
+
+
 try:
+    if structural_preview:
+        environment_path = os.path.join(directory, "environment.exr")
+        if os.path.exists(environment_path):
+            os.unlink(environment_path)
+        prepare_structural_preview(scene)
     world = scene.world
     background = None
     if world and world.use_nodes:
@@ -263,14 +321,15 @@ try:
         scale_y=scene.render.pixel_aspect_y) if camera else None
     if camera:
         camera.name = "__CodexBlenderActiveCamera"
-    baked_objects = bake_static_lighting(scene)
-    material_bakes = bake_procedural_materials(scene)
+    baked_objects = [] if structural_preview else bake_static_lighting(scene)
+    material_bakes = {"objects": 0, "textures": 0} if structural_preview else bake_procedural_materials(scene)
     baked_tints = {
         name: list(scene.objects[name]["codex_preview_emissive_tint"])
         for name in baked_objects if "codex_preview_emissive_tint" in scene.objects[name]
     }
     profile = {
         "version": 1,
+        "previewMode": "structural" if structural_preview else "final",
         "colorManagement": {
             "viewTransform": scene.view_settings.view_transform,
             "look": scene.view_settings.look,
