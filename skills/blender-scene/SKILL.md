@@ -217,10 +217,11 @@ the model to repeatedly ingest them.
 Count image blocks from every source in the current conversation, including
 `Read`, screenshots, external Provider results, references and render reviews.
 Repeated copies count again. Use the host's count when available, otherwise
-keep a conservative running estimate. The observed TTADK GPT route rejects
-requests above 50 images; checkpoint around 35 to leave room for references,
-five-view review and final evidence. Use a lower budget if the active provider
-requires it. A smaller image still counts as an image.
+keep a conservative running estimate. Respect the active model/provider image
+limit and reserve room for references, five-view review and final evidence.
+When the limit is unknown, checkpoint around 35 images as a conservative workflow
+default, not a claimed provider limit. Use a lower budget when required by the
+active provider. A smaller image still counts as an image.
 
 Before the next visual batch could exceed that budget, write a text handoff to
 `.canova/runs/<scene-id>/handoff.md`: scene ID, current stage/iteration, frozen
