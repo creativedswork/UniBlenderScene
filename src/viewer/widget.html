@@ -15,11 +15,20 @@
 <body>
   <header>
     <h1>Blender scene</h1><span id="status" role="status">Connecting</span>
+    <select id="render-backend" aria-label="渲染方式" style="width:auto;max-width:260px;margin:0">
+      <option value="web">Three.js · 网页交互</option>
+      <option value="threert">ThreeRT · 实时交互（实验）</option>
+    </select>
     <button id="mode-render" aria-pressed="true">Render</button>
     <button id="mode-3d" aria-pressed="false" disabled>3D</button>
     <button id="reset" aria-label="Reset camera" title="Reset camera" disabled>↺</button>
     <button id="fullscreen" aria-label="Expand viewer" title="Expand viewer">⛶</button>
   </header>
+  <section id="threert-panel" hidden style="padding:10px 16px;border-bottom:1px solid #5555">
+    <span id="threert-status" role="status" style="font-size:12px"></span>
+    <button id="render-threert" disabled>连接实时渲染</button>
+    <a id="download-threert" class="download" hidden>下载主相机静态图</a>
+  </section>
   <div id="stage">
     <div id="canvas"></div>
     <div id="selection-box">
@@ -39,6 +48,9 @@
       <span id="selection-label"></span>
     </div>
     <img id="render" crossorigin="anonymous" alt="Rendered Blender scene">
+    <div id="threert-live" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center">
+      <canvas id="threert-render" aria-label="ThreeRT 实时交互视图" width="1280" height="720"></canvas>
+    </div>
     <div id="empty">Create a scene in the conversation to preview it here</div>
     <aside id="references" hidden>
       <label for="reference-select">Reference view</label>

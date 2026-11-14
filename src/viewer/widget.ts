@@ -10,6 +10,7 @@ import { TexturePass } from "three/addons/postprocessing/TexturePass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
+import { connectThreeRT } from "./threert-live.js";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
 type GraphNode = { id: string; label: string; kind: string; parentId: string | null; description: string;
@@ -19,6 +20,10 @@ type Snapshot = {
   id: string; prompt: string; stage: string; iteration: number; renderUrl: string | null; bestRenderUrl: string | null;
   reference: { url: string; name?: string; label?: string } | null; references?: ReferenceView[]; best?: { iteration: number };
   job?: { id: string; status: string; kind: string }; exportedIteration?: number; previewedIteration?: number; error?: string;
+  exportVersion?: string;
+  realtimeUrl?: string | null;
+  threeRT?: { available: boolean; reason?: string };
+  threeRTRender?: { status: string; iteration: number; exportVersion: string; error?: string; warnings?: string[] };
   artifacts: { name: string; url: string }[];
   plan?: { graph?: GraphNode[]; workflow?: { stages: { name: string }[] } }; workflowIndex?: number;
   reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
@@ -44,6 +49,9 @@ type Profile = {
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const app = new App({ name: "UniBlenderScene viewer", version: "0.3.3" }, {});
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
+let threeRTImageKey = "", threeRTRequestPending = false;
+let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
+let liveConnecting = false, liveWanted = false, liveStatus = "";
 let referenceListKey = "", reviewImagesKey = "";
 let graphNodes: GraphNode[] = [], selectedNodeId = "";
 const expanded = new Set<string>();
@@ -291,8 +299,86 @@ function setMode(value: string) {
   el("mode-3d").setAttribute("aria-pressed", String(mode === "3d"));
   el("canvas").style.display = mode === "3d" ? "flex" : "none";
   el("render").style.display = mode === "render" && Boolean(el<HTMLImageElement>("render").src) ? "block" : "none";
-  el<HTMLButtonElement>("reset").disabled = mode !== "3d" || !viewer;
+  el<HTMLSelectElement>("render-backend").value = mode === "threert" ? "threert" : "web";
+  el("threert-panel").hidden = mode !== "threert";
+  el("threert-live").style.display = mode === "threert" ? "flex" : "none";
+  liveViewer?.setActive(mode === "threert");
+  if (mode === "threert") el("empty").style.display = "none";
+  el("note").textContent = mode === "threert" ? "ThreeRT 原生实时帧 · 拖动绕转 · 滚轮缩放 · 右键平移" : "Drag to orbit · Scroll to zoom · Right-drag to pan";
+  el<HTMLButtonElement>("reset").disabled = mode === "threert" ? !liveViewer : mode !== "3d" || !viewer;
   updateSelectionBox();
+}
+
+function updateThreeRT() {
+  const scene = snapshot;
+  if (!scene) return;
+  const busy = Boolean(threeRTRequestPending || liveConnecting || scene.job && ["queued", "running"].includes(scene.job.status));
+  const eligible = ["completed", "best_effort"].includes(scene.stage) && Boolean(scene.exportVersion);
+  const state = scene.threeRTRender;
+  const current = state?.exportVersion === scene.exportVersion && state?.iteration === scene.workflowState?.presentation.iteration;
+  el<HTMLButtonElement>("render-threert").disabled = busy || !eligible || !scene.threeRT?.available;
+  el("render-threert").textContent = busy ? "正在连接……" : liveViewer ? "重新连接" : "连接实时渲染";
+  el("threert-status").textContent = !eligible ? "完成场景审核与导出后可用。" :
+    !scene.threeRT?.available ? scene.threeRT?.reason ?? "当前服务未配置 ThreeRT 原生引擎。" :
+    current && state?.status === "failed" ? state.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" :
+    threeRTRequestPending || scene.job?.kind === "threert" && ["queued", "running"].includes(scene.job.status) ? "正在准备材质与本机渲染场景，完成后连接实时视图。" :
+    (liveStatus || "连接后可在网页拖动、缩放和平移；画面帧率取决于本机渲染与传输速度。") + (current ? ` ${state?.warnings?.join(" ") ?? ""}` : "");
+  const url = current && state?.status === "done" ? artifact("threert.png") : undefined;
+  const download = el<HTMLAnchorElement>("download-threert");
+  download.hidden = !url;
+  if (!url) {
+    threeRTImageKey = "";
+  } else if (threeRTImageKey !== url) {
+    threeRTImageKey = url;
+    void assetURL("threert.png", `${url}:${scene.job?.id ?? ""}`).then(image => {
+      if (snapshot?.id !== scene.id || threeRTImageKey !== url) return;
+      download.href = image; download.download = "threert.png";
+      setMode(mode);
+    }).catch(() => {
+      if (snapshot?.id !== scene.id || threeRTImageKey !== url) return;
+      threeRTImageKey = "";
+      el("threert-status").textContent = "ThreeRT 图片加载失败，请重新渲染。";
+    });
+  }
+  if (liveWanted && mode === "threert" && current && state?.status === "done" && !liveViewer && !liveConnecting) void openRealtime();
+}
+
+async function openRealtime() {
+  if (!snapshot?.realtimeUrl || liveConnecting) return;
+  const scene = snapshot;
+  liveConnecting = true; liveStatus = "正在连接本机 ThreeRT 实时视图……";
+  updateThreeRT();
+  try {
+    const connection = await connectThreeRT(el<HTMLCanvasElement>("threert-render"), scene.realtimeUrl!, text => {
+      if (snapshot?.id === scene.id && snapshot.exportVersion === scene.exportVersion) {
+        liveStatus = text; el("threert-status").textContent = text + ` ${scene.threeRTRender?.warnings?.join(" ") ?? ""}`;
+      }
+    });
+    if (snapshot?.id !== scene.id || snapshot.exportVersion !== scene.exportVersion) { connection.dispose(); return; }
+    liveViewer = connection; liveViewer.setActive(mode === "threert");
+    setMode(mode);
+  } catch (error) {
+    liveWanted = false; liveStatus = error instanceof Error ? error.message : "实时连接失败，请重试。";
+    message(liveStatus);
+  } finally { liveConnecting = false; updateThreeRT(); }
+}
+
+async function startThreeRT() {
+  if (!snapshot || threeRTRequestPending) return;
+  const id = snapshot.id;
+  liveViewer?.dispose(); liveViewer = undefined; liveWanted = true; liveStatus = "";
+  if (snapshot.threeRTRender?.status === "done" && snapshot.threeRTRender.exportVersion === snapshot.exportVersion) {
+    await openRealtime(); return;
+  }
+  threeRTRequestPending = true; updateThreeRT(); message("");
+  try {
+    const output = await app.callServerTool({ name: "scene_render_high_quality", arguments: { sceneId: id } });
+    if (snapshot?.id !== id) return;
+    if (output.isError) throw new Error(output.content?.filter(item => item.type === "text").map(item => item.text).join(" ") || "ThreeRT 渲染请求失败。");
+    receive(output.structuredContent);
+  } catch (error) {
+    if (snapshot?.id === id) message(error instanceof Error ? error.message : "ThreeRT 渲染请求失败。");
+  } finally { threeRTRequestPending = false; updateThreeRT(); }
 }
 
 function referenceViews(scene: Snapshot): ReferenceView[] {
@@ -825,7 +911,7 @@ async function loadModel(url: string) {
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
     el("empty").style.display = "none";
-    setMode("3d");
+    setMode(mode === "threert" ? "threert" : "3d");
     renderer.render(scene, camera);
     if (selectedNodeId && graphNodes.some((node) => node.id === selectedNodeId)) focusNode(selectedNodeId);
   } catch (error) {
@@ -838,6 +924,7 @@ function receive(data: unknown) {
   if (!data || typeof data !== "object" || !("id" in data)) return;
   const next = data as Snapshot;
   if (snapshot && snapshot.id !== next.id) {
+    liveViewer?.dispose(); liveViewer = undefined; liveWanted = false; liveStatus = "";
     dispose(); loadedURL = ""; mode = "render";
     referenceListKey = ""; reviewImagesKey = ""; selectedNodeId = ""; expanded.clear(); graphNodes = [];
     el<HTMLDialogElement>("reference-dialog").close();
@@ -846,7 +933,11 @@ function receive(data: unknown) {
     el("empty").style.display = "grid";
     el<HTMLButtonElement>("mode-3d").disabled = true;
   }
+  if (snapshot?.exportVersion !== next.exportVersion) {
+    liveViewer?.dispose(); liveViewer = undefined; liveWanted = false; liveStatus = "";
+  }
   snapshot = next;
+  updateThreeRT();
   if (!artifact("final.glb") && viewer) { dispose(); loadedURL = ""; mode = "render"; }
   if (!viewer) {
     graphNodes = next.plan?.graph ?? [];
@@ -856,9 +947,9 @@ function receive(data: unknown) {
   const busy = next.job && ["queued", "running"].includes(next.job.status);
   const state = next.workflowState, presentation = state?.presentation;
   const structural = presentation?.mode === "structural", pending = next.stage === "awaiting_review";
-  el("status").textContent = busy ? next.job!.kind === "references" ? "Loading reference views" :
+  el("status").textContent = busy ? next.job!.kind === "threert" ? "ThreeRT 渲染中" : next.job!.kind === "references" ? "Loading reference views" :
     next.job!.kind === "create" ? "Preparing scene" : next.job!.kind === "preview" ? "Preparing 3D review preview" : `${next.job!.kind === "export" ? "Exporting" : "Rendering"} scene` :
-    next.error ? "Scene needs attention" : next.stage === "completed" ? "Ready" :
+    next.error ? next.job?.kind === "threert" ? "ThreeRT 渲染失败" : "Scene needs attention" : next.stage === "completed" ? "Ready" :
     next.stage === "best_effort" ? "Best version" : next.stage === "awaiting_review" ? "Confirm composition" :
     next.stage === "review" ? "Awaiting review" :
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
@@ -931,7 +1022,7 @@ function receive(data: unknown) {
       };
     }
   }
-  if (next.error) message("The scene operation failed. Ask in the conversation to inspect it and retry.");
+  if (next.error) message(next.job?.kind === "threert" ? next.threeRTRender?.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" : "The scene operation failed. Ask in the conversation to inspect it and retry.");
   const glb = artifact("final.glb");
   if (glb && glb !== loadedURL && glb !== loadingURL) void loadModel(glb);
   setMode(mode);
@@ -961,7 +1052,14 @@ app.onhostcontextchanged = (context) => {
 };
 el("mode-render").onclick = () => setMode("render");
 el("mode-3d").onclick = () => setMode("3d");
+el<HTMLSelectElement>("render-backend").onchange = () => {
+  setMode(el<HTMLSelectElement>("render-backend").value === "threert" ? "threert" : viewer ? "3d" : "render");
+  updateThreeRT();
+  if (mode === "threert" && !liveViewer && !liveConnecting) void startThreeRT();
+};
+el("render-threert").onclick = () => { void startThreeRT(); };
 el("reset").onclick = () => {
+  if (mode === "threert") { liveViewer?.reset(); return; }
   if (viewer) {
     viewer.controls.enableDamping = false; viewer.controls.update();
     viewer.camera.position.copy(viewer.position); viewer.camera.zoom = viewer.zoom; viewer.camera.updateProjectionMatrix();

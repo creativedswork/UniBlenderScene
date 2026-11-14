@@ -54,7 +54,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   const write = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
   const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json", "best.blend",
-    "review-main.png", "review-front.png", "review-side.png", "review-top.png", "review-perspective.png"] as const;
+    "review-main.png", "review-front.png", "review-side.png", "review-top.png", "review-perspective.png", "threert.png"] as const;
   const assetChunk = async (sceneId: string, name: typeof assetNames[number], offset: number): Promise<CallToolResult> => {
     const scene = store.get(sceneId);
     const file = name === "render" || name === "best.png" ? store.renderFile(scene) :
@@ -221,6 +221,11 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
       }).optional().describe("Web preview exposure offset, saturation and animated local dust in Blender Z-up world coordinates. Omitted reuses prior settings; {} clears them. Does not alter the source render or GLB lighting."),
     }, annotations: write,
   }, (args) => guarded(() => result(store.export(args.sceneId, false, args.lightingBakes, args.previewAppearance))));
+  server.registerTool("scene_render_high_quality", {
+    title: "Render scene with ThreeRT (experimental)",
+    description: "Render the exported delivery checkpoint with the configured local threert-render engine. Produces a static PNG using the saved main camera, source PBR materials, lights and local fog. Does not approve composition, change the scene or consume edit attempts. Requires THREERT_BIN or threert-render on PATH. Async: poll scene_get with images=none.",
+    inputSchema: idSchema, annotations: { ...write, destructiveHint: false }, _meta: { "openai/widgetAccessible": true },
+  }, ({ sceneId }) => guarded(() => result(store.renderHighQuality(sceneId))));
   server.registerTool("scene_preview", {
     title: "Preview structural scene",
     description: "Generate missing five gray views and a gray GLB for workflowState.presentation: current geometry/composition work draft, or preserved composition checkpoint while awaiting_review. Returns actual source, iteration and purpose in state/profile/manifest. A work draft can show unresolved geometry and cannot be approved. Preserves phase, status, budgets, approval and source materials. Rebuilds stale previews; final delivery still requires scene_export. Async: poll scene_get with images=none.",
@@ -356,6 +361,52 @@ export function startServer() {
       }
       if (url.pathname === "/health" && request.method === "GET") {
         response.writeHead(200, { "Content-Type": "application/json" }).end('{"status":"ok","service":"UniBlenderScene","version":"0.3.3"}'); return;
+      }
+      if (url.pathname.startsWith("/realtime/")) {
+        const [, , id, action] = url.pathname.split("/");
+        const scene = store.get(id ?? "");
+        if (!matchesSecret(url.searchParams.get("token") ?? "", scene.token)) {
+          response.writeHead(403).end("Realtime access denied."); return;
+        }
+        const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type", "Access-Control-Expose-Headers": "x-frame-sequence,x-frame-time", "Cache-Control": "no-store" };
+        if (request.method === "OPTIONS") { response.writeHead(204, cors).end(); return; }
+        const session = url.searchParams.get("session") ?? "";
+        try {
+          const target = store.realtimeTarget(scene.id);
+          if (url.searchParams.get("version") !== target.version) throw new Error("场景版本已变化，请重新连接。");
+          let result: unknown;
+          if (action === "start" && request.method === "POST") result = await store.live.connect(scene.id, target.version, target.directory, target.binary);
+          else if (action === "camera" && request.method === "POST" && request.headers["content-type"]?.includes("application/json")) {
+            result = await store.live.camera(scene.id, target.version, session, await jsonBody(request));
+          } else if (action === "stream" && request.method === "GET") {
+            response.writeHead(200, { ...cors, "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff" });
+            let closed = false;
+            response.once("close", () => { closed = true; });
+            try {
+              while (!closed) {
+                const frame = await store.live.frame(scene.id, target.version, session);
+                if (closed) break;
+                // Length, sequence and timestamp precede each PNG in the continuous response.
+                const header = Buffer.alloc(16);
+                header.writeUInt32BE(frame.bytes.length, 0); header.writeUInt32BE(frame.sequence, 4); header.writeDoubleBE(frame.capturedAt, 8);
+                await new Promise<void>(resolve => response.write(Buffer.concat([header, frame.bytes]), () => resolve()));
+              }
+            } catch { /* A stale native session ends the stream; the viewer offers reconnection. */ }
+            if (!closed) response.end();
+            return;
+          } else if (action === "frame" && request.method === "GET") {
+            const frame = await store.live.frame(scene.id, target.version, session);
+            response.writeHead(200, { ...cors, "Content-Type": "image/png", "Content-Length": frame.bytes.length,
+              "X-Frame-Sequence": String(frame.sequence), "X-Frame-Time": String(frame.capturedAt) }).end(frame.bytes); return;
+          } else if (action === "stop" && request.method === "POST") {
+            store.live.disconnect(scene.id, target.version, session); result = { ok: true };
+          } else { response.writeHead(405, cors).end("Unsupported realtime operation."); return; }
+          response.writeHead(200, { ...cors, "Content-Type": "application/json" }).end(JSON.stringify(result));
+        } catch (error) {
+          response.writeHead(409, { ...cors, "Content-Type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : "ThreeRT 实时连接失败。" }));
+        }
+        return;
       }
       if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
         const parts = decodeURIComponent(url.pathname).split("/");

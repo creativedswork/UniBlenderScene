@@ -326,6 +326,56 @@ the MCP endpoint itself is not a Chrome preview page. See the
 [viewer checklist](docs/acceptance-0.2.1.md) and
 [service setup](docs/operations.md#open-the-interactive-preview).
 
+### Experimental ThreeRT rendering
+
+The viewer's rendering menu includes **ThreeRT · 实时交互（实验）**. Selecting it
+connects the browser's orbit, zoom and pan controls to the native renderer and
+continuously displays its current frames. Reset restores the saved main camera;
+switching modes pauses frame reception. The saved main-camera render remains
+available as a separate static-image download.
+
+ThreeRT runs on the service host. This experimental transport reads PNG frames
+from the native client; it is not a browser GPU renderer or a video stream.
+Full-resolution readback measured about 5 frames/second on an M4 Pro, with added
+input latency. The viewer displays the actual delivered frame rate. Use
+**Three.js · 网页交互** when smooth local interaction is required. Only one
+native viewport can be controlled at a time; connecting another viewer replaces
+the previous session. Native client credentials remain on the service host.
+
+Install the [ThreeRT native client](https://threert.dev/download/) or build
+`threert-render` from [its source](https://github.com/meshy-dev/ThreeRT), then set
+`THREERT_BIN` in the service environment and restart the service:
+
+```dotenv
+THREERT_BIN=/Applications/ThreeRT.app/Contents/MacOS/threert
+```
+
+Live interaction requires the native `threert` CLI; the standalone
+`threert-render` executable supports static rendering only. The executable may
+also be found on `PATH`. No native engine is bundled or
+downloaded automatically. The menu explains when it is missing. A delivered,
+exported scene is required; structural review and composition approval continue
+to use Blender evidence.
+
+`scene_render_high_quality` exports unbaked source PBR materials on a Blender
+copy, then calls the native engine. This avoids treating baked lightmaps as
+physical emitters. It preserves the approved scene, original GLB and edit budget.
+Poll `scene_get` with `images: "none"`; the current successful image is exposed as
+`threert.png`. Output, input settings and engine logs remain under the scene's
+`threert/` directory in `.canova/runs/`. Older exports' images are not presented
+as current, and a failed render can be retried without rebuilding the scene.
+
+This first version imports perspective cameras, source lights, PBR materials,
+environment lighting and local fog volumes. The native engine currently rejects
+HDRI environments, so the adapter fits a zenith/horizon/ground gradient from the
+exported EXR and approximates a separate camera background by its horizon color;
+the viewer labels this difference. Disk area lights are approximated
+by rectangles; ThreeRT uses its own filmic display transform. Local fog is a
+static participating medium, without the browser preview's animated density
+noise. Orthographic cameras are currently unsupported. Image quality and native
+GPU support must be verified for each scene; the option makes no photorealism
+guarantee.
+
 ## Multiple reference views
 
 Supply up to 6 images of the same scene in `scene_create.references`. The first

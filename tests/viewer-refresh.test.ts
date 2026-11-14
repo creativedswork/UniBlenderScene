@@ -38,7 +38,7 @@ function setup(latest = scene("completed", 7), failRender = false) {
   const context = createContext({ app, el, console: { error() {} },
     document: { createElement: () => ({}) },
     assetURL: (name: string) => failRender || name === "render" ? Promise.reject(new Error("Expired asset")) : Promise.resolve("blob:current-render"),
-    referenceViews: () => [], renderGraph() {}, showReference() {}, setMode() {}, dispose() {},
+    referenceViews: () => [], renderGraph() {}, showReference() {}, setMode() {}, dispose() {}, updateThreeRT() {},
     message: (text: string) => { el("message").textContent = text; },
     setTimeout: (callback: () => void) => { timers.set(1, callback); return 1; },
     clearTimeout: (id: number) => timers.delete(id),
