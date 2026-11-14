@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export type AssetRequirement = { nodeId: string; kind: "object" | "structure" | "existing"; reason: string };
 export type AssetStrategy = { nodeId: string; providers: string[]; evidence: string;
+  discovery?: { tools: string; skills: string };
   provider?: string; taskId?: string; artifactPath?: string; sha256?: string };
 export type GraphReview = { checks: { id: string; passed: boolean; evidence: string }[];
   referenceEvidence: { reference: string; observation: string }[] };
@@ -23,11 +24,14 @@ export function verifyGraphReview(review: GraphReview, references: string[]): vo
 
 export function verifyAssetStrategy(root: string, requirement: AssetRequirement, strategy: AssetStrategy, allowPending = false): AssetStrategy {
   if (!strategy.evidence.trim() || new Set(strategy.providers).size !== strategy.providers.length ||
-      strategy.providers.some((p) => !p.trim())) throw new Error("Record provider discovery evidence and distinct tool IDs.");
+      strategy.providers.some((p) => !p.trim())) throw new Error("Record provider discovery evidence and distinct provider IDs (tools or Skills).");
   if (requirement.kind !== "object") throw new Error("Only standalone objects require a provider strategy.");
   if (!strategy.providers.length) {
     if (strategy.provider || strategy.artifactPath || strategy.taskId) throw new Error("Blender fallback requires no applicable provider.");
-    return { nodeId: strategy.nodeId, providers: [], evidence: strategy.evidence };
+    if (!strategy.discovery?.tools?.trim() || !strategy.discovery?.skills?.trim()) {
+      throw new Error("Blender fallback requires discovery.tools and discovery.skills evidence. Check connected tools and available Skills, including CLI providers, then record the strategy again.");
+    }
+    return { nodeId: strategy.nodeId, providers: [], evidence: strategy.evidence, discovery: { ...strategy.discovery } };
   }
   if (allowPending && !strategy.artifactPath) {
     if (strategy.provider && !strategy.providers.includes(strategy.provider)) throw new Error("Select a discovered provider.");

@@ -78,7 +78,9 @@ The five modules are grouped by responsibility:
 | Three.js viewer | Shows the render, progressive path-traced GLB preview, selectable scene tree, and composition review controls inside an MCP Apps host. | [`src/viewer/widget.ts`](src/viewer/widget.ts), [`src/viewer/widget.html`](src/viewer/widget.html) |
 
 Standalone objects must use an applicable separately configured 3D API Provider.
-Blender modeling is the fallback only when discovery finds no applicable Provider.
+The host checks both connected tools and available Skills, including Providers
+accessed through a Skill's CLI. Blender fallback requires discovery evidence for
+both inventories; the service cannot inspect the host's catalog itself.
 Geometry plans record each object strategy and its downloaded GLB provenance;
 room surfaces and simple primitives can be procedural.
 The plugin does not bundle a 3D asset provider or its credentials.
@@ -150,7 +152,7 @@ The [scene Skill](skills/blender-scene/SKILL.md) describes this tool sequence:
 | `scene_review_views` | Retry generation of the five confirmation views |
 | `scene_preview` | Prepare current geometry/composition work or a pending checkpoint as a gray 3D preview without approving it |
 | `scene_export` | Export the best reviewed `.blend` and GLB after completion |
-| `scene_view` | Check progress and open the interactive viewer |
+| `scene_view` | Open the interactive viewer after the current-stage render is ready |
 | `scene_continue` | Refine an existing scene |
 
 The service saves a checkpoint before each edit, supplies an iteration-bound inspection, and exports the best reviewed scene. See the [0.2.0 acceptance checklist](docs/acceptance-0.2.0.md) for Provider, multi-view and approval checks.
@@ -169,6 +171,96 @@ For reference images, the host records major regions in normalized image
 coordinates and measures them in each render. The service checks those submitted
 measurements and keeps composition open when a region edge differs by more than
 8% of the frame; it does not detect objects in images on its own.
+
+## Memory: learning across scene tasks
+
+Memory is a persistent local library of scene cases, lessons and validated
+reusable skills. It supplements the inner scene loop (edit, render, review,
+revise) with an outer loop that turns supported repairs into production
+functions, checks or guidance for later tasks. The host supplies the reasoning;
+the service stores evidence, runs validation and controls which versions can be
+retrieved. See the [experience workflow](skills/blender-scene/references/experience.md)
+and [library implementation](src/service/experience.ts).
+
+| Stored memory | Contents and purpose |
+| --- | --- |
+| Scene case | Delivery checkpoint hashes, export version, review history and remaining gaps |
+| Retrospective | Problem, cause, repair, verification, applicability and limitations; user-accepted differences remain separate |
+| Skill candidate | An immutable version of `guidance`, a `blender_function` or a `check`, linked to verified source lessons |
+| Validation and active version | Case reviews, fixture results and the exact version available for reuse; earlier versions remain available for rollback |
+
+The host follows the [scene Skill](skills/blender-scene/SKILL.md) and the service's
+`blender-scene` MCP Prompt to perform this cycle during normal task execution:
+
+1. **Retrieve:** scene responses list relevant active skills in `learning.skills`.
+   The host reads their full instructions/code with `scene_library_search` before
+   planning and applies suitable functions through the guarded `scene_edit` path.
+2. **Capture:** final export records a case automatically. Successful edit scripts
+   stay under the scene's `scripts/` directory for later inspection.
+3. **Reflect:** after checking the delivery, the host sees
+   `learning.retrospectiveDue: true` and calls `scene_experience` before its final
+   reply. The retrospective binds the current case fingerprint and copies the
+   selected evidence into hash-addressed storage. Recording it clears the flag.
+4. **Consolidate:** `learning.batchDue` becomes true when unused verified lessons
+   exist from at least three distinct scenes. The host groups recurring lessons
+   into skill candidates; an important reproducible repair can be proposed sooner.
+   Observations and preferences remain cases and cannot become shared skills.
+5. **Validate and activate:** the host reviews applicable cases and counterexamples,
+   runs the candidate's checks, then activates its latest passing exact version.
+   A new proposal leaves the previous active version in place until activation.
+
+For example, the following fields in a `scene_get` response tell the host that
+the current delivery needs a retrospective, while batch consolidation is not due:
+
+```json
+{
+  "learning": {
+    "retrospectiveDue": true,
+    "batchDue": false,
+    "case": { "fingerprint": "<current case fingerprint>" },
+    "skills": []
+  }
+}
+```
+
+With the updated Skill or MCP Prompt loaded, the host performs these memory
+steps without separate user reminders or per-entry confirmations. The flags are
+structured task signals, not UI notifications or a server-enforced delivery
+block. A host that ignores them can still deliver without a retrospective.
+Learning runs while the host is executing a task; the service does not run a
+background model or change model weights. Existing composition and paid-Provider
+authorization requirements still apply.
+
+| Tool | Result |
+| --- | --- |
+| `scene_experience` | Prepare a case or record a fingerprint-bound retrospective with immutable evidence and accepted differences |
+| `scene_library_search` | Retrieve active skills and cases; optionally inspect candidates and validation reports |
+| `scene_skill_propose` | Version reusable guidance, Blender production functions or checks derived from verified lessons |
+| `scene_skill_validate` | Review source cases and run positive/counterexample unittest fixtures through the dedicated Blender queue |
+| `scene_skill_activate` | Activate the latest passing exact version, retire it, or reactivate a previously verified version |
+
+Guidance is labelled `host-review` and requires applicable/counterexample cases
+from distinct scenes. Executable entries are labelled `blender-tests`; empty,
+skipped and failing suites cannot qualify. Tests use disposable scenes and
+restore the task checkpoint without consuming scene edit rounds. Learned code
+has the same OS permissions as `scene_edit`; this is not a sandbox. Applying
+functions to a production scene still uses `scene_edit` and its workflow guards.
+Fixture success does not establish visual similarity to a new reference.
+
+The library is shared by scenes using the same `RUNS_ROOT`, and survives service
+restarts and new host conversations. Metadata lives in
+`RUNS_ROOT/experience-library/library.json`; copied evidence lives in its
+`evidence/` directory. The default root is `.canova/runs/`. Separate roots have
+separate libraries; moving the service requires retaining this data to retain
+its memory. Retrieval uses task terms matched against titles, tags and
+applicability; it does not require an embedding service.
+
+Missing or changed source evidence excludes a skill from retrieval. Failed
+validation prevents activation, and `scene_skill_activate` can retire an entry
+or reactivate a previously verified version. Learning does not rewrite installed
+Skills, edit repository source or publish a plugin. Runtime cases and user images
+are excluded from Git and plugin packages; memory remains local to the service's
+data root.
 
 ## Authoritative workflow state
 
@@ -196,7 +288,9 @@ and explicit composition approval retain their existing state checks.
 ## Interactive 3D preview
 
 During geometry/composition work or at its confirmation checkpoint, call
-`scene_preview` with the scene ID, then poll `scene_view` until the job finishes.
+`scene_preview` with the scene ID, then poll `scene_get` with `images: "none"`
+until the job finishes. Open `scene_view` only when the snapshot's `renderUrl`
+is non-null. Creation and progress queries return data without opening a card.
 The service generates missing five-view evidence and chooses the source from
 `workflowState`: current work during editing/review, preserved best checkpoint
 while `awaiting_review`. The viewer loads that iteration's GLB, render profile
@@ -253,7 +347,7 @@ Select image content explicitly when using `scene_get`:
 `referenceName` selects one reference view, alone or with `images: "references"`.
 `objectName` returns object data without images, alone or with `images: "none"`.
 Do not combine these selectors with incompatible image modes. Poll with
-`scene_view`, then retrieve each finished render once with `images: "render"`.
+`scene_get` with `images: "none"`, then retrieve each finished render once with `images: "render"`.
 Avoid reading that same PNG again through the host's image-reading tool.
 
 Image limits apply to the conversation sent to the model, including repeated

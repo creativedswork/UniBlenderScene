@@ -12,8 +12,15 @@ from mathutils import Matrix, Vector
 source = __SOURCE_BLEND__
 directory = __OUTPUT_DIRECTORY__
 structural_preview = __STRUCTURAL_PREVIEW__
+lighting_bakes = __LIGHTING_BAKES__
+preview_appearance = __PREVIEW_APPEARANCE__
 bpy.ops.wm.open_mainfile(filepath=source)
 scene = bpy.context.scene
+for request in lighting_bakes:
+    obj = scene.objects.get(request["objectName"])
+    if obj is None or obj.type != "MESH" or obj.hide_render:
+        raise ValueError("Lighting bake requires a visible mesh: " + request["objectName"])
+    obj["codex_bake_lighting"] = request["resolution"]
 
 
 def upstream(socket, kind, seen=None):
@@ -40,24 +47,30 @@ def bake_static_lighting(scene):
     if not candidates:
         return []
     scene.render.engine = "CYCLES"
-    scene.cycles.samples = min(scene.cycles.samples, 32)
+    scene.cycles.samples = min(scene.cycles.samples, 16)
     scene.render.bake.margin = 8
     scene.render.bake.use_clear = True
     baked = []
+    results = []
     for obj in candidates:
         resolution = int(obj["codex_bake_lighting"])
-        if resolution < 64 or resolution > 1024:
+        if resolution < 64 or resolution > 4096:
             raise ValueError(f"Invalid light bake resolution on {obj.name}: {resolution}")
-        if not obj.data.uv_layers:
-            obj.data.uv_layers.new(name="BakedLighting")
-            bpy.ops.object.select_all(action="DESELECT")
-            obj.select_set(True)
-            bpy.context.view_layer.objects.active = obj
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.select_all(action="SELECT")
-            bpy.ops.uv.smart_project(island_margin=0.03)
-            bpy.ops.object.mode_set(mode="OBJECT")
-        image = bpy.data.images.new(f"{obj.name} baked lighting", width=resolution, height=resolution, alpha=False)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        obj.data = bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph),
+                                                  preserve_all_data_layers=True, depsgraph=depsgraph)
+        obj.modifiers.clear()
+        uv = obj.data.uv_layers.new(name="BakedLighting")
+        obj.data.uv_layers.active = uv
+        uv_name = uv.name
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.uv.smart_project(island_margin=0.01)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        image = bpy.data.images.new(f"{obj.name} baked lighting", width=resolution, height=resolution, alpha=False, float_buffer=True)
         image.generated_color = (0, 0, 0, 1)
         materials = []
         for slot in obj.material_slots:
@@ -77,8 +90,31 @@ def bake_static_lighting(scene):
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
         bpy.context.view_layer.objects.active = obj
-        bpy.ops.object.bake(type="COMBINED", pass_filter={"DIFFUSE", "DIRECT", "INDIRECT"})
+        bpy.ops.object.bake(type="COMBINED", pass_filter={"COLOR", "DIFFUSE", "DIRECT", "INDIRECT"}, uv_layer=uv_name)
+        pixels = array("f", [0]) * (resolution * resolution * 4)
+        image.pixels.foreach_get(pixels)
+        peak = max(1.0, max(value for i, value in enumerate(pixels) if i % 4 != 3 and math.isfinite(value)))
+        for i in range(len(pixels)):
+            if i % 4 != 3:
+                value = max(0.0, pixels[i]) / peak
+                pixels[i] = 12.92 * value if value <= 0.0031308 else 1.055 * value ** (1.0 / 2.4) - 0.055
+        # Float bake buffers contain linear radiance. glTF's PNG emissive map
+        # must contain sRGB bytes; packing a float buffer directly stays linear.
+        baked_image = bpy.data.images.new(f"{obj.name} lighting sRGB", width=resolution, height=resolution, alpha=False)
+        baked_image.colorspace_settings.name = "sRGB"
+        image = baked_image
+        image.pixels.foreach_set(pixels)
         image.pack()
+        results.append((obj, materials, image, uv_name, peak))
+        baked.append(obj.name)
+    # Keep every source shader intact until all objects have sampled the lighting.
+    for obj, materials, image, uv_name, peak in results:
+        # Baked shaders use only this atlas. Export it as TEXCOORD_0 so renderers
+        # with one UV channel (including our path tracer) sample it correctly.
+        for layer in list(obj.data.uv_layers):
+            if layer.name != uv_name:
+                obj.data.uv_layers.remove(layer)
+        obj.data.update()
         for material in materials:
             nodes = material.node_tree.nodes
             nodes.clear()
@@ -86,12 +122,14 @@ def bake_static_lighting(scene):
             shader = nodes.new("ShaderNodeBsdfPrincipled")
             shader.inputs["Base Color"].default_value = (0, 0, 0, 1)
             shader.inputs["Roughness"].default_value = 1
-            shader.inputs["Emission Strength"].default_value = 1
+            shader.inputs["Emission Strength"].default_value = peak
             texture = nodes.new("ShaderNodeTexImage")
             texture.image = image
+            coordinates = nodes.new("ShaderNodeUVMap")
+            coordinates.uv_map = uv_name
+            material.node_tree.links.new(coordinates.outputs["UV"], texture.inputs["Vector"])
             material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Emission Color"])
             material.node_tree.links.new(shader.outputs["BSDF"], output.inputs["Surface"])
-        baked.append(obj.name)
     return baked
 
 
@@ -103,6 +141,8 @@ def bake_procedural_materials(scene):
         if not socket or not socket.is_linked:
             return False
         source = socket.links[0].from_node
+        if source.type == "NORMAL_MAP" and socket.name == "Normal":
+            return needs_bake(source.inputs.get("Color"))
         if source.type != "TEX_IMAGE":
             return True
         vector = source.inputs.get("Vector")
@@ -206,6 +246,82 @@ def bake_procedural_materials(scene):
     return report
 
 
+def compositor_profile(scene):
+    tree = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
+    if not tree or not scene.render.use_compositing:
+        return {}
+    output = next((n for n in tree.nodes if n.type in {"GROUP_OUTPUT", "COMPOSITE"} and getattr(n, "is_active_output", True)), None)
+    if not output or not output.inputs.get("Image"):
+        return {}
+    result = {}
+    glare = upstream(output.inputs["Image"], "GLARE")
+    if glare and glare.inputs.get("Type") and glare.inputs["Type"].default_value == "Bloom":
+        result["bloom"] = {key: float(glare.inputs[name].default_value) for key, name in
+                           [("strength", "Strength"), ("threshold", "Threshold"), ("radius", "Size")]
+                           if glare.inputs.get(name)}
+    source = output.inputs["Image"].links[0].from_node if output.inputs["Image"].is_linked else None
+    if source and source.bl_idname == "ShaderNodeMix" and source.data_type == "RGBA" and source.inputs[0].is_linked:
+        amount = source.inputs[0].links[0].from_node
+        if amount.type == "MATH" and amount.operation == "MULTIPLY" and amount.inputs[0].is_linked:
+            link = amount.inputs[0].links[0]
+            if link.from_node.type == "R_LAYERS" and link.from_socket.name == "Mist" and not source.inputs[7].is_linked:
+                mist = scene.world.mist_settings
+                if mist.falloff in {"LINEAR", "QUADRATIC"}:
+                    result["haze"] = {"start": float(mist.start), "depth": float(mist.depth),
+                                      "falloff": mist.falloff, "strength": float(amount.inputs[1].default_value),
+                                      "color": list(source.inputs[7].default_value)[:3]}
+    return result
+
+
+def bake_world_backgrounds(scene, world_output, ambient):
+    surface = world_output.inputs["Surface"]
+    original_surface = surface.links[0].from_socket
+    original_camera = scene.camera
+    visibility = [(obj, obj.hide_render) for obj in scene.objects]
+    render = scene.render
+    settings = render.image_settings
+    saved = (render.resolution_x, render.resolution_y, render.resolution_percentage, render.filepath,
+             render.engine, render.film_transparent, render.use_compositing,
+             settings.file_format, settings.color_mode, settings.color_depth, scene.cycles.samples)
+    data = bpy.data.cameras.new("World export panorama")
+    camera = bpy.data.objects.new("World export panorama", data)
+    scene.collection.objects.link(camera)
+    data.type = "PANO"
+    if hasattr(data, "panorama_type"):
+        data.panorama_type = "EQUIRECTANGULAR"
+    else:
+        data.cycles.panorama_type = "EQUIRECTANGULAR"
+    camera.rotation_euler = (math.pi / 2, 0, 0)
+    try:
+        for obj, _ in visibility:
+            obj.hide_render = True
+        scene.camera = camera
+        render.resolution_x, render.resolution_y, render.resolution_percentage = 512, 256, 100
+        render.engine, render.film_transparent, render.use_compositing = "CYCLES", False, False
+        settings.file_format, settings.color_mode, settings.color_depth = "OPEN_EXR", "RGB", "32"
+        scene.cycles.samples = 1
+        scene.world.node_tree.links.new(ambient.outputs[0], surface)
+        render.filepath = os.path.join(directory, "environment.exr")
+        bpy.ops.render.render(write_still=True)
+        scene.world.node_tree.links.new(original_surface, surface)
+        render.filepath = os.path.join(directory, "background.exr")
+        bpy.ops.render.render(write_still=True)
+        with open(render.filepath, "rb") as file:
+            background = "data:application/octet-stream;base64," + base64.b64encode(file.read()).decode("ascii")
+        os.unlink(render.filepath)
+        return background
+    finally:
+        scene.world.node_tree.links.new(original_surface, surface)
+        scene.camera = original_camera
+        for obj, hidden in visibility:
+            obj.hide_render = hidden
+        bpy.data.objects.remove(camera, do_unlink=True)
+        bpy.data.cameras.remove(data)
+        (render.resolution_x, render.resolution_y, render.resolution_percentage, render.filepath,
+         render.engine, render.film_transparent, render.use_compositing,
+         settings.file_format, settings.color_mode, settings.color_depth, scene.cycles.samples) = saved
+
+
 def display_lut(scene):
     """Sample Blender's view transform, look, exposure and gamma for the web preview."""
     size, maximum = 48, 32.0
@@ -297,6 +413,7 @@ try:
         prepare_structural_preview(scene)
     world = scene.world
     background = None
+    output = None
     if world and world.use_nodes:
         output = next((node for node in world.node_tree.nodes if node.type == "OUTPUT_WORLD" and node.is_active_output), None)
         background = upstream(output.inputs.get("Surface"), "BACKGROUND") if output else None
@@ -305,6 +422,7 @@ try:
     environment = upstream(background.inputs.get("Color"), "TEX_ENVIRONMENT") if background else None
     mapping = upstream(environment.inputs.get("Vector"), "MAPPING") if environment else None
     environment_uri = None
+    background_uri = None
     if environment and environment.image:
         settings = scene.render.image_settings
         original = (settings.file_format, settings.color_mode, settings.color_depth)
@@ -314,6 +432,10 @@ try:
             environment_uri = "environment.exr"
         finally:
             settings.file_format, settings.color_mode, settings.color_depth = original
+    elif not structural_preview and background and background.inputs["Color"].is_linked and not output.inputs["Volume"].is_linked:
+        background_uri = bake_world_backgrounds(scene, output, background)
+        environment_uri = "environment.exr"
+        strength = 1.0
     camera = scene.camera
     camera_projection = camera.calc_matrix_camera(
         bpy.context.evaluated_depsgraph_get(), x=scene.render.resolution_x,
@@ -358,7 +480,10 @@ try:
         "world": {
             "color": color, "strength": strength, "environmentUri": environment_uri,
             "environmentRotationY": -float(mapping.inputs["Rotation"].default_value[2]) if mapping else 0.0,
+            "backgroundEnvironmentUri": background_uri,
         },
+        "postprocessing": {} if structural_preview else compositor_profile(scene),
+        "previewAppearance": {} if structural_preview else preview_appearance,
         "bakedObjects": baked_objects,
         "bakedTints": baked_tints,
         "materials": material_bakes,

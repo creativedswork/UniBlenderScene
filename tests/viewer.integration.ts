@@ -123,6 +123,8 @@ try {
   }, undefined, { timeout: 60000 });
   assert.equal(await canvas.getAttribute("data-bounces"), "8");
   assert.equal(await canvas.getAttribute("data-display-transform"), "blender-lut");
+  assert.equal(await canvas.getAttribute("data-effects"), "bloom,haze,dust");
+  assert.equal(await canvas.getAttribute("data-dust-lighting"), "sun-shadow");
   await canvas.screenshot({ path: resolve(root, "viewer-3d.png") });
   const first = await canvas.screenshot();
   const initialOutline = await frame.locator("#selection-outline").getAttribute("d");

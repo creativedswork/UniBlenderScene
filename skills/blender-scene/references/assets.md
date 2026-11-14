@@ -17,11 +17,21 @@ inspect the model in Blender becomes the agent's import and inspection work here
 Continue authorized work until the scene reaches `awaiting_review`, final
 delivery, or a concrete blocker; report the exact blocker when stopping early.
 
-1. Discover the host's 3D generation tools and read the selected Provider's
-   instructions. For every `object` node, record the applicable tool IDs and
-   discovery evidence through `scene_asset_strategy`. A nonempty Provider list
-   without an artifact remains pending and blocks mutation. Provider selection, authentication and cost approval
-   belong to the host; do not put credentials in this service.
+1. Inspect both the connected tool inventory and the host's available Skill
+   catalog, including user-level and plugin Skills. Read candidate Skills and
+   their referenced API/CLI entry points before deciding applicability. Evaluate
+   the standalone asset subtask: a Skill may exclude scene assembly while still
+   supporting image-to-model generation. For example, `canova-3d-creation` can
+   expose a controlled CLI without a corresponding MCP generation tool. A Skill
+   is a Provider candidate when it supplies the needed 3D operation; names alone
+   do not establish applicability.
+   For every `object` node, record applicable tool IDs or `skill:<name>` IDs in
+   `providers` and the discovery evidence through `scene_asset_strategy`. A known
+   candidate with unresolved access, authentication, cost or reference-image
+   prerequisites stays pending; it does not become absent. A nonempty Provider
+   list without an artifact blocks mutation. Follow the selected Provider's
+   instructions; selection, authentication and cost approval belong to the host.
+   Do not put credentials in this service.
 2. Prepare an isolated object reference from the supplied views and inspect it.
    A whole room image is not a single-object input. Explain the object, selected
    model, format and cost; obtain paid-generation approval under the Provider's
@@ -36,11 +46,15 @@ delivery, or a concrete blocker; report the exact blocker when stopping early.
    planned object strategies; all must be resolved before `scene_edit` can import
    and assemble the scene. Report each asset's completion as progress and perform
    the next authorized action in the same turn, without waiting for "continue".
-4. If discovery finds no applicable Provider, call `scene_asset_strategy` with
-   `providers: []` and specific discovery evidence. Only then model that object
-   in Blender. The service trusts the host's capability inventory; it cannot
-   independently enumerate another MCP connection or certify that its claims
-   are true.
+4. Only when both inventories establish no applicable Provider, call
+   `scene_asset_strategy` with `providers: []`, `evidence`, and `discovery`:
+   `tools` describes the connected tools inspected and their results; `skills`
+   describes the Skill catalog and candidate instructions inspected and why
+   none applies. An unavailable inventory leaves discovery incomplete; report
+   that blocker instead of claiming no Provider. Only then model the object in
+   Blender. The service requires both evidence fields, including when reusing a
+   saved fallback, but trusts the host's observations; it cannot enumerate the
+   host's tools or Skills or certify that its claims are true.
 5. Import the recorded GLB through `scene_edit`. Tag each asset root with
    `scene_node_id`, `provider_task_id` and `provider_asset_sha256` using the saved
    strategy's values. A visible descendant mesh must exist before rendering.

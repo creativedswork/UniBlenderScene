@@ -5,6 +5,7 @@ import { open, readFile, realpath } from "node:fs/promises";
 import { BlenderClient, factorGuardCode, inspectObjectCode, renderCode, sceneSummaryCode, structuralShadingCode } from "./blender.js";
 import { writeGraphExport } from "./graph-export.js";
 import { verifyAssetStrategy, verifyGraphReview, type AssetRequirement, type AssetStrategy, type GraphReview } from "./workflow-guards.js";
+import { ExperienceLibrary, fileHash, type RetrospectiveInput, type Replay, type FixtureResult } from "./experience.js";
 
 export type Criterion = { id: string; description: string; severity: "blocker" | "major" | "minor" };
 export type ImageBox = [number, number, number, number];
@@ -56,6 +57,10 @@ export type Review = {
   repairs?: string[];
 };
 type Job = { id: string; kind: string; status: "queued" | "running" | "done" | "failed"; error?: string };
+export type PreviewAppearance = {
+  exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
+  dust?: { color: number[]; wind: number[]; volumes: { center: number[]; radius: number[]; density: number }[] };
+};
 export type Scene = {
   id: string; prompt: string; token: string; createdAt: string; updatedAt: string;
   stage: "planning" | "edit" | "review" | "awaiting_review" | "completed" | "best_effort";
@@ -77,6 +82,11 @@ export type Scene = {
   compositionRevalidation?: boolean;
   assetStrategyHistory?: { revisionId?: string; strategy: AssetStrategy }[];
   pendingAttempt?: { revisionId?: string; phase?: StageName; previousContentIteration: number };
+  exportLighting?: { objectName: string; resolution: number }[];
+  exportVersion?: string;
+  exportPipelineHash?: string;
+  exportAppearance?: PreviewAppearance;
+  skillValidation?: { candidateId: string; validationId: string; passed: boolean };
 };
 export const REFERENCE_ASSETS = ["reference", "reference-2", "reference-3", "reference-4", "reference-5", "reference-6"] as const;
 export type Reference = { download_url?: string; file_id?: string; local_path?: string; mime_type?: string; file_name?: string; label?: string };
@@ -145,10 +155,12 @@ export class SceneStore {
   private queue: Promise<void> = Promise.resolve();
   private recoveryRequired = false;
   readonly root: string;
+  readonly library: ExperienceLibrary;
 
   constructor(root: string, readonly blender = new BlenderClient()) {
     this.root = resolve(root);
     mkdirSync(this.root, { recursive: true });
+    this.library = new ExperienceLibrary(this.root);
     for (const entry of readdirSync(this.root, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^scene_[a-f0-9-]+$/.test(entry.name)) continue;
       const scene = JSON.parse(readFileSync(resolve(this.root, entry.name, "run.json"), "utf8")) as Scene;
@@ -210,7 +222,7 @@ export class SceneStore {
   private idle(scene: Scene): void {
     if (this.recoveryRequired) throw new Error("Blender recovery failed. Restart the dedicated bridge and service before editing.");
     if (scene.job && ["queued", "running"].includes(scene.job.status)) {
-      throw new Error("Scene operation is still running. Poll scene_view before continuing.");
+      throw new Error("Scene operation is still running. Poll scene_get with images='none' before continuing.");
     }
   }
   private enqueue(scene: Scene, kind: string, work: () => Promise<void>): void {
@@ -309,7 +321,7 @@ export class SceneStore {
     if (this.activeRevision(scene)) throw new Error("Close the current revision before granting another finite allowance.");
     if (request.expectedIteration !== scene.iteration || request.expectedPhase !== state.phase ||
       request.expectedStatus !== scene.stage || request.expectedUpdatedAt !== scene.updatedAt) {
-      throw new Error("Scene changed since revision authorization. Read scene_view and authorize the current state.");
+      throw new Error("Scene changed since revision authorization. Read scene_get with images='none' and authorize the current state.");
     }
     if (!Number.isSafeInteger(request.additionalBudget) || request.additionalBudget < 1 || request.additionalBudget > 8 ||
       !request.feedback.trim() || request.feedback.length > 4000 || !request.requestId.trim() || request.requestId.length > 100) {
@@ -609,7 +621,11 @@ ${sceneSummaryCode()}`);
     const scene = this.get(id); this.idle(scene);
     if (scene.stage !== "edit" || !scene.plan) throw new Error("Record assets during the geometry edit stage.");
     const stage = this.workflowState(scene).phase;
-    if (scene.plan.workflow && stage !== "geometry") throw new Error("Asset generation belongs to geometry.");
+    const previousStrategy = scene.assetStrategies?.find((asset) => asset.nodeId === strategy.nodeId);
+    const refreshingFallback = previousStrategy && !previousStrategy.providers.length && !strategy.providers.length &&
+      !previousStrategy.provider && !previousStrategy.taskId && !previousStrategy.artifactPath &&
+      !strategy.provider && !strategy.taskId && !strategy.artifactPath;
+    if (scene.plan.workflow && stage !== "geometry" && !refreshingFallback) throw new Error("Asset generation belongs to geometry.");
     const revision = this.activeRevision(scene);
     if (revision && !revision.request.scopeNodeIds.includes(strategy.nodeId)) throw new Error("Asset is outside the authorized revision scope.");
     const requirement = scene.plan.assets?.find((a) => a.nodeId === strategy.nodeId);
@@ -618,7 +634,6 @@ ${sceneSummaryCode()}`);
       throw new Error("A discovered Provider remains unresolved; failure or pending approval cannot become a Blender fallback.");
     }
     const record = verifyAssetStrategy(this.path(scene, "."), requirement, strategy, true);
-    const previousStrategy = scene.assetStrategies?.find((asset) => asset.nodeId === strategy.nodeId);
     if (previousStrategy) scene.assetStrategyHistory = [...(scene.assetStrategyHistory ?? []),
       { revisionId: revision?.id, strategy: structuredClone(previousStrategy) }];
     scene.assetStrategies = [...(scene.assetStrategies ?? []).filter((a) => a.nodeId !== strategy.nodeId), record];
@@ -684,6 +699,8 @@ ${sceneSummaryCode()}`);
         scene.renderMode = this.workflowState(scene).presentation.mode;
         scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: activeStage ?? "scene", summary: scene.summary };
         scene.currentContentIteration = scene.iteration;
+        mkdirSync(this.path(scene, "scripts"), { recursive: true });
+        writeFileSync(this.path(scene, `scripts/iteration-${scene.iteration}.py`), code);
         if (revision) revision.spent++;
         else if (scene.stageAllowances && activeStage && scene.stageAllowances[activeStage as StageName]?.spent !== null) {
           scene.stageAllowances[activeStage as StageName]!.spent!++;
@@ -854,12 +871,16 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
     this.invalidateEvidence(scene);
     // Read-only inspection supplies a fresh binding for composition review of the selected content.
     scene.stage = "edit";
+    this.enqueueCompositionRevalidation(scene);
+  }
+
+  private enqueueCompositionRevalidation(scene: Scene): void {
     this.enqueue(scene, "revision_revalidation", async () => {
-      const render = `renders/revision-${revision.id}-composition.png`;
+      const render = `renders/revision-${scene.confirmationRevisionId!}-composition.png`;
       scene.summary = await this.blender.execute(`
- bpy.ops.wm.open_mainfile(filepath=${py(this.path(scene, "current.blend"))})
- ${renderCode(this.path(scene, render), true)}
- ${sceneSummaryCode()}`);
+bpy.ops.wm.open_mainfile(filepath=${py(this.path(scene, "current.blend"))})
+${renderCode(this.path(scene, render), true)}
+${sceneSummaryCode()}`);
       scene.render = render;
       scene.renderMode = "structural";
       scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: "composition", summary: scene.summary };
@@ -1004,6 +1025,11 @@ result = {"reviewViews": 5}
   retryReviewViews(id: string): Scene {
     const scene = this.get(id);
     this.idle(scene);
+    if (scene.compositionRevalidation && scene.confirmationRevisionId && !scene.inspection &&
+      scene.job?.kind === "revision_revalidation" && scene.job.status === "failed") {
+      this.enqueueCompositionRevalidation(scene);
+      return scene;
+    }
     if (!this.canPreviewStructure(scene)) throw new Error("Structural views require a saved geometry/composition scene or a composition checkpoint.");
     this.enqueueReviewViews(scene);
     return scene;
@@ -1054,15 +1080,38 @@ result = {"reviewViews": 5}
     return revisionId ? `revisions/${revisionId}/previews/${this.workflowState(scene).phase}/${iteration}` : `previews/${iteration}`;
   }
 
-  export(id: string, preview = false): Scene {
+  export(id: string, preview = false, lightingBakes?: { objectName: string; resolution: number }[], previewAppearance?: PreviewAppearance): Scene {
     const scene = this.get(id);
     this.idle(scene);
     if (preview ? !this.canPreviewStructure(scene) : !scene.best || !["completed", "best_effort"].includes(scene.stage)) {
       throw new Error(preview ? "A saved geometry/composition scene or composition checkpoint is required for a structural preview." : "Complete scene review before exporting the best version.");
     }
     const state = this.workflowState(scene), target = state.presentation;
+    const bakes = structuredClone(lightingBakes ?? (preview ? [] : scene.exportLighting ?? []))
+      .sort((a, b) => a.objectName.localeCompare(b.objectName));
+    if (bakes.length > 100 || new Set(bakes.map((item) => item.objectName)).size !== bakes.length ||
+        bakes.some((item) => !item.objectName.trim() || item.objectName.length > 256 ||
+          !Number.isInteger(item.resolution) || item.resolution < 64 || item.resolution > 4096) || preview && bakes.length) {
+      throw new Error("Lighting bakes need distinct mesh names and resolutions from 64 to 4096 on a final export.");
+    }
     const marker = preview ? "previewedIteration" : "exportedIteration";
-    if (scene[marker] === target.iteration && scene.job?.status !== "failed" && (!preview || this.hasStructuralPreview(scene))) return scene;
+    const appearance = structuredClone(preview ? {} : previewAppearance ?? scene.exportAppearance ?? {});
+    const vector = (v: number[], low: number, high: number) => v.length === 3 && v.every(n => Number.isFinite(n) && n >= low && n <= high);
+    if ((appearance.exposureEV !== undefined && (!Number.isFinite(appearance.exposureEV) || Math.abs(appearance.exposureEV) > 3)) ||
+        (appearance.saturation !== undefined && (!Number.isFinite(appearance.saturation) || appearance.saturation < 0 || appearance.saturation > 2)) ||
+        (appearance.whiteBalance !== undefined && !vector(appearance.whiteBalance, 0.25, 4)) ||
+        (appearance.contrast !== undefined && (!Number.isFinite(appearance.contrast) || appearance.contrast < 0.5 || appearance.contrast > 2)) ||
+        (appearance.hazeScale !== undefined && (!Number.isFinite(appearance.hazeScale) || appearance.hazeScale < 0 || appearance.hazeScale > 2)) ||
+        (appearance.dust && (!vector(appearance.dust.color, 0, 10) || !vector(appearance.dust.wind, -10, 10) ||
+          appearance.dust.volumes.length < 1 || appearance.dust.volumes.length > 6 || appearance.dust.volumes.some(v =>
+            !vector(v.center, -10000, 10000) || !vector(v.radius, 0.05, 1000) || !Number.isFinite(v.density) || v.density < 0 || v.density > 2)))) {
+      throw new Error("Invalid preview appearance: use finite exposure, saturation and up to six bounded dust volumes.");
+    }
+    const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+    const pipelineHash = createHash("sha256").update(template).digest("hex");
+    const sameLighting = preview || (JSON.stringify(scene.exportLighting ?? []) === JSON.stringify(bakes) &&
+      JSON.stringify(scene.exportAppearance ?? {}) === JSON.stringify(appearance));
+    if (sameLighting && (preview || scene.exportPipelineHash === pipelineHash) && scene[marker] === target.iteration && scene.job?.status !== "failed" && (!preview || this.hasStructuralPreview(scene))) return scene;
     const iteration = target.iteration;
     const directory = this.path(scene, preview ? this.previewDirectory(scene, iteration) : `artifacts/${iteration}`);
     mkdirSync(directory, { recursive: true });
@@ -1070,9 +1119,10 @@ result = {"reviewViews": 5}
     this.enqueue(scene, preview ? "preview" : "export", async () => {
       if (preview && !this.reviewViewsReady(scene)) await this.generateReviewViews(scene, target);
       const blend = target.source === "current" ? "current.blend" : "best.blend";
-      const template = await readFile(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
       const code = template.replace("__SOURCE_BLEND__", py(this.path(scene, blend)))
         .replace("__OUTPUT_DIRECTORY__", py(directory))
+        .replace("__LIGHTING_BAKES__", py(bakes))
+        .replace("__PREVIEW_APPEARANCE__", py(appearance))
         .replace("__STRUCTURAL_PREVIEW__", preview ? "True" : "False");
       await this.blender.execute(code);
       writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
@@ -1080,6 +1130,62 @@ result = {"reviewViews": 5}
         revisionId: target.revisionId, contentIteration: target.contentIteration,
       }, this.path(scene, "."));
       scene[marker] = iteration;
+      if (!preview) {
+        scene.exportLighting = bakes; scene.exportAppearance = appearance; scene.exportVersion = randomUUID(); scene.exportPipelineHash = pipelineHash;
+        this.captureExperience(scene);
+      }
+    });
+    return scene;
+  }
+
+  private captureExperience(scene: Scene) {
+    const target = this.workflowState(scene).presentation;
+    if (!["completed", "best_effort"].includes(scene.stage) || !scene.exportVersion || scene.exportedIteration !== target.iteration) {
+      throw new Error("Experience capture requires the exported delivery checkpoint.");
+    }
+    const files = ["best.blend", "best.png", `artifacts/${target.iteration}/manifest.json`];
+    return this.library.capture({ sceneId: scene.id, iteration: target.iteration, exportVersion: scene.exportVersion,
+      outcome: scene.stage, target: scene.plan?.summary ?? scene.prompt,
+      compositionApproved: scene.compositionApproved === true, remainingGaps: scene.remainingGaps ?? [],
+      reviews: structuredClone(scene.reviews), sourceHashes: Object.fromEntries(files.map(f => [f, fileHash(this.path(scene, f))])) });
+  }
+
+  recordExperience(id: string, retrospective?: RetrospectiveInput) {
+    const scene = this.get(id); this.idle(scene);
+    const source = this.captureExperience(scene);
+    return retrospective ? this.library.record(source, this.path(scene, "."), retrospective) : source;
+  }
+
+  validateExperienceSkill(id: string, candidateId: string, expectedHash: string, replays: Replay[]): Scene {
+    const scene = this.get(id); this.idle(scene);
+    const candidate = this.library.candidate(candidateId);
+    if (candidate.hash !== expectedHash) throw new Error("Candidate hash changed.");
+    const checked = this.library.checkReplays(candidate, replays);
+    const finish = (results: FixtureResult[], version?: string, error?: string) => {
+      const validation = this.library.validate(candidateId, expectedHash, checked, results, version, error);
+      scene.skillValidation = { candidateId, validationId: validation.id, passed: validation.passed };
+    };
+    if (candidate.kind === "guidance") { finish([]); this.save(scene); return scene; }
+    this.enqueue(scene, "skill-validation", async () => {
+      const current = this.path(scene, "current.blend"), before = fileHash(current);
+      const template = readFileSync(new URL("../../runtime/blender/validate_skill.py", import.meta.url), "utf8");
+      let output: Record<string, unknown>;
+      try {
+        output = await this.blender.execute(template.replace("__SKILL_REQUEST__", py(JSON.stringify({ code: candidate.code, fixtures: candidate.fixtures }))));
+      } catch (error) {
+        finish([], undefined, error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        try {
+          await this.blender.execute(`bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
+          if (fileHash(current) !== before) throw new Error("Skill validation changed its source checkpoint.");
+        } catch {
+          this.recoveryRequired = true;
+          finish([], undefined, "Blender recovery failed; restart the dedicated bridge and service.");
+          throw new Error("Blender recovery failed; restart the dedicated bridge and service.");
+        }
+      }
+      finish(output.fixtures as FixtureResult[], String(output.blenderVersion));
     });
     return scene;
   }
@@ -1146,13 +1252,14 @@ result = {"reviewViews": 5}
   snapshot(scene: Scene, origin: string): Record<string, unknown> {
     const { token, reference: _, references: __, ...publicScene } = scene;
     const workflowState = this.workflowState(scene);
-    const url = (file: string) => `${origin}/artifacts/${scene.id}/${file}?token=${token}${file.startsWith("previews/") ? `&preview=structural&source=${workflowState.presentation.source}&phase=${workflowState.phase}` : ""}`;
+    const url = (file: string) => `${origin}/artifacts/${scene.id}/${file}?token=${token}${file.startsWith("previews/") ? `&preview=structural&source=${workflowState.presentation.source}&phase=${workflowState.phase}` : ""}${file.startsWith("artifacts/") && scene.exportVersion ? `&v=${scene.exportVersion}` : ""}`;
     const references = this.referenceImages(scene).map((image, index) => ({ ...image,
       role: index === 0 ? "primary" : "auxiliary", url: url(image.assetName), localPath: this.path(scene, image.assetName) }));
     const render = this.renderFile(scene);
     return {
       ...publicScene,
       workflowState,
+      learning: this.library.context(scene.id, scene.plan?.summary ?? scene.prompt),
       reviewViews: this.reviewViewsReady(scene) ? scene.reviewViews : [],
       render,
       reference: references[0] ?? null,

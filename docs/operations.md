@@ -72,7 +72,7 @@ Use UniBlenderScene's Skills and native scene_* MCP tools for scene operations.
 Before scene work, confirm the MCP connection and available scene tools. If they
 are missing or fail, report the failing tool and error; do not substitute an ad
 hoc HTTP client or modify plugin source unless the user requests that work.
-For an existing scene, read scene_view and preserve its state, budget and paths.
+For an existing scene, read scene_get with images=none and preserve its state, budget and paths.
 Keep local notes under .canova/runs/; use the service's scene input directory for
 assets. Follow the scene Skill's review and approval requirements.
 ```
@@ -179,10 +179,12 @@ service.
 
 ## Open the interactive preview
 
-Use `scene_view` in a client that supports MCP Apps and WebGL 2. The tool's
+Poll progress with `scene_get` and `images: "none"`. Only call `scene_view`
+when its snapshot has a non-null `renderUrl`, in a client that supports MCP Apps
+and WebGL 2. Creation, edits and polling return data without opening a viewer. The `scene_view`
 embedded viewer includes the Scene Graph, orbit controls, render/3D switching,
 and composition review controls. For geometry/composition work or a scene in `awaiting_review`, first call
-`scene_preview` with its `sceneId` and poll `scene_view` until the job finishes.
+`scene_preview` with its `sceneId` and poll `scene_get` with `images: "none"` until the job finishes.
 This prepares review assets without approving composition or enabling final
 export. Completed scenes use `scene_export` before opening the viewer.
 
@@ -245,7 +247,7 @@ Before clearing a long conversation, keep the scene ID and save a handoff under
 reference labels, local image paths, observed differences, approval state and
 next action. Exclude credentials and signed URLs. If compaction does not remove
 old image blocks, use `/clear` or a fresh Claude Code conversation, read the
-handoff and `scene_view`, and load only the evidence needed for the next step.
+handoff and `scene_get` with `images: "none"`, and load only the evidence needed for the next step.
 Keep the same scene ID and pending approval. `scene_continue` begins a new user
 refinement; it is not required to resume an unfinished scene in a new chat.
 
