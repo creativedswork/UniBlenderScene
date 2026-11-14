@@ -11,6 +11,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { BlenderClient } from "../src/service/blender.js";
 import { testBoundedRevisionGuard } from "./bounded-revision.integration.js";
 import { testGuardPerformance } from "./guard-performance.integration.js";
+import { testExperienceLibrary } from "./experience.integration.js";
 
 await mkdir(".canova/runs", { recursive: true });
 const root = await mkdtemp(resolve(".canova/runs/blender-integration-"));
@@ -78,7 +79,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<CallTo
   return await client.callTool({ name, arguments: args }) as CallToolResult;
 }
 async function planFixture(args: Record<string, any>) {
-  const s=(await call("scene_view",{sceneId:args.sceneId})).structuredContent as Record<string,any>;
+  const s=(await call("scene_get",{sceneId:args.sceneId,images:"none"})).structuredContent as Record<string,any>;
   const graph=args.graph ?? [{id:"cube",label:"Cube",kind:"object",parentId:null,blenderObjectNames:["RedCube"],description:"Primitive fixture"}];
   const workflow=args.workflow ?? (s.references.length ? {stages:[{name:"composition",criterionIds:args.criteria.map((c:any)=>c.id),budget:2},{name:"final",criterionIds:args.criteria.map((c:any)=>c.id),budget:1}]} : undefined);
   const p=await call("scene_plan",{...args,graph,workflow,assets:graph.filter((n:any)=>n.kind!=="group").map((n:any)=>({nodeId:n.id,kind:"structure",reason:"Simple cube test fixture"}))});
@@ -88,7 +89,7 @@ async function planFixture(args: Record<string, any>) {
   return p;
 }
 async function reviewFixture(args: Record<string,any>) {
-  const s=(await call("scene_view",{sceneId:args.sceneId})).structuredContent as Record<string,any>;
+  const s=(await call("scene_get",{sceneId:args.sceneId,images:"none"})).structuredContent as Record<string,any>;
   const observations=s.plan.workflow ? (args.observations ?? args.criteria.map((c:any)=>({criterionId:c.id,nodeId:"cube",target:"Visible cube",actual:"Cube shown",evidence:"Rendered fixture",reason:"Mismatch",correction:"Fix cube",acceptance:"Visible cube"}))).map((o:any)=>({...o,sceneEvidence:"Runtime inventory contains RedCube",...(s.references.length?{referenceView:s.references[0].assetName}:{})})) : undefined;
   const r=await call("scene_review",{...args,inspectionId:s.inspection.id,observations,referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture spatial evidence checked"}))});
   assert.equal(r.isError,undefined,JSON.stringify(r.content));return r;
@@ -96,7 +97,7 @@ async function reviewFixture(args: Record<string,any>) {
 async function poll(id: string, expectedStatus = "done"): Promise<Record<string, any>> {
   const deadline = Date.now() + 300000;
   while (Date.now() < deadline) {
-    const output = await call("scene_view", { sceneId: id });
+    const output = await call("scene_get", { sceneId: id, images: "none" });
     assert.equal(output.isError, undefined, JSON.stringify(output.content));
     assert.equal(output.content.some((item) => item.type === "image"), false);
     const scene = output.structuredContent as Record<string, any>;
@@ -115,7 +116,7 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 16);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 21);
   const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
@@ -163,7 +164,12 @@ try {
     visualScore: 90, regressions: [], repairable: false, nextAction: "Export reviewed checkpoint",
   });
   assert.equal(reviewed.structuredContent!.stage, "completed");
-  await call("scene_export", { sceneId: id }); const exported = await poll(id);
+  const sourcePath = join(root, ".canova/runs", id, "best.blend");
+  const sourceBeforeExport = await readFile(sourcePath);
+  const previewAppearance = { exposureEV: 0.6, saturation: 1.1, whiteBalance: [0.9, 1, 1.4], contrast: 1.3, hazeScale: 0.25, dust: { color: [0.25, 0.18, 0.1], wind: [0.2, 0, 0],
+    volumes: [{ center: [0, 0, 1], radius: [1.8, 1.8, 0.9], density: 0.2 }] } };
+  await call("scene_export", { sceneId: id, lightingBakes: [{ objectName: "RedCube", resolution: 128 }], previewAppearance }); const exported = await poll(id);
+  assert.deepEqual(await readFile(sourcePath), sourceBeforeExport, "Export baking must preserve the editable source.");
   const glb = exported.artifacts.find((file: { name: string }) => file.name === "final.glb");
   assert.ok(glb);
   const glbResponse = await fetch(glb.url); assert.equal(glbResponse.status, 200);
@@ -174,12 +180,25 @@ try {
   assert.ok(graph.nodes.find((node: { id: string }) => node.id === "cube").gltfNodeIndices.length >= 1);
   assert.equal(bytes.toString("ascii", 0, 4), "glTF"); assert.equal(bytes.readUInt32LE(4), 2);
   const gltf = JSON.parse(bytes.subarray(20, 20 + bytes.readUInt32LE(12)).toString("utf8"));
+  const cubeMesh = gltf.meshes[gltf.nodes.find((node: any) => node.name === "RedCube").mesh];
+  for (const primitive of cubeMesh.primitives) {
+    assert.equal(gltf.materials[primitive.material].emissiveTexture.texCoord ?? 0, 0,
+      "The dedicated baked atlas must be the primary export UV for the path tracer.");
+    assert.equal(primitive.attributes.TEXCOORD_1, undefined, "Unused tiled source UVs must not reach the baked GLB");
+  }
   assert.ok(gltf.materials.some((material: { emissiveTexture?: unknown; emissiveFactor?: number[] }) =>
     material.emissiveTexture && material.emissiveFactor?.some((value) => value > 0)),
     "Opted-in floor must carry baked lighting in the GLB.");
   assert.ok(gltf.materials.some((material: { name?: string; pbrMetallicRoughness?: { baseColorTexture?: unknown } }) =>
     material.name?.startsWith("Procedural swatch") && material.pbrMetallicRoughness?.baseColorTexture),
     "Procedural base color must become a GLB texture.");
+  const portableNormal = gltf.materials.find((material: any) => material.name === "Warm floor" && material.normalTexture);
+  assert.ok(portableNormal, "The unbaked receiver retains its portable normal map");
+  const normalImage = gltf.images[gltf.textures[portableNormal.normalTexture.index].source];
+  const normalView = gltf.bufferViews[normalImage.bufferView];
+  const normalBytes = bytes.subarray(28 + bytes.readUInt32LE(12) + (normalView.byteOffset ?? 0));
+  assert.equal(normalImage.mimeType, "image/png");
+  assert.equal(normalBytes.readUInt32BE(16), 64, "A tiled normal map must not become a 1024px procedural bake");
   const glbChunk = await call("scene_asset_chunk", { sceneId: id, name: "final.glb", offset: 0 });
   assert.equal(glbChunk.isError, undefined);
   assert.deepEqual(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64"), bytes.subarray(0, 256 * 1024));
@@ -190,7 +209,12 @@ try {
   assert.ok(profile.colorManagement.displayLut.uri.startsWith("data:image/png;base64,"));
   assert.equal(profile.lights[0].type, "AREA");
   assert.ok(profile.lights[0].energy > 0);
-  assert.deepEqual(profile.bakedObjects, ["Floor"]);
+  assert.deepEqual([...profile.bakedObjects].sort(), ["Floor", "RedCube"]);
+  assert.ok(profile.world.environmentUri?.endsWith("environment.exr"));
+  assert.ok(profile.world.backgroundEnvironmentUri?.startsWith("data:application/octet-stream;base64,"));
+  assert.ok(Math.abs(profile.postprocessing.bloom.strength - 0.1) < 1e-6);
+  assert.ok(Math.abs(profile.postprocessing.haze.strength - 0.03) < 1e-6);
+  assert.deepEqual(profile.previewAppearance, previewAppearance);
   assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
   assert.ok(profile.materials.objects >= 1 && profile.materials.textures >= 1);
   const forbidden = await fetch(`${origin}/artifacts/${id}/run.json?token=invalid`); assert.equal(forbidden.status, 403);
@@ -198,6 +222,7 @@ try {
   await writeFile(join(root, "scene.json"), JSON.stringify(exported, null, 2));
   await writeFile(join(root, "widget.html"), widget.contents[0]!.text as string);
   await writeFile(join(root, "final.glb"), bytes);
+  const experienceLibrary = await testExperienceLibrary(call, poll, id, root);
   // A generated asset fixture exercises the provider contract without paid API calls.
   const providerScene=(await call("scene_create",{prompt:"Standalone provider fixture"})).structuredContent!.id as string;
   await poll(providerScene);
@@ -429,7 +454,7 @@ bpy.context.scene.render.resolution_y=128
   const boundedRevisionCases = await testBoundedRevisionGuard(new BlenderClient("127.0.0.1", blenderPort), root);
   const guardPerformance = await testGuardPerformance(new BlenderClient("127.0.0.1", blenderPort), root);
   const report = {
-    status: "passed", tools: tools.tools.length, sceneId: id, reviewPreviewVerified: true, boundedRevisionCases, guardPerformance,
+    status: "passed", tools: tools.tools.length, sceneId: id, reviewPreviewVerified: true, boundedRevisionCases, guardPerformance, experienceLibrary,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
     checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "continued scene reference input", "failed-edit checkpoint recovery"],
   };

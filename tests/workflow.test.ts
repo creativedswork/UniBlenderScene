@@ -140,6 +140,32 @@ test("guard snapshot failures preserve finite revision spend and source", async 
   }
 });
 
+test("failed revision composition inspection retries without spending edits or approving", async () => {
+  const { store, scene, request, blender } = await legacyRevisionFixture();
+  const execute = blender.execute.bind(blender);
+  blender.execute = async (code: string) => {
+    assert.doesNotMatch(code, /\n bpy\.ops\.wm\.open_mainfile/, "Top-level Python must not be indented");
+    return execute(code);
+  };
+  store.revise(scene.id, { ...request, additionalBudget: 1 });
+  store.edit(scene.id, "pass"); await store.settled();
+  blender.failNext = true;
+  store.review(scene.id, review(scene, scene.iteration, 75)); await store.settled();
+  assert.equal(scene.job?.kind, "revision_revalidation");
+  assert.equal(scene.job?.status, "failed");
+  assert.equal(scene.inspection, undefined);
+  const iteration = scene.iteration, spend = scene.revisions![0]!.spent;
+  const source = readFileSync(store.path(scene, "current.blend"));
+  store.retryReviewViews(scene.id); await store.settled();
+  assert.equal(scene.job?.status, "done");
+  assert.equal(scene.stage, "review");
+  assert.equal(scene.inspection!.stage, "composition");
+  assert.equal(scene.compositionApproved, false);
+  assert.equal(scene.iteration, iteration);
+  assert.equal(scene.revisions![0]!.spent, spend);
+  assert.deepEqual(readFileSync(store.path(scene, "current.blend")), source);
+});
+
 test("revision rejects invalid budgets, stale state, unsafe scope and unreviewed jobs atomically", async () => {
   const { store, scene, request } = await legacyRevisionFixture();
   const before = JSON.stringify(scene);
@@ -327,29 +353,104 @@ test("geometry revision 17 gets its own gray draft without using revision 16 or 
 
 test("single objects require provider discovery, local generated artifacts or explicit no-provider fallback", async () => {
   const { store, root } = setup();
+  const provider = "skill:canova-3d-creation";
   const scene = store.create("A chair"); await store.settled();
   store.plan(scene.id, { ...plan, assets: [{ nodeId: "cube", kind: "object", reason: "Standalone chair" }] });
   assert.throws(() => store.edit(scene.id, "pass"), /Graph review/);
   approveGraph(store, scene);
   assert.throws(() => store.edit(scene.id, "pass"), /asset strategy/);
-  store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], evidence: "Connected provider" });
+  store.recordAsset(scene.id, { nodeId: "cube", providers: [provider], evidence: "User-level Skill provides image-to-model generation through its controlled CLI; no MCP generation tool is connected" });
   assert.throws(() => store.edit(scene.id, "pass"), /downloaded local GLB/);
   assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: [], evidence: "API failed" }), /cannot become a Blender fallback/);
   const invalid = join(store.path(scene, "."), "model.glb"); writeFileSync(invalid, "not a model");
-  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], provider: "meshy", taskId: "task-1", artifactPath: invalid, evidence: "Generated" }), /valid GLB/);
+  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: [provider], provider, taskId: "task-1", artifactPath: invalid, evidence: "Generated" }), /valid GLB/);
   const bytes = Buffer.alloc(24); bytes.write("glTF");bytes.writeUInt32LE(2,4);bytes.writeUInt32LE(24,8);
   const outside = join(root, "outside.glb");writeFileSync(outside,bytes);
-  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], provider: "meshy", taskId: "task-1", artifactPath: outside, evidence: "Generated" }), /workspace/);
+  assert.throws(() => store.recordAsset(scene.id, { nodeId: "cube", providers: [provider], provider, taskId: "task-1", artifactPath: outside, evidence: "Generated" }), /workspace/);
   writeFileSync(invalid,bytes);
-  store.recordAsset(scene.id, { nodeId: "cube", providers: ["meshy"], provider: "meshy", taskId: "task-1", artifactPath: invalid, evidence: "Provider task succeeded" });
+  store.recordAsset(scene.id, { nodeId: "cube", providers: [provider], provider, taskId: "task-1", artifactPath: invalid, evidence: "Provider task succeeded" });
   assert.match(scene.assetStrategies![0]!.sha256!, /^[a-f0-9]{64}$/);
   const restarted = new SceneStore(root, store.blender);
   assert.equal(restarted.get(scene.id).assetStrategies![0]!.taskId, "task-1");
-  // A separate request can use Blender when discovery finds no applicable tool.
+  assert.equal(restarted.get(scene.id).assetStrategies![0]!.provider, provider);
+  // A separate request can use Blender after checking both tools and Skills.
   const fallback=store.create("Standalone object with no Provider");await store.settled();
   preparePlan(store,fallback,{...plan,assets:[{nodeId:"cube",kind:"object",reason:"Standalone fixture"}]});
-  store.recordAsset(fallback.id, { nodeId: "cube", providers: [], evidence: "Host inventory has no applicable 3D API provider" });
+  const fallbackStrategy = { nodeId: "cube", providers: [], evidence: "No applicable 3D generation capability" };
+  const discovery = { tools: "Connected tool inventory has only Blender editing operations", skills: "Available user and plugin Skill catalog inspected; no Skill exposes 3D generation" };
+  assert.throws(() => store.recordAsset(fallback.id, fallbackStrategy), /discovery.tools and discovery.skills/);
+  for (const incomplete of [{ ...discovery, tools: " " }, { ...discovery, skills: " " }]) {
+    assert.throws(() => store.recordAsset(fallback.id, { ...fallbackStrategy, discovery: incomplete }), /discovery.tools and discovery.skills/);
+  }
+  // An old saved fallback must be rechecked before it can authorize a new edit.
+  fallback.assetStrategies = [fallbackStrategy]; store.save(fallback);
+  const legacy = new SceneStore(root, store.blender);
+  assert.throws(() => legacy.edit(fallback.id, "pass"), /discovery.tools and discovery.skills/);
+  assert.equal(legacy.get(fallback.id).iteration, 0);
+  store.recordAsset(fallback.id, { ...fallbackStrategy, discovery });
+  assert.deepEqual(new SceneStore(root, store.blender).get(fallback.id).assetStrategies![0]!.discovery, discovery);
   store.edit(fallback.id,"pass");await store.settled();assert.equal(fallback.stage,"review");
+});
+
+test("legacy fallback discovery can be refreshed after composition without reopening asset generation", async () => {
+  const { store } = setup();
+  const scene = store.create("An existing procedural object"); await store.settled();
+  preparePlan(store, scene, { ...plan, assets: [{ nodeId: "cube", kind: "object", reason: "Standalone fixture" }],
+    workflow: { stages: [
+      { name: "geometry", criterionIds: ["cube"], budget: 1 },
+      { name: "composition", criterionIds: ["cube"], budget: 1 },
+      { name: "materials", criterionIds: ["cube"], budget: 1 },
+      { name: "final", criterionIds: ["cube"], budget: 1 },
+    ] } });
+  const old = { nodeId: "cube", providers: [], evidence: "Legacy fallback" };
+  scene.assetStrategies = [old]; scene.workflowIndex = 2; scene.compositionApproved = true;
+  const source = readFileSync(store.path(scene, "current.blend"));
+  const allowances = structuredClone(scene.stageAllowances);
+  assert.throws(() => store.edit(scene.id, "pass"), /discovery.tools and discovery.skills/);
+  assert.throws(() => store.recordAsset(scene.id, old), /discovery.tools and discovery.skills/);
+  assert.throws(() => store.recordAsset(scene.id, { ...old, providers: ["skill:provider"] }), /belongs to geometry/);
+  assert.throws(() => store.recordAsset(scene.id, { ...old, artifactPath: "/tmp/new.glb" }), /belongs to geometry/);
+  assert.throws(() => store.recordAsset(scene.id, { ...old, nodeId: "unrecorded" }), /belongs to geometry/);
+  const discovery = { tools: "Connected tool inventory inspected", skills: "Available Skills inspected" };
+  store.recordAsset(scene.id, { ...old, discovery });
+  assert.deepEqual(scene.assetStrategies![0]!.discovery, discovery);
+  assert.deepEqual(scene.assetStrategyHistory![0]!.strategy, old);
+  assert.equal(scene.workflowIndex, 2); assert.equal(scene.compositionApproved, true);
+  assert.deepEqual(scene.stageAllowances, allowances);
+  assert.deepEqual(readFileSync(store.path(scene, "current.blend")), source);
+  store.edit(scene.id, "pass"); await store.settled();
+  assert.equal(scene.stage, "review");
+});
+
+test("MCP rejects tools-only fallback evidence and accepts Skill-backed providers", async () => {
+  const { store } = setup();
+  const scene = store.create("A robed character"); await store.settled();
+  preparePlan(store, scene, { ...plan, assets: [{ nodeId: "cube", kind: "object", reason: "Standalone character" }] });
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "provider-discovery-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const fallback = { sceneId: scene.id, nodeId: "cube", providers: [], evidence: "No MCP 3D generation tools" };
+    const toolsOnly = await client.callTool({ name: "scene_asset_strategy", arguments: fallback });
+    assert.equal(toolsOnly.isError, true);
+    assert.equal(scene.assetStrategies!.length, 0);
+    const incomplete = await client.callTool({ name: "scene_asset_strategy", arguments: { ...fallback, discovery: { tools: "Tool catalog inspected" } } });
+    assert.equal(incomplete.isError, true);
+    const complete = await client.callTool({ name: "scene_asset_strategy", arguments: { ...fallback,
+      discovery: { tools: "No connected 3D generation tools", skills: "No applicable generation Skills in the host catalog" } } });
+    assert.equal(complete.isError, undefined);
+    assert.equal(scene.assetStrategies![0]!.discovery?.skills, "No applicable generation Skills in the host catalog");
+    const discovered = await client.callTool({ name: "scene_asset_strategy", arguments: { ...fallback,
+      providers: ["skill:canova-3d-creation"], evidence: "Corrected discovery: user-level Skill exposes image-to-model via CLI" } });
+    assert.equal(discovered.isError, undefined);
+    const edit = await client.callTool({ name: "scene_edit", arguments: { sceneId: scene.id, code: "pass" } });
+    assert.equal(edit.isError, true, "A CLI-backed Provider still requires a generated GLB before Blender mutation");
+    const downgrade = await client.callTool({ name: "scene_asset_strategy", arguments: { ...fallback,
+      discovery: { tools: "No MCP provider", skills: "Known Skill awaiting user choices" } } });
+    assert.equal(downgrade.isError, true);
+    assert.equal(scene.iteration, 0);
+  } finally { await client.close(); await server.close(); }
 });
 
 test("graph review covers every view and failed spatial checks return to planning", async () => {
@@ -458,6 +559,51 @@ test("restores failed edits, refuses unfinished exports, accepts verified criter
   store.edit(scene.id, "result = {}"); await store.settled();
   store.review(scene.id, review(scene, 1, 95, true));
   assert.equal(scene.stage, "completed");
+});
+
+test("explicit lighting bakes invalidate final export cache without changing the checkpoint", async () => {
+  const { store } = setup();
+  const scene = store.create("A cube"); await store.settled(); preparePlan(store, scene, plan);
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, review(scene, 1, 95, true));
+  const source = readFileSync(store.path(scene, "best.blend"));
+  const directory = store.path(scene, "artifacts/1"); mkdirSync(directory, { recursive: true });
+  writeGlbFixture(directory, [{ name: "Cube", mesh: 0, extras: { scene_node_id: "cube" } }, { name: "Camera", camera: 0 }]);
+  writeFileSync(join(directory, "render-profile.json"), JSON.stringify({ camera: { name: "Camera" } }));
+  store.export(scene.id); await store.settled();
+  assert.equal(scene.job?.status, "done", scene.error);
+  const originalVersion = scene.exportVersion;
+  store.export(scene.id, false, [{ objectName: "Cube", resolution: 512 }]); await store.settled();
+  assert.equal(scene.job?.status, "done", scene.error);
+  assert.notEqual(scene.exportVersion, originalVersion);
+  const version = scene.exportVersion;
+  store.export(scene.id); await store.settled();
+  assert.equal(scene.exportVersion, version, "Omitted settings reuse the baked export");
+  assert.deepEqual(scene.exportLighting, [{ objectName: "Cube", resolution: 512 }]);
+  scene.exportPipelineHash = "older exporter";
+  store.export(scene.id); await store.settled();
+  assert.notEqual(scene.exportVersion, version, "An exporter upgrade rebuilds the asset and invalidates viewer URLs");
+  const previousAppearanceVersion = scene.exportVersion;
+  store.export(scene.id, false, undefined, { exposureEV: 0.8, saturation: 1.15, whiteBalance: [0.9, 1, 1.4], contrast: 1.3, hazeScale: 0.25, dust: {
+    color: [0.6, 0.3, 0.1], wind: [0.2, 0, 0], volumes: [{ center: [0, 0, 1], radius: [2, 2, 1], density: 0.2 }],
+  } }); await store.settled();
+  assert.notEqual(scene.exportVersion, previousAppearanceVersion, "Changing web appearance rebuilds the delivery profile");
+  const appearanceVersion = scene.exportVersion;
+  store.export(scene.id); await store.settled();
+  assert.equal(scene.exportVersion, appearanceVersion);
+  assert.equal(scene.exportAppearance?.exposureEV, 0.8);
+  assert.deepEqual(scene.exportAppearance?.whiteBalance, [0.9, 1, 1.4]);
+  assert.equal(scene.exportAppearance?.contrast, 1.3);
+  assert.throws(() => store.export(scene.id, false, undefined, { exposureEV: Infinity }), /appearance/);
+  assert.throws(() => store.export(scene.id, false, undefined, { whiteBalance: [1, 0, 1] }), /appearance/);
+  assert.throws(() => store.export(scene.id, false, undefined, { contrast: 3 }), /appearance/);
+  assert.throws(() => store.export(scene.id, false, undefined, { hazeScale: -1 }), /appearance/);
+  assert.throws(() => store.export(scene.id, false, undefined, { dust: { color: [1, 1, 1], wind: [0, 0, 0],
+    volumes: [{ center: [0, 0, 0], radius: [0, 1, 1], density: 0.1 }] } }), /appearance/);
+  assert.throws(() => store.export(scene.id, false, [{ objectName: "Cube", resolution: 32 }]), /resolution|bake/i);
+  assert.throws(() => store.export(scene.id, false, [{ objectName: "Cube", resolution: 512 }, { objectName: "Cube", resolution: 512 }]), /unique|bake/i);
+  assert.equal(scene.iteration, 1);
+  assert.deepEqual(readFileSync(store.path(scene, "best.blend")), source);
 });
 
 test("reference alignment blocks a high-scoring review until major regions match", async () => {
@@ -668,12 +814,18 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   await server.connect(a); await client.connect(b);
   try {
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 16);
+    assert.equal(tools.tools.length, 21);
     assert.ok(tools.tools.some((tool) => tool.name === "scene_preview"));
     const create = tools.tools.find((tool) => tool.name === "scene_create")!;
     assert.deepEqual(create._meta?.["openai/fileParams"], ["reference", "references"]);
     assert.deepEqual(tools.tools.find((tool) => tool.name === "scene_continue")?._meta?.["openai/fileParams"], ["references"]);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_view")?._meta?.["openai/outputTemplate"], "ui://uni-blender-scene/viewer.html");
+    assert.equal(tools.tools.find((tool) => tool.name === "scene_get")?._meta?.["openai/widgetAccessible"], true);
+    for (const tool of tools.tools) {
+      if (tool.name === "scene_view") continue;
+      assert.equal(tool._meta?.["openai/outputTemplate"], undefined, `${tool.name} must not open a viewer`);
+      assert.equal((tool._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri, undefined, tool.name);
+    }
     const resources = await client.listResources();
     assert.equal(resources.resources[0]?.mimeType, "text/html;profile=mcp-app");
     const prompts = await client.listPrompts();
@@ -685,6 +837,14 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
       assert.equal(invalid.isError, true);
     }
     const scene = store.create("A chair"); await store.settled();
+    const progress = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, images: "none" } }) as CallToolResult;
+    assert.equal(progress.isError, undefined);
+    assert.equal(progress.structuredContent?.renderUrl, null);
+    assert.equal(progress.content.some((item) => item.type === "image"), false);
+    const pendingView = await client.callTool({ name: "scene_view", arguments: { sceneId: scene.id } });
+    assert.equal(pendingView.isError, true);
+    assert.match(JSON.stringify(pendingView.content), /scene_get/);
+    assert.equal(pendingView.structuredContent, undefined, "Do not pass an empty scene to the viewer");
     const inspected = await client.callTool({ name: "scene_get", arguments: { sceneId: scene.id, objectName: "Chair" } }) as CallToolResult;
     const object = inspected.structuredContent?.inspectedObject as { rotationMode: string };
     assert.equal(object.rotationMode, "QUATERNION");
@@ -694,6 +854,9 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
     const unavailable = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png" } });
     assert.equal(unavailable.isError, true);
     preparePlan(store, scene, plan); store.edit(scene.id, "result = {}"); await store.settled();
+    const readyView = await client.callTool({ name: "scene_view", arguments: { sceneId: scene.id } }) as CallToolResult;
+    assert.equal(readyView.isError, undefined);
+    assert.ok(readyView.structuredContent?.renderUrl);
     store.review(scene.id, review(scene, 1, 95, true));
     const chunk = await client.callTool({ name: "scene_asset_chunk", arguments: { sceneId: scene.id, name: "best.png" } });
     assert.equal(chunk.isError, undefined);

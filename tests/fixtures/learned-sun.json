@@ -1,0 +1,33 @@
+{
+  "key": "sun-direction-preservation",
+  "kind": "blender_function",
+  "title": "Create a sun and verify its world direction",
+  "tags": [
+    "sun",
+    "lighting",
+    "direction",
+    "\u592a\u9633",
+    "\u5149\u7167"
+  ],
+  "applicability": "Blender Z-up directional lights with a specified elevation and azimuth; compare exported directions after converting coordinate systems.",
+  "limitations": [
+    "Does not infer sun direction from an image.",
+    "Passing direction checks does not establish cinematic visual quality.",
+    "Browser light reconstruction still needs an actual viewer comparison."
+  ],
+  "instructions": "Create the sun with explicit parameters; compare normalized source and converted viewer directions. Use through scene_edit and retain its stage guards.",
+  "sourceLessonIds": [],
+  "code": "import math\nimport bpy\nfrom mathutils import Vector\n\ndef create_sun(name, elevation, azimuth, energy=5.0):\n    \"\"\"Elevation above XY; azimuth clockwise from +Y, in Blender Z-up.\"\"\"\n    if not all(math.isfinite(v) for v in (elevation, azimuth, energy)) or not 0 < elevation <= 90 or energy < 0:\n        raise ValueError('Invalid sun parameters')\n    e, a = math.radians(elevation), math.radians(azimuth)\n    direction = Vector((math.sin(a)*math.cos(e), math.cos(a)*math.cos(e), math.sin(e)))\n    light = bpy.data.objects.new(name, bpy.data.lights.new(name, 'SUN'))\n    bpy.context.scene.collection.objects.link(light)\n    light.rotation_euler = direction.to_track_quat('Z', 'Y').to_euler()\n    light.data.energy = energy\n    bpy.context.view_layer.update()\n    return light\n\ndef require_direction(expected, actual, tolerance_degrees=0.1):\n    expected, actual = Vector(expected), Vector(actual)\n    if not all(math.isfinite(v) for v in (*expected, *actual, tolerance_degrees)) or not expected.length or not actual.length or not 0 <= tolerance_degrees <= 180:\n        raise ValueError('Invalid direction comparison')\n    angle = math.degrees(expected.angle(actual))\n    if angle > tolerance_degrees:\n        raise ValueError('Light direction differs by %.3f degrees' % angle)\n    return angle\n",
+  "fixtures": [
+    {
+      "name": "creation-and-parent-transform",
+      "role": "positive",
+      "code": "import math\nimport unittest\nimport bpy\nfrom mathutils import Vector\n\nclass SunCreation(unittest.TestCase):\n    def test_requested_world_direction(self):\n        light = skill.create_sun('Sun', 55, 4, 5.5)\n        direction = (light.matrix_world.to_3x3() @ Vector((0,0,1))).normalized()\n        self.assertAlmostEqual(math.degrees(math.asin(direction.z)), 55, places=3)\n        self.assertAlmostEqual(math.degrees(math.atan2(direction.x,direction.y)), 4, places=3)\n        self.assertAlmostEqual(light.data.energy, 5.5)\n        self.assertLess(skill.require_direction((0.0400107,0.5721793,0.8191520), direction), 0.01)\n\n    def test_parent_rotation_and_translation(self):\n        light = skill.create_sun('Parented', 55, 4)\n        parent = bpy.data.objects.new('Parent', None)\n        bpy.context.scene.collection.objects.link(parent)\n        parent.rotation_euler.z = math.radians(30)\n        parent.location = (100,-25,15)\n        light.parent = parent\n        bpy.context.view_layer.update()\n        direction = (light.matrix_world.to_3x3() @ Vector((0,0,1))).normalized()\n        self.assertAlmostEqual(math.degrees(math.asin(direction.z)), 55, places=3)\n        self.assertAlmostEqual(math.degrees(math.atan2(direction.x,direction.y)), -26, places=3)\n"
+    },
+    {
+      "name": "offset-and-invalid-input",
+      "role": "counterexample",
+      "code": "import unittest\nfrom mathutils import Vector\n\nclass SunCounterexamples(unittest.TestCase):\n    def test_default_light_offset_is_detected(self):\n        light = skill.create_sun('Sun',55,4)\n        source = light.matrix_world.to_3x3() @ Vector((0,0,1))\n        offset_direction = light.matrix_world.to_3x3() @ Vector((0,1,1))\n        with self.assertRaisesRegex(ValueError, 'direction differs'):\n            skill.require_direction(source, offset_direction)\n        self.assertLess(skill.require_direction(source,source), 0.01)\n\n    def test_invalid_sun_parameters(self):\n        for elevation in (-10, 0, 91, float('nan')):\n            with self.assertRaises(ValueError):\n                skill.create_sun('Invalid',elevation,4)\n        for direction in ((0,0,0), (float('nan'),0,1), (0,float('inf'),1)):\n            with self.assertRaises(ValueError):\n                skill.require_direction(direction,(0,0,1))\n"
+    }
+  ]
+}

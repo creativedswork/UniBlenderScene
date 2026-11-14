@@ -5,6 +5,10 @@ import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
 import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { TexturePass } from "three/addons/postprocessing/TexturePass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
@@ -25,10 +29,16 @@ type Snapshot = {
 type Profile = {
   version: number; previewMode?: string; source?: { kind: string; purpose: string; phase: string | null; iteration: number }; colorManagement: { viewTransform: string; exposure: number; displayLut?: { uri: string; size: number; maxLinear: number } };
   render: { resolutionX: number; resolutionY: number; filmTransparent: boolean };
-  world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number };
+  world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number; backgroundEnvironmentUri?: string | null };
   camera: { name: string; projectionMatrix?: number[]; lens?: number; dof?: { enabled: boolean; focusDistance: number; fStop: number; blades: number; rotation: number; ratio: number } } | null;
   bakedObjects?: string[];
   bakedTints?: Record<string, number[]>;
+  previewAppearance?: { exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
+    dust?: { color: number[]; wind: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
+  postprocessing?: {
+    bloom?: { strength?: number; threshold?: number; radius?: number };
+    haze?: { start: number; depth: number; falloff: string; strength: number; color: number[] };
+  };
   lights: { name: string; type: string; color: number[]; energy: number; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -42,6 +52,7 @@ let viewer: {
   renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   controls: OrbitControls; tracer: WebGLPathTracer; denoise: FullScreenQuad; denoiseTarget?: THREE.WebGLRenderTarget;
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
+  effects?: ReturnType<typeof previewEffects>;
   position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
   meshesById: Map<string, THREE.Mesh[]>;
 } | undefined;
@@ -266,6 +277,7 @@ function dispose() {
   viewer.denoise.material.dispose(); viewer.denoise.dispose();
   viewer.denoiseTarget?.dispose();
   viewer.display?.material.dispose(); viewer.display?.dispose();
+  viewer.effects?.dispose();
   if (viewer.gpuFence) (viewer.renderer.getContext() as WebGL2RenderingContext).deleteSync(viewer.gpuFence);
   viewer.renderer.dispose();
   viewer.renderer.forceContextLoss();
@@ -344,11 +356,13 @@ function applyLights(model: THREE.Group, profile: Profile) {
       (light as THREE.RectAreaLight & { isCircular?: boolean }).isCircular = ["DISK", "ELLIPSE"].includes(definition.shape);
       light.power = power;
     } else { light = new THREE.PointLight(color); light.power = power; }
+    // The holder carries Blender's transform; Three's sun/spot defaults offset the light.
+    light.position.set(0, 0, 0);
     holder.add(light);
     if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
       light.target.position.set(0, 0, -1); holder.add(light.target);
     }
-    if (definition.useShadow && "castShadow" in light) light.castShadow = true;
+    if (definition.useShadow && "shadow" in light) light.castShadow = true;
   }
 }
 
@@ -381,6 +395,203 @@ async function displayTransform(profile: Profile, textures: THREE.Texture[]): Pr
       }`,
   });
   return new FullScreenQuad(material);
+}
+
+function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, profile: Profile) {
+  const settings = profile.postprocessing;
+  const appearance = profile.previewAppearance, dust = appearance?.dust;
+  if (!settings?.bloom && !settings?.haze && !dust && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
+  const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+  const composer = new EffectComposer(renderer, target);
+  composer.renderToScreen = false;
+  composer.setPixelRatio(1);
+  const source = new TexturePass();
+  source.material.toneMapped = false;
+  composer.addPass(source);
+  let sun: THREE.DirectionalLight | undefined;
+  const sunDirection = new THREE.Vector3(0, 1, 0);
+  if (dust) {
+    scene.traverse(object => { if (!sun && object instanceof THREE.DirectionalLight) sun = object; });
+    if (sun) {
+      scene.updateMatrixWorld(true);
+      sunDirection.copy(sun.getWorldPosition(new THREE.Vector3())).sub(sun.target.getWorldPosition(new THREE.Vector3())).normalize();
+      const bounds = new THREE.Box3().setFromObject(scene), center = bounds.getCenter(new THREE.Vector3());
+      const radius = Math.max(5, bounds.getBoundingSphere(new THREE.Sphere()).radius * 1.05);
+      // Directional illumination is position-independent; fit its shadow camera to the static scene.
+      sun.position.copy(sun.parent!.worldToLocal(center.clone().addScaledVector(sunDirection, radius * 2)));
+      sun.target.position.copy(sun.target.parent!.worldToLocal(center.clone()));
+      Object.assign(sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: 0.1, far: radius * 4 });
+      sun.shadow.camera.updateProjectionMatrix(); sun.shadow.mapSize.set(2048, 2048);
+      sun.castShadow = true; sun.shadow.needsUpdate = true;
+      scene.updateMatrixWorld(true);
+    }
+  }
+  if (settings?.bloom) {
+    const bloom = settings.bloom;
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), bloom.strength ?? 0.25,
+      bloom.radius ?? 0.35, bloom.threshold ?? 1.2));
+  }
+  let depth: THREE.WebGLRenderTarget | undefined, depthMaterial: THREE.MeshDepthMaterial | undefined;
+  let hazePass: ShaderPass | undefined;
+  if (settings?.haze || appearance) {
+    const haze = settings?.haze;
+    const centers = Array.from({ length: 6 }, (_, i) => {
+      const v = dust?.volumes[i]; return v ? new THREE.Vector4(v.center[0], v.center[2], -v.center[1]!, v.density) : new THREE.Vector4();
+    });
+    const radii = Array.from({ length: 6 }, (_, i) => {
+      const v = dust?.volumes[i]; return v ? new THREE.Vector3(v.radius[0], v.radius[2], v.radius[1]) : new THREE.Vector3(1, 1, 1);
+    });
+    depth = new THREE.WebGLRenderTarget(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    depthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
+    hazePass = new ShaderPass({
+      uniforms: {
+        tDiffuse: { value: null }, depthImage: { value: null },
+        projectionInverse: { value: camera.projectionMatrixInverse.clone() },
+        cameraWorld: { value: camera.matrixWorld.clone() }, time: { value: 0 },
+        start: { value: haze?.start ?? 0 }, range: { value: Math.max(haze?.depth ?? 1, 0.001) },
+        strength: { value: (haze?.strength ?? 0) * (appearance?.hazeScale ?? 1) }, quadratic: { value: haze?.falloff === "QUADRATIC" },
+        hazeColor: { value: new THREE.Color().setRGB(...(haze?.color ?? [0, 0, 0]).slice(0, 3) as [number, number, number], THREE.LinearSRGBColorSpace) },
+        dustCenters: { value: centers }, dustRadii: { value: radii }, dustCount: { value: dust?.volumes.length ?? 0 },
+        dustColor: { value: new THREE.Vector3(...(dust?.color ?? [0, 0, 0]) as [number, number, number]) },
+        wind: { value: new THREE.Vector3(dust?.wind[0] ?? 0, dust?.wind[2] ?? 0, -(dust?.wind[1] ?? 0)) },
+        exposureGain: { value: 2 ** (appearance?.exposureEV ?? 0) }, saturation: { value: appearance?.saturation ?? 1 },
+        whiteBalance: { value: new THREE.Vector3(...(appearance?.whiteBalance ?? [1, 1, 1]) as [number, number, number]) },
+        contrast: { value: appearance?.contrast ?? 1 },
+        sunDepth: { value: null }, sunMatrix: { value: new THREE.Matrix4() }, sunDirection: { value: sunDirection },
+        sunColor: { value: sun ? sun.color.clone().multiplyScalar(sun.intensity / Math.PI) : new THREE.Color(0, 0, 0) },
+        hasSunShadow: { value: false }, shadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
+      },
+      vertexShader: "varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}",
+      fragmentShader: `
+        #include <packing>
+        uniform sampler2D tDiffuse,depthImage,sunDepth;
+        uniform mat4 projectionInverse,cameraWorld,sunMatrix;
+        uniform float start,range,strength,time,exposureGain,saturation,contrast;
+        uniform bool quadratic,hasSunShadow;
+        uniform vec2 shadowTexel;
+        uniform vec3 hazeColor,dustColor,wind,dustRadii[6],whiteBalance,sunDirection,sunColor;
+        uniform vec4 dustCenters[6];
+        uniform int dustCount;
+        varying vec2 vUv;
+        float hash(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}
+        float noise(vec3 p){
+          vec3 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+          return mix(mix(mix(hash(i),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+            mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);
+        }
+        float sunlight(vec3 world){
+          if(!hasSunShadow)return 1.0;
+          vec4 projected=sunMatrix*vec4(world,1.0);vec3 q=projected.xyz/projected.w;
+          if(any(lessThan(q,vec3(0)))||any(greaterThan(q,vec3(1))))return 1.0;
+          float visible=0.0;
+          for(int y=0;y<2;y++)for(int x=0;x<2;x++){
+            vec2 offset=(vec2(float(x),float(y))-0.5)*shadowTexel;
+            visible+=step(q.z-0.0003,unpackRGBAToDepth(texture2D(sunDepth,q.xy+offset)));
+          }
+          return visible*0.25;
+        }
+        void main(){
+          float depth=unpackRGBAToDepth(texture2D(depthImage,vUv));
+          vec4 p=projectionInverse*vec4(vUv*2.0-1.0,depth*2.0-1.0,1.0);
+          float mist=clamp((length(p.xyz/p.w)-start)/range,0.0,1.0);
+          if(quadratic)mist*=mist;
+          vec4 color=texture2D(tDiffuse,vUv);
+          vec3 origin=cameraWorld[3].xyz;
+          vec3 direction=normalize(mat3(cameraWorld)*(p.xyz/p.w));
+          float surfaceDistance=length(p.xyz/p.w),optical=0.0;
+          vec3 scatter=vec3(0);
+          float entries[6],exits[6];
+          for(int cloud=0;cloud<6;cloud++){
+            entries[cloud]=1e20;exits[cloud]=0.0;
+            if(cloud>=dustCount)continue;
+            vec3 radius=dustRadii[cloud],ro=(origin-dustCenters[cloud].xyz)/radius,rd=direction/radius;
+            float a=dot(rd,rd),b=dot(ro,rd),c=dot(ro,ro)-1.0,d=b*b-a*c;
+            if(d<=0.0)continue;
+            float entry=max(0.0,(-b-sqrt(d))/a),exit=min(surfaceDistance,(-b+sqrt(d))/a);
+            if(exit<=entry)continue;
+            entries[cloud]=entry;exits[cloud]=exit;
+          }
+          // ponytail: single scattering from one sun; thick smoke needs multiple scattering.
+          float g=0.45,mu=dot(direction,sunDirection);
+          float phase=(1.0-g*g)/pow(1.0+g*g-2.0*g*mu,1.5);
+          for(int pass=0;pass<6;pass++){
+            int cloud=-1;float entry=1e19;
+            for(int i=0;i<6;i++)if(entries[i]<entry){entry=entries[i];cloud=i;}
+            if(cloud<0)break;
+            entries[cloud]=1e20;
+            vec3 radius=dustRadii[cloud];float stepLength=(exits[cloud]-entry)/32.0;
+            float jitter=hash(vec3(vUv*900.0,float(cloud)));
+            for(int j=0;j<32;j++){
+              float t=entry+(float(j)+jitter)*stepLength;
+              vec3 world=origin+direction*t,q=(world-dustCenters[cloud].xyz)/radius;
+              float envelope=pow(max(0.0,1.0-dot(q,q)),1.2);
+              vec3 drift=world*vec3(0.32,1.1,0.32)-wind*time*0.3;
+              float billow=0.57*noise(drift)+0.28*noise(drift*2.1)+0.15*noise(drift*4.3);
+              float tau=stepLength*dustCenters[cloud].w*envelope*smoothstep(0.26,0.72,billow);
+              if(tau<=0.00001)continue;
+              vec3 illumination=vec3(0.045,0.055,0.075)+sunColor*sunlight(world)*phase;
+              scatter+=exp(-optical)*(1.0-exp(-tau))*dustColor*illumination;
+              optical+=tau;
+            }
+          }
+          color.rgb=color.rgb*exp(-optical)+scatter;
+          color.rgb=mix(color.rgb,hazeColor,mist*strength)*exposureGain*whiteBalance;
+          // A luminance curve preserves hue while separating sunlit and shaded regions.
+          float preContrastLuminance=max(dot(color.rgb,vec3(0.2126,0.7152,0.0722)),0.00001);
+          color.rgb*=pow(preContrastLuminance/0.18,contrast-1.0);
+          float luminance=dot(color.rgb,vec3(0.2126,0.7152,0.0722));
+          color.rgb=max(vec3(0),mix(vec3(luminance),color.rgb,saturation));
+          gl_FragColor=color;
+        }`,
+    });
+    hazePass.uniforms.depthImage!.value = depth.texture;
+    hazePass.material.toneMapped = false;
+    composer.addPass(hazePass);
+  }
+  return {
+    animated: Boolean(dust?.volumes.length),
+    shadowedDust: Boolean(dust && sun),
+    depthDirty: true,
+    resize(width: number, height: number) {
+      composer.setSize(width, height); depth?.setSize(width, height); this.depthDirty = true;
+    },
+    render(texture: THREE.Texture, display?: FullScreenQuad) {
+      if (this.depthDirty && depth && depthMaterial && hazePass) {
+        const previousTarget = renderer.getRenderTarget(), previousMaterial = scene.overrideMaterial, previousBackground = scene.background;
+        const clearColor = renderer.getClearColor(new THREE.Color()), clearAlpha = renderer.getClearAlpha();
+        try {
+          scene.overrideMaterial = depthMaterial; scene.background = null;
+          renderer.setRenderTarget(depth); renderer.setClearColor(0xffffff, 1); renderer.clear(); renderer.render(scene, camera);
+          hazePass.uniforms.projectionInverse!.value.copy(camera.projectionMatrixInverse);
+          hazePass.uniforms.cameraWorld!.value.copy(camera.matrixWorld);
+          if (sun?.shadow.map) {
+            hazePass.uniforms.sunDepth!.value = sun.shadow.map.texture;
+            hazePass.uniforms.sunMatrix!.value.copy(sun.shadow.matrix);
+            hazePass.uniforms.hasSunShadow!.value = true;
+          }
+          // The exported scene is static; camera orbit only needs a fresh camera-depth image.
+          renderer.shadowMap.autoUpdate = false;
+        } finally {
+          scene.overrideMaterial = previousMaterial; scene.background = previousBackground;
+          renderer.setClearColor(clearColor, clearAlpha); renderer.setRenderTarget(previousTarget);
+        }
+        this.depthDirty = false;
+      }
+      if (hazePass) hazePass.uniforms.time!.value = performance.now() / 1000;
+      source.map = texture; composer.render();
+      if (display) {
+        (display.material as THREE.ShaderMaterial).uniforms.source!.value = composer.readBuffer.texture;
+        renderer.setRenderTarget(null); display.render(renderer);
+      } else {
+        source.map = composer.readBuffer.texture; source.renderToScreen = true;
+        source.render(renderer, composer.writeBuffer, composer.readBuffer, 0, false); source.renderToScreen = false;
+      }
+    },
+    dispose() {
+      for (const pass of composer.passes) pass.dispose();
+      composer.dispose(); depth?.dispose(); depthMaterial?.dispose();
+    },
+  };
 }
 
 async function loadModel(url: string) {
@@ -499,6 +710,15 @@ async function loadModel(url: string) {
     if (!profile.render.filmTransparent) {
       scene.background = environment; scene.backgroundIntensity = world.strength;
       scene.backgroundRotation.y = world.environmentRotationY;
+      if (world.backgroundEnvironmentUri) {
+        const encoded = world.backgroundEnvironmentUri.split(",")[1]!;
+        const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+        const image = new EXRLoader().parse(bytes.buffer);
+        const background = new THREE.DataTexture(image.data, image.width, image.height, image.format, image.type);
+        background.needsUpdate = true;
+        background.colorSpace = THREE.LinearSRGBColorSpace; background.mapping = THREE.EquirectangularReflectionMapping;
+        textures.push(background); scene.background = background; scene.backgroundIntensity = 1;
+      }
     }
     const sceneCameras: THREE.Camera[] = [];
     gltf.scene.traverse((object) => { if (object instanceof THREE.Camera) sceneCameras.push(object); });
@@ -538,12 +758,13 @@ async function loadModel(url: string) {
     tracer.minSamples = 1;
     tracer.renderDelay = 100;
     tracer.dynamicLowRes = true;
-    tracer.textureSize.set(512, 512);
+    tracer.textureSize.set(1024, 1024);
     tracer.setScene(scene, camera);
     tracer.renderToCanvas = false;
     const display = await displayTransform(profile, textures);
-    const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 2, kSigma: 1, threshold: 0.07, toneMapped: !display }));
-    const denoiseTarget = display ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }) : undefined;
+    const effects = previewEffects(renderer, scene, camera, profile);
+    const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
+    const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }) : undefined;
     const resize = new ResizeObserver(() => {
       const width = el("stage").clientWidth, height = el("stage").clientHeight;
       const w = Math.min(width, height * aspect), h = w / aspect;
@@ -555,6 +776,7 @@ async function loadModel(url: string) {
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
       tracer.updateCamera();
+      effects?.resize(w, h);
     });
     el("canvas").appendChild(renderer.domElement);
     const gl = renderer.getContext() as WebGL2RenderingContext;
@@ -570,29 +792,36 @@ async function loadModel(url: string) {
       }
       if (!camera.position.equals(previousPosition) || !camera.quaternion.equals(previousQuaternion)) {
         tracer.updateCamera(); previousPosition.copy(camera.position); previousQuaternion.copy(camera.quaternion);
+        if (effects) effects.depthDirty = true;
       }
-      if (tracer.samples >= 512) return;
-      tracer.renderSample();
+      if (tracer.samples >= 512 && !effects?.animated) return;
+      if (tracer.samples < 512) tracer.renderSample();
       if (tracer.samples >= 4) {
         (denoise.material as DenoiseMaterial).map = tracer.target.texture;
-        if (display && denoiseTarget) {
+        if (denoiseTarget) {
           denoiseTarget.setSize(tracer.target.width, tracer.target.height);
           renderer.setRenderTarget(denoiseTarget); denoise.render(renderer); renderer.setRenderTarget(null);
-          (display.material as THREE.ShaderMaterial).uniforms.source!.value = denoiseTarget.texture;
-          display.render(renderer);
+          if (effects) effects.render(denoiseTarget.texture, display);
+          else if (display) {
+            (display.material as THREE.ShaderMaterial).uniforms.source!.value = denoiseTarget.texture;
+            display.render(renderer);
+          }
         } else denoise.render(renderer);
       } else renderer.render(scene, camera);
       renderer.domElement.dataset.samples = tracer.samples.toFixed(1);
       viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
       gl.flush();
     }, 16);
-    viewer = { renderer, scene, camera, controls, tracer, denoise, denoiseTarget, display, frameTimer,
+    viewer = { renderer, scene, camera, controls, tracer, denoise, denoiseTarget, display, effects, frameTimer,
       position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
     resize.observe(el("stage"));
     renderer.domElement.dataset.renderer = "path-tracing";
     renderer.domElement.dataset.bounces = String(tracer.bounces);
     renderer.domElement.dataset.displayTransform = display ? "blender-lut" : "three-tone-mapping";
     renderer.domElement.dataset.samples = "0";
+    renderer.domElement.dataset.effects = Object.keys(profile.postprocessing ?? {}).join(",");
+    if (profile.previewAppearance?.dust) renderer.domElement.dataset.effects += ",dust";
+    renderer.domElement.dataset.dustLighting = effects?.shadowedDust ? "sun-shadow" : "ambient";
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
     el("empty").style.display = "none";
@@ -665,7 +894,12 @@ function receive(data: unknown) {
       el("render").dataset.asset = name;
       el("empty").style.display = "none";
       setMode(mode);
-    }).catch((error) => { console.error("Scene render failed:", error); message("Scene render could not be loaded."); });
+    }).catch((error) => {
+      if (snapshot !== next) return;
+      console.error("Scene render failed:", error);
+      el("empty").textContent = "Scene render could not be loaded.";
+      message("Scene render could not be loaded.");
+    });
   } else {
     el("render").removeAttribute("src");
     el("render").style.display = "none";
@@ -702,15 +936,25 @@ function receive(data: unknown) {
   if (glb && glb !== loadedURL && glb !== loadingURL) void loadModel(glb);
   setMode(mode);
   clearTimeout(timer);
-  if (busy) timer = setTimeout(async () => {
-    try {
-      const output = await app.callServerTool({ name: "scene_view", arguments: { sceneId: next.id } });
-      receive(output.structuredContent);
-    } catch { message("Scene progress could not be refreshed. Check the conversation."); }
-  }, 2000);
+  if (busy || (!next.error && !["completed", "best_effort"].includes(next.stage))) {
+    timer = setTimeout(() => { void refreshScene(next.id); }, 2000);
+  }
 }
 
-app.ontoolresult = (output) => receive(output.structuredContent);
+async function refreshScene(sceneId: string) {
+  try {
+    const output = await app.callServerTool({ name: "scene_get", arguments: { sceneId, images: "none" } });
+    if (output.isError) throw new Error("Scene refresh failed.");
+    if (snapshot?.id === sceneId) receive(output.structuredContent);
+  } catch { message("Scene progress could not be refreshed. Check the conversation."); }
+}
+
+app.ontoolresult = async (output) => {
+  const next = output.structuredContent as Snapshot | undefined;
+  if (!next?.id) return;
+  receive(next);
+  await refreshScene(next.id);
+};
 app.onhostcontextchanged = (context) => {
   if (context.theme) document.documentElement.style.colorScheme = context.theme;
   if (context.displayMode) document.documentElement.dataset.display = context.displayMode;
@@ -819,7 +1063,7 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
       if (output.isError) throw new Error("Reference input failed.");
       receive(output.structuredContent);
       clearSelection();
-      await app.sendMessage({ role: "user", content: [{ type: "text", text: `Poll scene_view for Blender scene ${(output.structuredContent as unknown as Snapshot).id} until reference downloads finish, then inspect every labeled view with scene_get. ${append ? "Refine the existing scene" : "Plan, build and review the scene"} using the primary view for composition and all auxiliary views for spatial layout; export and show the bundled viewer.` }] });
+      await app.sendMessage({ role: "user", content: [{ type: "text", text: `Poll scene_get with images=none for Blender scene ${(output.structuredContent as unknown as Snapshot).id} until reference downloads finish, then inspect every labeled view with scene_get. ${append ? "Refine the existing scene" : "Plan, build and review the scene"} using the primary view for composition and all auxiliary views for spatial layout; export and show the bundled viewer.` }] });
       message("Reference images sent to the conversation");
     } catch { message("Reference images could not be submitted. Retry or attach them in the conversation."); }
     finally {
