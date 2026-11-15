@@ -6,6 +6,8 @@ import { BlenderClient, factorGuardCode, inspectObjectCode, renderCode, sceneSum
 import { writeGraphExport } from "./graph-export.js";
 import { verifyAssetStrategy, verifyGraphReview, type AssetRequirement, type AssetStrategy, type GraphReview } from "./workflow-guards.js";
 import { ExperienceLibrary, fileHash, type RetrospectiveInput, type Replay, type FixtureResult } from "./experience.js";
+import { renderThreeRT, threeRTCapability } from "./threert.js";
+import { ThreeRTLive } from "./threert-live.js";
 
 export type Criterion = { id: string; description: string; severity: "blocker" | "major" | "minor" };
 export type ImageBox = [number, number, number, number];
@@ -86,6 +88,8 @@ export type Scene = {
   exportVersion?: string;
   exportPipelineHash?: string;
   exportAppearance?: PreviewAppearance;
+  threeRTRender?: { status: "queued" | "running" | "done" | "failed"; iteration: number; exportVersion: string;
+    directory: string; error?: string; warnings?: string[] };
   skillValidation?: { candidateId: string; validationId: string; passed: boolean };
 };
 export const REFERENCE_ASSETS = ["reference", "reference-2", "reference-3", "reference-4", "reference-5", "reference-6"] as const;
@@ -151,6 +155,7 @@ function imageMime(data: Buffer): string {
 
 export class SceneStore {
   readonly scenes = new Map<string, Scene>();
+  readonly live = new ThreeRTLive();
   // ponytail: one Blender process means one execution queue; use separate workers for throughput.
   private queue: Promise<void> = Promise.resolve();
   private recoveryRequired = false;
@@ -168,6 +173,10 @@ export class SceneStore {
       if (scene.job && ["queued", "running"].includes(scene.job.status)) {
         scene.job.status = "failed";
         scene.job.error = scene.error = "Service restarted during an operation. Inspect the scene and retry.";
+        if (scene.threeRTRender && ["queued", "running"].includes(scene.threeRTRender.status)) {
+          scene.threeRTRender.status = "failed";
+          scene.threeRTRender.error = scene.error;
+        }
         const before = this.path(scene, "checkpoint.blend");
         if (scene.job.kind === "edit" && existsSync(before)) {
           copyFileSync(before, this.path(scene, "current.blend"));
@@ -1138,6 +1147,55 @@ result = {"reviewViews": 5}
     return scene;
   }
 
+  renderHighQuality(id: string): Scene {
+    const scene = this.get(id);
+    this.idle(scene);
+    const target = this.workflowState(scene).presentation;
+    if (!["completed", "best_effort"].includes(scene.stage) || target.mode !== "appearance" ||
+      !scene.exportVersion || scene.exportedIteration !== target.iteration) {
+      throw new Error("请先完成场景审核与最终导出，再使用 ThreeRT 高质量渲染。");
+    }
+    const capability = threeRTCapability();
+    if (!capability.available) throw new Error(capability.reason);
+    const directory = `threert/${target.iteration}-${scene.exportVersion}`;
+    const state: NonNullable<Scene["threeRTRender"]> = { status: "queued", iteration: target.iteration,
+      exportVersion: scene.exportVersion, directory };
+    scene.threeRTRender = state;
+    this.enqueue(scene, "threert", async () => {
+      state.status = "running"; this.save(scene);
+      try {
+        const output = this.path(scene, directory);
+        mkdirSync(output, { recursive: true });
+        // Export unbaked source materials on a copy. Baked emissive lightmaps would become physical emitters.
+        const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+        const code = template.replace("__SOURCE_BLEND__", py(this.path(scene, "best.blend")))
+          .replace("__OUTPUT_DIRECTORY__", py(output)).replace("__LIGHTING_BAKES__", "[]")
+          .replace("__PREVIEW_APPEARANCE__", py(scene.exportAppearance ?? {})).replace("__STRUCTURAL_PREVIEW__", "False");
+        await this.blender.execute(code);
+        state.warnings = await renderThreeRT(output, capability.binary);
+        state.status = "done";
+      } catch (error) {
+        state.status = "failed";
+        state.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    });
+    return scene;
+  }
+
+  realtimeTarget(id: string) {
+    const scene = this.get(id);
+    this.idle(scene);
+    const state = scene.threeRTRender, target = this.workflowState(scene).presentation;
+    if (!["completed", "best_effort"].includes(scene.stage) || target.mode !== "appearance" ||
+      !state || state.status !== "done" || state.exportVersion !== scene.exportVersion || state.iteration !== target.iteration) {
+      throw new Error("请先准备当前版本的 ThreeRT 场景。");
+    }
+    const capability = threeRTCapability();
+    if (!capability.available) throw new Error(capability.reason);
+    return { version: state.exportVersion, directory: this.path(scene, state.directory), binary: capability.binary };
+  }
+
   private captureExperience(scene: Scene) {
     const target = this.workflowState(scene).presentation;
     if (!["completed", "best_effort"].includes(scene.stage) || !scene.exportVersion || scene.exportedIteration !== target.iteration) {
@@ -1246,6 +1304,12 @@ result = {"reviewViews": 5}
         if (existsSync(this.path(scene, file))) files.push(file);
       }
     }
+    if (target.mode === "appearance" && target.purpose === "delivery" &&
+      scene.threeRTRender?.status === "done" && scene.threeRTRender.exportVersion === scene.exportVersion &&
+      scene.threeRTRender.iteration === target.iteration) {
+      const file = `${scene.threeRTRender.directory}/threert.png`;
+      if (existsSync(this.path(scene, file))) files.push(file);
+    }
     return [...new Set(files.filter((item): item is string => Boolean(item)))];
   }
 
@@ -1256,9 +1320,12 @@ result = {"reviewViews": 5}
     const references = this.referenceImages(scene).map((image, index) => ({ ...image,
       role: index === 0 ? "primary" : "auxiliary", url: url(image.assetName), localPath: this.path(scene, image.assetName) }));
     const render = this.renderFile(scene);
+    const { binary: _binary, ...threeRT } = { binary: undefined, ...threeRTCapability() };
     return {
       ...publicScene,
       workflowState,
+      threeRT,
+      realtimeUrl: scene.exportVersion ? `${origin}/realtime/${scene.id}?token=${token}&version=${encodeURIComponent(scene.exportVersion)}` : null,
       learning: this.library.context(scene.id, scene.plan?.summary ?? scene.prompt),
       reviewViews: this.reviewViewsReady(scene) ? scene.reviewViews : [],
       render,

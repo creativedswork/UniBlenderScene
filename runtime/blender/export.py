@@ -23,6 +23,14 @@ for request in lighting_bakes:
     obj["codex_bake_lighting"] = request["resolution"]
 
 
+def volume_only(obj):
+    materials = [slot.material for slot in obj.material_slots] if obj.type == "MESH" else []
+    return bool(materials) and all(material and material.use_nodes and any(
+        node.type == "OUTPUT_MATERIAL" and node.is_active_output and
+        node.inputs["Volume"].is_linked and not node.inputs["Surface"].is_linked
+        for node in material.node_tree.nodes) for material in materials)
+
+
 def upstream(socket, kind, seen=None):
     seen = set() if seen is None else seen
     if socket is None:
@@ -276,6 +284,8 @@ def compositor_profile(scene):
 def bake_world_backgrounds(scene, world_output, ambient):
     surface = world_output.inputs["Surface"]
     original_surface = surface.links[0].from_socket
+    volume = world_output.inputs["Volume"]
+    volume_sources = [link.from_socket for link in volume.links]
     original_camera = scene.camera
     visibility = [(obj, obj.hide_render) for obj in scene.objects]
     render = scene.render
@@ -293,6 +303,10 @@ def bake_world_backgrounds(scene, world_output, ambient):
         data.cycles.panorama_type = "EQUIRECTANGULAR"
     camera.rotation_euler = (math.pi / 2, 0, 0)
     try:
+        # Atmosphere is rendered separately in the viewer; keep its extinction and
+        # scattering out of the environment light and background panorama.
+        for link in list(volume.links):
+            scene.world.node_tree.links.remove(link)
         for obj, _ in visibility:
             obj.hide_render = True
         scene.camera = camera
@@ -312,6 +326,8 @@ def bake_world_backgrounds(scene, world_output, ambient):
         return background
     finally:
         scene.world.node_tree.links.new(original_surface, surface)
+        for socket in volume_sources:
+            scene.world.node_tree.links.new(socket, volume)
         scene.camera = original_camera
         for obj, hidden in visibility:
             obj.hide_render = hidden
@@ -354,6 +370,10 @@ def display_lut(scene):
 
 
 def prepare_structural_preview(scene):
+    for obj in scene.objects:
+        if volume_only(obj):
+            obj.hide_render = True
+            obj.hide_set(True)
     material = bpy.data.materials.new("Structural gray")
     material.use_nodes = True
     material.diffuse_color = (0.7, 0.7, 0.7, 1)
@@ -432,7 +452,7 @@ try:
             environment_uri = "environment.exr"
         finally:
             settings.file_format, settings.color_mode, settings.color_depth = original
-    elif not structural_preview and background and background.inputs["Color"].is_linked and not output.inputs["Volume"].is_linked:
+    elif not structural_preview and background and background.inputs["Color"].is_linked:
         background_uri = bake_world_backgrounds(scene, output, background)
         environment_uri = "environment.exr"
         strength = 1.0
@@ -521,6 +541,8 @@ try:
     for obj in scene.objects:
         if obj.type == "CAMERA":
             obj.hide_set(obj != camera)
+        elif volume_only(obj):
+            obj.hide_set(True)
     bpy.ops.export_scene.gltf(
         filepath=os.path.join(directory, "final.glb"),
         export_format="GLB", use_active_scene=True, use_visible=True,

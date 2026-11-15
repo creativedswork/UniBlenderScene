@@ -77,12 +77,19 @@ try {
     console.error(await frame.locator("body").innerText(), errors);
     throw error;
   }
-  const canvas = frame.locator("canvas");
+  const canvas = frame.locator("#canvas canvas");
   assert.equal(await canvas.count(), 1);
   await page.waitForFunction(() => {
     const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("canvas");
     return Number(canvas?.getAttribute("data-samples")) >= 32;
   }, undefined, { timeout: 60000 });
+  const stageBounds = await frame.locator("#stage").boundingBox(); assert.ok(stageBounds);
+  const graphBounds = await frame.locator("#graph-panel").boundingBox(); assert.ok(graphBounds);
+  const viewportBounds = await canvas.boundingBox(); assert.ok(viewportBounds);
+  assert.equal(graphBounds.y, stageBounds.y, "Scene Graph sits beside the preview.");
+  assert.equal(graphBounds.x + graphBounds.width, stageBounds.x, "Preview fills the area to the right of Scene Graph.");
+  assert.ok(Math.abs(viewportBounds.width - stageBounds.width) < 1 && Math.abs(viewportBounds.height - stageBounds.height) < 1,
+    "The interactive canvas fills the preview in both dimensions.");
   await frame.getByRole("button", { name: "Expand Studio" }).click();
   await frame.getByRole("treeitem", { name: "Red cube · object" }).waitFor();
   await frame.getByRole("treeitem", { name: "Red cube · object" }).click();
@@ -168,6 +175,12 @@ try {
   await page.waitForFunction(() => (document.getElementById("viewer") as HTMLElement)?.style.height === "650px",
     undefined, { timeout: 10000 });
   assert.equal(await page.locator("#viewer").evaluate((element) => (element as HTMLElement).style.height), "650px");
+  await page.waitForFunction((initialHeight) => {
+    const doc = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument!;
+    const stage = doc.getElementById("stage")!.getBoundingClientRect();
+    const canvas = doc.querySelector("#canvas canvas")!.getBoundingClientRect();
+    return stage.height > initialHeight && Math.abs(stage.height - canvas.height) < 1 && Math.abs(stage.width - canvas.width) < 1;
+  }, stageBounds.height);
   const [download] = await Promise.all([
     page.waitForEvent("download"), frame.getByRole("link", { name: "Download GLB", exact: true }).click(),
   ]);
@@ -245,7 +258,7 @@ try {
     const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("canvas");
     return canvas?.dataset.previewMode === "structural" && Number(canvas.dataset.samples) >= 32;
   }, undefined, { timeout: 60000 });
-  await frame.locator("canvas").screenshot({ path: resolve(root, "viewer-structural-3d.png") });
+  await canvas.screenshot({ path: resolve(root, "viewer-structural-3d.png") });
   await page.locator("#viewer").screenshot({path:resolve(root,"viewer-composition.png")});
   await frame.locator("#review-panel").screenshot({path:resolve(root,"viewer-composition-panel.png")});
   await frame.locator("#review-feedback").fill("Window must be perpendicular to the desk");
@@ -258,7 +271,7 @@ try {
   assert.deepEqual(errors, []);
   await writeFile(resolve(root, "viewer-report.json"), JSON.stringify({
     status: "passed", browser: browser.version(),
-    checks: ["MCP AppBridge iframe handshake", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "composition approve and revise-geometry controls", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
+    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "composition approve and revise-geometry controls", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
     pageErrors: errors,
   }, null, 2));
   console.log(`Viewer integration passed; screenshots saved under ${root}`);

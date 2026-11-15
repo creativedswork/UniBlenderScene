@@ -6,20 +6,32 @@
   <title>Blender scene</title>
   <style>
     :root{color-scheme:light dark;font-family:system-ui,sans-serif;color:light-dark(#262522,#ecebe7);background:light-dark(#f6f5f1,#1a1b1b)}
-    *{box-sizing:border-box}body{margin:0}button,input,a{font:inherit}button,a.download{border:1px solid light-dark(#d9d7d0,#414343);border-radius:8px;background:transparent;color:inherit;padding:7px 11px;cursor:pointer;text-decoration:none;font-size:12px}button:hover,a.download:hover{background:light-dark(#e6e4dd,#303333)}button:disabled{opacity:.4;cursor:default}button[aria-pressed=true]{background:light-dark(#deddd6,#3d4140)}button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #73ac97;outline-offset:2px}
-    header,footer{padding:12px 16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}header{border-bottom:1px solid light-dark(#deddd6,#303333)}h1{font-size:14px;font-weight:600;margin:0;margin-right:auto}#status{font-size:12px;color:light-dark(#66665f,#adaea7)}#stage{position:relative;height:360px;background:light-dark(#eeede7,#202222);overflow:hidden}#canvas{position:absolute;inset:0;display:none;align-items:center;justify-content:center}canvas{display:block;max-width:100%}#render{width:100%;height:100%;object-fit:contain;display:none}#empty{position:absolute;inset:0;display:grid;place-content:center;text-align:center;padding:20px;font-size:14px;color:light-dark(#696a61,#adaea7)}#reference{position:absolute;right:12px;bottom:12px;width:76px;height:76px;object-fit:contain;border:1px solid light-dark(#d4d2c9,#535852);border-radius:8px;background:light-dark(#f5f4f0,#222);display:none}#note{font-size:11px;margin-right:auto;color:light-dark(#707168,#a2a69c);max-width:65ch}#refine{padding:0 16px 14px;display:flex;gap:8px}input[type=text]{flex:1;min-width:0;background:transparent;border:1px solid light-dark(#d9d7d0,#414343);border-radius:8px;color:inherit;padding:9px 11px;font-size:13px}#message{font-size:12px;min-height:16px;padding:0 16px 10px;color:light-dark(#80624c,#d8b995)}#upload{display:none}#file{display:none}@media(max-width:460px){#stage{height:300px}header,footer{padding:10px}#note{flex-basis:100%}#refine{padding:0 10px 10px}}
+    *{box-sizing:border-box}html{height:100%}body{margin:0;height:100dvh;min-height:400px;display:flex;flex-direction:column}button,input,a{font:inherit}button,a.download{border:1px solid light-dark(#d9d7d0,#414343);border-radius:8px;background:transparent;color:inherit;padding:7px 11px;cursor:pointer;text-decoration:none;font-size:12px}button:hover,a.download:hover{background:light-dark(#e6e4dd,#303333)}button:disabled{opacity:.4;cursor:default}button[aria-pressed=true]{background:light-dark(#deddd6,#3d4140)}button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #73ac97;outline-offset:2px}
+    header,footer{padding:12px 16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}header{border-bottom:1px solid light-dark(#deddd6,#303333)}h1{font-size:14px;font-weight:600;margin:0;margin-right:auto}#status{font-size:12px;color:light-dark(#66665f,#adaea7)}#workspace{display:flex;flex:1;min-height:0}#preview{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;overflow:auto}#stage{position:relative;flex:1;min-height:180px;background:light-dark(#eeede7,#202222);overflow:hidden}#canvas{position:absolute;inset:0;display:none;align-items:center;justify-content:center}canvas{display:block;max-width:100%}header,footer,#refine,#message,#threert-panel,#reference-upload{flex-shrink:0}#status{min-width:0;overflow-wrap:anywhere}#render{width:100%;height:100%;object-fit:contain;display:none}#empty{position:absolute;inset:0;display:grid;place-content:center;text-align:center;padding:20px;font-size:14px;color:light-dark(#696a61,#adaea7)}#reference{position:absolute;right:12px;bottom:12px;width:76px;height:76px;object-fit:contain;border:1px solid light-dark(#d4d2c9,#535852);border-radius:8px;background:light-dark(#f5f4f0,#222);display:none}#note{font-size:11px;margin-right:auto;color:light-dark(#707168,#a2a69c);max-width:65ch}#refine{padding:0 16px 14px;display:flex;gap:8px}input[type=text]{flex:1;min-width:0;background:transparent;border:1px solid light-dark(#d9d7d0,#414343);border-radius:8px;color:inherit;padding:9px 11px;font-size:13px}#message{font-size:12px;margin:0;padding:0 16px 10px;color:light-dark(#80624c,#d8b995)}#message:empty{display:none}#upload{display:none}#file{display:none}@media(max-width:460px){header,footer{padding:10px}#note{flex-basis:100%}#refine{padding:0 10px 10px}}
       #references{position:absolute;right:12px;bottom:12px;width:154px;padding:8px;border:1px solid light-dark(#d4d2c9,#535852);border-radius:10px;background:light-dark(#f6f5f1e8,#222e)}#references[hidden],#reference-upload[hidden]{display:none}#references label{font-size:11px}select{font:inherit;font-size:12px;width:100%;margin:5px 0 8px;padding:5px;background:light-dark(#fff,#303333);color:inherit;border:1px solid light-dark(#d4d2c9,#535852);border-radius:5px}#reference-open{padding:0;width:100%;height:88px;display:block;overflow:hidden}#reference{position:static;width:100%;height:100%;border:0;border-radius:0;display:block;object-fit:contain}dialog{max-width:90vw;border:1px solid #777;border-radius:12px;color:inherit;background:light-dark(#f6f5f1,#222)}dialog::backdrop{background:#0009}#reference-full{display:block;max-width:80vw;max-height:70vh;object-fit:contain}#reference-caption{font-size:13px}#reference-upload{margin:0 16px 14px;padding:12px;border:1px solid light-dark(#d4d2c9,#535852);border-radius:8px}#reference-upload p,#reference-upload label{font-size:12px}#primary-view{max-width:400px}.image-actions{display:flex;gap:8px;flex-wrap:wrap}
-    #selection-box{position:absolute;inset:0;pointer-events:none;display:none;z-index:2}#selection-gizmo{display:block;width:100%;height:100%;overflow:hidden}#selection-gizmo text{font:600 12px system-ui;paint-order:stroke;stroke:#17191b;stroke-width:3px;stroke-linejoin:round}#selection-label{position:absolute;background:#47341c;color:#fff4df;border-radius:4px;padding:3px 7px;font-size:12px;white-space:nowrap}#graph-panel{border-top:1px solid light-dark(#deddd6,#303333);padding:10px 16px;max-height:220px;overflow:auto}#graph-panel[hidden],#review-panel[hidden],#graph-panel.collapsed #graph-list,#graph-panel.collapsed #graph-detail{display:none}#graph-panel h2,#review-panel h2{font-size:13px;margin:0 0 7px}#graph-collapse,#selection-clear{padding:2px 7px;margin-left:8px}#graph-list{display:grid;gap:2px}#graph-list button{display:block;text-align:left;border:0;border-radius:4px;padding:5px;font-size:12px}#graph-list button[aria-selected=true]{background:light-dark(#cce8dc,#20543e)}.graph-row{display:flex;align-items:center;gap:4px;min-width:0}#graph-list .graph-toggle{width:22px;flex:none}#graph-list button[role=treeitem]{flex:1;min-width:0;overflow-wrap:anywhere}#graph-detail{font-size:12px;margin:8px 0 0}#review-panel{padding:10px 16px;border-top:1px solid light-dark(#deddd6,#303333)}#review-images{display:flex;gap:6px;overflow:auto}#review-images img{width:150px;height:100px;object-fit:contain;background:#222}#review-feedback{width:100%;margin:8px 0;padding:7px}#review-panel button{margin-right:5px}@media(max-width:460px){#graph-panel{max-height:140px}#review-images img{width:105px;height:80px}}
+    #selection-box{position:absolute;inset:0;pointer-events:none;display:none;z-index:2}#selection-gizmo{display:block;width:100%;height:100%;overflow:hidden}#selection-gizmo text{font:600 12px system-ui;paint-order:stroke;stroke:#17191b;stroke-width:3px;stroke-linejoin:round}#selection-label{position:absolute;background:#47341c;color:#fff4df;border-radius:4px;padding:3px 7px;font-size:12px;white-space:nowrap}#graph-panel{flex:0 0 clamp(200px,23vw,280px);min-width:0;border-right:1px solid light-dark(#deddd6,#303333);padding:12px;overflow:auto}#graph-panel h2{display:flex;flex-wrap:wrap;align-items:center;gap:6px}#graph-panel[hidden],#review-panel[hidden],#graph-panel.collapsed #graph-list,#graph-panel.collapsed #graph-detail{display:none}#graph-panel h2,#review-panel h2{font-size:13px;margin:0 0 7px}#graph-collapse,#selection-clear{padding:2px 7px}#graph-list{display:grid;gap:2px}#graph-list button{display:block;text-align:left;border:0;border-radius:4px;padding:5px;font-size:12px}#graph-list button[aria-selected=true]{background:light-dark(#cce8dc,#20543e)}.graph-row{display:flex;align-items:center;gap:4px;min-width:0}#graph-list .graph-toggle{width:22px;flex:none}#graph-list button[role=treeitem]{flex:1;min-width:0;overflow-wrap:anywhere}#graph-detail{font-size:12px;margin:8px 0 0}#review-panel{flex-shrink:0;max-height:40%;overflow:auto;padding:10px 16px;border-top:1px solid light-dark(#deddd6,#303333)}#review-images{display:flex;gap:6px;overflow:auto}#review-images img{width:150px;height:100px;object-fit:contain;background:#222}#review-feedback{width:100%;margin:8px 0;padding:7px}#review-panel button{margin-right:5px}@media(max-width:600px){#graph-panel{flex-basis:150px;padding:10px 6px}#review-images img{width:105px;height:80px}}@media(max-width:460px){#graph-panel{flex-basis:125px}}
   </style>
 </head>
 <body>
   <header>
     <h1>Blender scene</h1><span id="status" role="status">Connecting</span>
+    <select id="render-backend" aria-label="渲染方式" style="width:auto;max-width:260px;margin:0">
+      <option value="web">Three.js · 网页交互</option>
+      <option value="threert" disabled>ThreeRT · 实时交互（不可用）</option>
+    </select>
     <button id="mode-render" aria-pressed="true">Render</button>
     <button id="mode-3d" aria-pressed="false" disabled>3D</button>
     <button id="reset" aria-label="Reset camera" title="Reset camera" disabled>↺</button>
     <button id="fullscreen" aria-label="Expand viewer" title="Expand viewer">⛶</button>
   </header>
+  <main id="workspace">
+  <section id="graph-panel" hidden><h2>Scene Graph <button id="graph-collapse" aria-expanded="true">Collapse</button><button id="selection-clear" disabled>Clear selection</button></h2><div id="graph-list" role="tree"></div><p id="graph-detail" role="status"></p></section>
+  <section id="preview" aria-label="Scene preview">
+  <section id="threert-panel" hidden style="padding:10px 16px;border-bottom:1px solid #5555">
+    <span id="threert-status" role="status" style="font-size:12px"></span>
+    <button id="render-threert" disabled>连接实时渲染</button>
+    <a id="download-threert" class="download" hidden>下载主相机静态图</a>
+  </section>
   <div id="stage">
     <div id="canvas"></div>
     <div id="selection-box">
@@ -39,6 +51,9 @@
       <span id="selection-label"></span>
     </div>
     <img id="render" crossorigin="anonymous" alt="Rendered Blender scene">
+    <div id="threert-live" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center">
+      <canvas id="threert-render" aria-label="ThreeRT 实时交互视图" width="1280" height="720"></canvas>
+    </div>
     <div id="empty">Create a scene in the conversation to preview it here</div>
     <aside id="references" hidden>
       <label for="reference-select">Reference view</label>
@@ -47,7 +62,6 @@
     </aside>
   </div>
   <section id="review-panel" hidden><h2>Confirm geometry and composition</h2><p id="review-gaps"></p><div id="review-images"></div><input id="review-feedback" type="text" placeholder="Describe what needs changing"><button id="review-approve">Approve</button><button id="review-composition">Revise composition</button><button id="review-geometry">Revise geometry</button></section>
-  <section id="graph-panel" hidden><h2>Scene Graph <button id="graph-collapse" aria-expanded="true">Collapse</button><button id="selection-clear" disabled>Clear selection</button></h2><div id="graph-list" role="tree"></div><p id="graph-detail" role="status"></p></section>
   <footer>
     <span id="note">Drag to orbit · Scroll to zoom · Right-drag to pan</span>
     <a id="download-glb" class="download" hidden>Download GLB</a>
@@ -76,6 +90,8 @@
     <button type="button" id="send" disabled>Refine</button>
   </div>
   <div id="message" role="status"></div>
+  </section>
+  </main>
   <!--WIDGET_SCRIPT-->
 </body>
 </html>

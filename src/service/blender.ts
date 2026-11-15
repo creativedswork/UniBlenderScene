@@ -406,6 +406,10 @@ result = {
 
 export function structuralShadingCode(): string {
   return `
+for obj in bpy.context.scene.objects:
+    materials = [slot.material for slot in obj.material_slots] if obj.type == 'MESH' else []
+    if materials and all(m and m.use_nodes and any(n.type=='OUTPUT_MATERIAL' and n.is_active_output and n.inputs['Volume'].is_linked and not n.inputs['Surface'].is_linked for n in m.node_tree.nodes) for m in materials):
+        obj.hide_render = True
 scene = bpy.context.scene
 scene.render.engine = 'BLENDER_WORKBENCH'
 scene.display.shading.light = 'STUDIO'

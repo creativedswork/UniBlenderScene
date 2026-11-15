@@ -116,7 +116,7 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 21);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 22);
   const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
@@ -180,6 +180,8 @@ try {
   assert.ok(graph.nodes.find((node: { id: string }) => node.id === "cube").gltfNodeIndices.length >= 1);
   assert.equal(bytes.toString("ascii", 0, 4), "glTF"); assert.equal(bytes.readUInt32LE(4), 2);
   const gltf = JSON.parse(bytes.subarray(20, 20 + bytes.readUInt32LE(12)).toString("utf8"));
+  assert.ok(!gltf.nodes.some((node: any) => node.name === "PureVolumeProxy"),
+    "A pure volume boundary must not become an opaque GLB cube");
   const cubeMesh = gltf.meshes[gltf.nodes.find((node: any) => node.name === "RedCube").mesh];
   for (const primitive of cubeMesh.primitives) {
     assert.equal(gltf.materials[primitive.material].emissiveTexture.texCoord ?? 0, 0,
