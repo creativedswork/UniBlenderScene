@@ -852,13 +852,20 @@ async function loadModel(url: string) {
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
     const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }) : undefined;
     const resize = new ResizeObserver(() => {
-      const width = el("stage").clientWidth, height = el("stage").clientHeight;
-      const w = Math.min(width, height * aspect), h = w / aspect;
+      const w = el("stage").clientWidth, h = el("stage").clientHeight;
+      if (!w || !h) return;
       renderer.setSize(w, h);
-      if (camera instanceof THREE.PerspectiveCamera) camera.aspect = aspect;
+      const viewportAspect = w / h;
+      if (camera instanceof THREE.PerspectiveCamera) camera.aspect = viewportAspect;
+      else {
+        const center = (camera.left + camera.right) / 2;
+        const halfWidth = (camera.top - camera.bottom) * viewportAspect / 2;
+        camera.left = center - halfWidth; camera.right = center + halfWidth;
+      }
       camera.updateProjectionMatrix();
       if (camera instanceof THREE.PerspectiveCamera && profile.camera?.projectionMatrix?.length === 16) {
         camera.projectionMatrix.fromArray(profile.camera.projectionMatrix);
+        camera.projectionMatrix.elements[0]! *= aspect / viewportAspect;
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
       tracer.updateCamera();
