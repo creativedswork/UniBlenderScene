@@ -44,9 +44,11 @@ Scenario helpers are optional source material and its MCP tools are not used.
   contact, floating parts, overlapping faces, inverted normals, unexpected
   scale or orientation, and missing image textures. Use `scene_get` with
   `objectName` when the abbreviated summary is insufficient.
-- After `scene_export`, load the GLB in the Three.js viewer and check its scale,
-  orientation, materials, textures, and orbit interaction. The Blender render
-  remains the visual evidence when WebGL lighting differs.
+- After `scene_export`, open the bundled viewer and check scale, orientation,
+  materials, textures, and orbit interaction in its active backend. Delivered
+  appearance defaults to ThreeRT when configured; use Three.js for browser-only
+  inspection and object bounds. The Blender render remains the visual evidence
+  when preview lighting differs.
 
 Do not run Scenario's separate Blender MCP commands or launch another Blender
 process for these checks. Keep scene edits, checkpoints, and export inside this

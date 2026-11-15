@@ -7,6 +7,7 @@ import { BlenderClient } from "../src/service/blender.js";
 import { SceneStore, type Scene } from "../src/service/store.js";
 import { cameraFromGLB, modelWithoutPunctualLights, renderThreeRT } from "../src/service/threert.js";
 import { buildThreeRTScene, type ThreeRTInput } from "../runtime/threert/scene.js";
+import { FogVolume } from "@threert/scene";
 
 function glb(cameraType = "perspective") {
   const text = JSON.stringify({ nodes: [{ translation: [10, 0, 0], children: [1] },
@@ -21,6 +22,24 @@ function glb(cameraType = "perspective") {
 const profile = { colorManagement: { exposure: 0.65 }, render: { resolutionX: 1280, resolutionY: 640 },
   camera: { name: "Main" }, world: { color: [0.1, 0.1, 0.1], strength: 1 }, lights: [],
   previewAppearance: { dust: { color: [0.8, 0.7, 0.6], volumes: [{ center: [2, 3, 4], radius: [5, 6, 7], density: 0.1 }] } } };
+
+test("thin atmosphere retains physical extinction through ThreeRT's fog coverage combination", () => {
+  for (const density of [0.004, 0.14]) {
+    const input: ThreeRTInput = { camera: cameraFromGLB(glb()), profile: structuredClone(profile) };
+    input.profile.previewAppearance!.dust!.volumes[0]!.density = density;
+    input.profile.previewAppearance!.dust!.wind = [0.12, 0.04, 0.025];
+    const fog = buildThreeRTScene(input).scene.children.find(child => child instanceof FogVolume) as FogVolume;
+    const { Radial, Height } = fog.volume.params as { Radial: number; Height: number };
+    // ThreeRT's local_fog combines transmittances as A + B - A*B, not extinction sums.
+    // At the sphere centre, the height term must not suppress the specified radial density.
+    const a = Math.exp(-Height), b = Math.exp(-Radial);
+    const extinction = -Math.log(a + b - a * b);
+    assert.ok(Math.abs(extinction / density - 1) < 0.00001);
+    assert.ok(Math.abs(Math.exp(-extinction * 20) - Math.exp(-density * 20)) < 0.00001);
+    assert.equal(fog.animated, true, "The native viewport must update the drifting medium");
+    assert.deepEqual(fog.volume.params.Wind, [0.12, 0.025, -0.04, 0], "Convert Blender Z-up wind to native Y-up");
+  }
+});
 
 test("ThreeRT preserves a parented camera and converts local dust from Z-up to Y-up", () => {
   const camera = cameraFromGLB(glb(), "Main");

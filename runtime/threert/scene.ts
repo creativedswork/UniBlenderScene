@@ -1,6 +1,6 @@
 import {
   Scene, GLTFModel, PerspectiveCamera, DirectionalLight, PointLight, SpotLight, RectAreaLight,
-  SkyGradient, SkyColor, Color, FogVolume,
+  SkyGradient, SkyColor, Color, FogVolume, VolumeFunction,
 } from "@threert/scene";
 
 export type ThreeRTInput = {
@@ -14,12 +14,32 @@ export type ThreeRTInput = {
     world: { color: number[]; strength: number; environmentUri?: string | null; environmentRotationY?: number };
     lights: { name: string; type: string; color: number[]; energy: number; useShadow: boolean;
       size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
-    previewAppearance?: { dust?: { color: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
+    previewAppearance?: { dust?: { color: number[]; wind?: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
     postprocessing?: { bloom?: { strength?: number; threshold?: number } };
   };
 };
 
 const color = (rgb: number[]) => new Color().setRGB(rgb[0]!, rgb[1]!, rgb[2]!);
+
+// Keep the engine's physical fog envelope; modulate it in world metres, like the web preview.
+const localFog = new FogVolume().volume.fn;
+const driftingDust = new VolumeFunction("blender_drifting_dust", {
+  params: { ...localFog.params, Wind: [0, 0, 0, 0] },
+  helpers: `${localFog.helpers}
+    fn dust_hash(p: vec3<f32>) -> f32 { return fract(sin(dot(p, vec3<f32>(127.1,311.7,74.7))) * 43758.5453); }
+    fn dust_noise(p: vec3<f32>) -> f32 {
+      let i=floor(p); let f=fract(p); let u=f*f*(3.0-2.0*f);
+      let a=mix(mix(dust_hash(i),dust_hash(i+vec3<f32>(1,0,0)),u.x),
+        mix(dust_hash(i+vec3<f32>(0,1,0)),dust_hash(i+vec3<f32>(1,1,0)),u.x),u.y);
+      let b=mix(mix(dust_hash(i+vec3<f32>(0,0,1)),dust_hash(i+vec3<f32>(1,0,1)),u.x),
+        mix(dust_hash(i+vec3<f32>(0,1,1)),dust_hash(i+vec3<f32>(1,1,1)),u.x),u.y);
+      return mix(a,b,u.z);
+    }`,
+  code: `${localFog.code}
+    let drift=(i.p-$Wind.xyz*i.time*0.3)*vec3<f32>(0.32,1.1,0.32);
+    let billow=0.57*dust_noise(drift)+0.28*dust_noise(drift*2.1)+0.15*dust_noise(drift*4.3);
+    o.extinction *= mix(0.2,1.0,smoothstep(0.26,0.72,billow));`,
+});
 
 /** Import the saved camera and source lighting; the input GLB contains unbaked PBR materials. */
 export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", environment, background }: ThreeRTInput) {
@@ -46,8 +66,13 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
   }
   const dust = profile.previewAppearance?.dust;
   for (const volume of dust?.volumes ?? []) {
-    const fog = new FogVolume({ radialExtinction: volume.density, heightExtinction: volume.density,
+    // FogVolume combines coverages, rather than adding extinction. A saturated height
+    // term preserves the profile's radial density; two small terms nearly erase thin air.
+    const fog = new FogVolume({ radialExtinction: volume.density, heightExtinction: 20,
       heightFalloff: 0, albedo: dust!.color.slice(0, 3) as [number, number, number], phaseG: 0.45 });
+    fog.volume.fn = driftingDust;
+    const wind = dust!.wind ?? [0, 0, 0];
+    fog.volume.params.Wind = [wind[0]!, wind[2]!, -wind[1]!, 0];
     // Profile volumes use Blender Z-up; GLB and ThreeRT use Y-up. Scale is the diameter.
     fog.position.set(volume.center[0]!, volume.center[2]!, -volume.center[1]!);
     fog.scale.set(volume.radius[0]! * 2, volume.radius[2]! * 2, volume.radius[1]! * 2);

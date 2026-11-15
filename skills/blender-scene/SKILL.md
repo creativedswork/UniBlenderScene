@@ -166,13 +166,15 @@ evidence through the service or report that it is not ready.
 8. Follow the returned stage. In `edit`, make the requested correction and repeat
    the render/review loop. In `completed` or `best_effort`, call `scene_export`,
    poll `scene_get` with `images: "none"` for completion, and provide the returned GLB, Blender file,
-   and render links. In an MCP Apps host, open the bundled `scene_view` Three.js
-   viewer, reset its camera and compare a 3D screenshot with the reviewed Blender
-   render at the same crop. Recheck major reference anchors, light and shadow
+   and render links. In an MCP Apps host, open the bundled `scene_view` viewer.
+   Delivered appearance defaults to ThreeRT when the native client is available;
+   Three.js supplies the browser fallback and gray structural review.
+   Verify the active backend, reset its camera and compare a 3D screenshot with
+   the reviewed Blender render at the same crop. Recheck major reference anchors, light and shadow
    regions, and prominent materials; orbit to check depth, window/wall placement,
    and occlusion against auxiliary views. Do not substitute a GLB-only page: it
-   omits the exported render profile, Blender display transform, and path-traced
-   lighting. In a CLI without MCP Apps, use the inspected render and report that
+   omits the exported render profile, lighting and atmosphere settings.
+   In a CLI without MCP Apps, use the inspected render and report that
    interactive viewing needs an MCP Apps host. Do not claim viewer
    verification from an export alone. Report remaining gaps; an export or viewer
    failure is a delivery issue, not a reason to spend a scene edit attempt on a

@@ -29,6 +29,7 @@ function setup(latest = scene("completed", 7), failRender = false) {
     return nodes.get(id);
   };
   let refreshes = 0;
+  let nativePreviews = 0;
   const timers = new Map<number, () => void>();
   const app = { ontoolresult: undefined as any, callServerTool: async (input: any) => {
     assert.equal(input.name, "scene_get"); assert.equal(input.arguments.images, "none");
@@ -39,16 +40,20 @@ function setup(latest = scene("completed", 7), failRender = false) {
     document: { createElement: () => ({}) },
     assetURL: (name: string) => failRender || name === "render" ? Promise.reject(new Error("Expired asset")) : Promise.resolve("blob:current-render"),
     referenceViews: () => [], renderGraph() {}, showReference() {}, setMode() {}, dispose() {}, updateThreeRT() {},
+    showPreview() { nativePreviews++; },
     message: (text: string) => { el("message").textContent = text; },
     setTimeout: (callback: () => void) => { timers.set(1, callback); return 1; },
     clearTimeout: (id: number) => timers.delete(id),
   });
   runInContext(`let snapshot, viewer, timer, graphNodes = [], loadedURL = "", mode = "render";
-    let referenceListKey = "", reviewImagesKey = "", selectedNodeId = "";
+    let referenceListKey = "", reviewImagesKey = "", selectedNodeId = "", preferredBackend;
+    let liveViewer, liveWanted = false, liveStatus = "";
     const expanded = new Set();
+    const threeRTLiveUnavailableReason = () => snapshot?.threeRT?.liveAvailable && snapshot.exportVersion &&
+      ["completed", "best_effort"].includes(snapshot.stage) ? "" : "Unavailable";
     const artifact = (name) => snapshot?.artifacts.find(item => item.name === name)?.url;
     ${code}`, context);
-  return { app, el, context, timers, refreshes: () => refreshes };
+  return { app, el, context, timers, refreshes: () => refreshes, nativePreviews: () => nativePreviews };
 }
 
 test("opening a saved approval card refreshes to the current scene and render", async () => {
@@ -82,4 +87,26 @@ test("asset chunk results do not trigger scene refreshes", async () => {
   const fixture = setup();
   await fixture.app.ontoolresult({ structuredContent: { name: "render", data: "bytes" } });
   assert.equal(fixture.refreshes(), 0);
+});
+
+test("an exported scene defaults to native preview once and preserves a manual web choice", () => {
+  const fixture = setup();
+  const native = { ...scene("completed", 9), exportVersion: "v1", threeRT: { available: true, liveAvailable: true } };
+  runInContext(`receive(${JSON.stringify(native)}); receive(${JSON.stringify(native)})`, fixture.context);
+  assert.equal(fixture.nativePreviews(), 1);
+  assert.equal(runInContext("preferredBackend", fixture.context), "threert");
+  runInContext(`preferredBackend = "web"; receive(${JSON.stringify(native)})`, fixture.context);
+  assert.equal(fixture.nativePreviews(), 1);
+  assert.equal(runInContext("preferredBackend", fixture.context), "web");
+  runInContext(`receive(${JSON.stringify({ ...native, id: "scene_next" })})`, fixture.context);
+  assert.equal(fixture.nativePreviews(), 2);
+});
+
+test("native default waits for pending scene work to finish", () => {
+  const fixture = setup();
+  const native = { ...scene("completed", 9), exportVersion: "v1", threeRT: { available: true, liveAvailable: true } };
+  runInContext(`receive(${JSON.stringify({ ...native, job: { kind: "export", status: "running" } })})`, fixture.context);
+  assert.equal(fixture.nativePreviews(), 0);
+  runInContext(`receive(${JSON.stringify(native)})`, fixture.context);
+  assert.equal(fixture.nativePreviews(), 1);
 });

@@ -65,7 +65,7 @@ try {
   await ensureProcess("blender", process.env.BLENDER_BIN ?? (process.platform === "darwin" ? "/Applications/Blender.app/Contents/MacOS/Blender" : "blender"),
     ["--background", "--factory-startup", "--python", bridge, "--", "--port", String(bridgePort)], bridgePort);
   await ensureProcess("mcp", process.execPath,
-    ["--import", "tsx", join(plugin, "src/service/server.ts")], port);
+    ["--env-file-if-exists=.env", "--import", "tsx", join(plugin, "src/service/server.ts")], port);
   const health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(10000) });
   if (!health.ok || (await health.json()).service !== "UniBlenderScene") throw new Error("Local MCP health check failed.");
   const client = new Client({ name: "local-startup-check", version: "1.0.0" });

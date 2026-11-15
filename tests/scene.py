@@ -113,6 +113,32 @@ ramp.color_ramp.elements[1].color = (0.2, 0.18, 0.14, 1)
 world.node_tree.links.new(coordinates.outputs["Normal"], separate.inputs["Vector"])
 world.node_tree.links.new(separate.outputs["Z"], ramp.inputs["Fac"])
 world.node_tree.links.new(ramp.outputs["Color"], nodes["Background"].inputs["Color"])
+# A linked atmosphere must not suppress the exported sky or get baked into it.
+position = nodes.new("ShaderNodeNewGeometry")
+radius = nodes.new("ShaderNodeVectorMath")
+radius.operation = "LENGTH"
+world.node_tree.links.new(position.outputs["Position"], radius.inputs[0])
+bound = nodes.new("ShaderNodeMath")
+bound.operation = "LESS_THAN"
+bound.inputs[1].default_value = 2
+world.node_tree.links.new(radius.outputs["Value"], bound.inputs[0])
+density = nodes.new("ShaderNodeMath")
+density.operation = "MULTIPLY"
+density.inputs[1].default_value = 0.02
+world.node_tree.links.new(bound.outputs[0], density.inputs[0])
+volume = nodes.new("ShaderNodeVolumeScatter")
+world.node_tree.links.new(density.outputs[0], volume.inputs["Density"])
+world.node_tree.links.new(volume.outputs["Volume"], nodes["World Output"].inputs["Volume"])
+proxy_material = bpy.data.materials.new("Pure atmosphere")
+proxy_material.use_nodes = True
+proxy_material.node_tree.nodes.remove(proxy_material.node_tree.nodes.get("Principled BSDF"))
+proxy_scatter = proxy_material.node_tree.nodes.new("ShaderNodeVolumeScatter")
+proxy_scatter.inputs["Density"].default_value = 0.01
+proxy_material.node_tree.links.new(proxy_scatter.outputs["Volume"], proxy_material.node_tree.nodes["Material Output"].inputs["Volume"])
+bpy.ops.mesh.primitive_cube_add(size=4, location=(0, 0, 1))
+proxy = bpy.context.object
+proxy.name = "PureVolumeProxy"
+proxy.data.materials.append(proxy_material)
 scene = bpy.context.scene
 scene.view_layers[0].use_pass_mist = True
 world.mist_settings.start = 5

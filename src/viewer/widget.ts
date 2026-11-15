@@ -22,7 +22,7 @@ type Snapshot = {
   job?: { id: string; status: string; kind: string }; exportedIteration?: number; previewedIteration?: number; error?: string;
   exportVersion?: string;
   realtimeUrl?: string | null;
-  threeRT?: { available: boolean; reason?: string };
+  threeRT?: { available: boolean; reason?: string; liveAvailable?: boolean; liveReason?: string };
   threeRTRender?: { status: string; iteration: number; exportVersion: string; error?: string; warnings?: string[] };
   artifacts: { name: string; url: string }[];
   plan?: { graph?: GraphNode[]; workflow?: { stages: { name: string }[] } }; workflowIndex?: number;
@@ -49,6 +49,7 @@ type Profile = {
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const app = new App({ name: "UniBlenderScene viewer", version: "0.3.3" }, {});
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
+let preferredBackend: "web" | "threert" | undefined;
 let threeRTImageKey = "", threeRTRequestPending = false;
 let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
 let liveConnecting = false, liveWanted = false, liveStatus = "";
@@ -206,7 +207,7 @@ function selectNode(id: string, focus = true) {
   const missing = [...nodeDescendants(node.id)].filter((childId) =>
     graphNodes.some((item) => item.id === childId && item.kind !== "group" && item.status !== "renderable"));
   el("graph-detail").textContent = `${node.description}${missing.length ? ` · ${missing.length} node(s) unavailable in preview` : ""}`;
-  if (viewer) { setMode("3d"); if (focus) focusNode(id); else updateSelectionBox(); }
+  if (viewer) { preferredBackend = "web"; setMode("3d"); if (focus) focusNode(id); else updateSelectionBox(); }
   else message("Preview is not ready; the Scene Graph remains available.");
 }
 
@@ -293,13 +294,29 @@ function dispose() {
   viewer = undefined;
 }
 
+function threeRTLiveUnavailableReason() {
+  const capability = snapshot?.threeRT;
+  if (!capability?.available) return capability?.reason ?? "当前服务未配置 ThreeRT 原生客户端";
+  if (!snapshot?.exportVersion || !["completed", "best_effort"].includes(snapshot.stage)) return "完成场景审核与导出后可用";
+  return capability.liveAvailable === false ? capability.liveReason ?? "ThreeRT 实时交互需要原生客户端" : "";
+}
+
+function showPreview() {
+  setMode(preferredBackend === "threert" ? "threert" : viewer ? "3d" : "render");
+  updateThreeRT();
+  if (mode === "threert" && !liveViewer && !liveConnecting) void startThreeRT();
+}
+
 function setMode(value: string) {
-  mode = value;
+  const unavailable = value === "threert" && threeRTLiveUnavailableReason();
+  mode = unavailable ? viewer ? "3d" : "render" : value;
+  if (unavailable) { preferredBackend = "web"; message(`ThreeRT 实时交互不可用，已保留网页预览。${unavailable}`); }
   el("mode-render").setAttribute("aria-pressed", String(mode === "render"));
-  el("mode-3d").setAttribute("aria-pressed", String(mode === "3d"));
+  el("mode-3d").setAttribute("aria-pressed", String(mode === "3d" || mode === "threert"));
+  el<HTMLButtonElement>("mode-3d").disabled = !viewer && !(preferredBackend === "threert" && !threeRTLiveUnavailableReason());
   el("canvas").style.display = mode === "3d" ? "flex" : "none";
   el("render").style.display = mode === "render" && Boolean(el<HTMLImageElement>("render").src) ? "block" : "none";
-  el<HTMLSelectElement>("render-backend").value = mode === "threert" ? "threert" : "web";
+  el<HTMLSelectElement>("render-backend").value = mode === "threert" ? "threert" : mode === "3d" ? "web" : preferredBackend ?? "web";
   el("threert-panel").hidden = mode !== "threert";
   el("threert-live").style.display = mode === "threert" ? "flex" : "none";
   liveViewer?.setActive(mode === "threert");
@@ -312,14 +329,20 @@ function setMode(value: string) {
 function updateThreeRT() {
   const scene = snapshot;
   if (!scene) return;
+  const unavailable = threeRTLiveUnavailableReason();
+  const option = el<HTMLSelectElement>("render-backend").querySelector<HTMLOptionElement>('option[value="threert"]')!;
+  option.disabled = Boolean(unavailable);
+  option.textContent = unavailable ? "ThreeRT · 实时交互（不可用）" : "ThreeRT · 实时交互";
+  option.title = unavailable;
+  if (mode === "threert" && unavailable) setMode(mode);
   const busy = Boolean(threeRTRequestPending || liveConnecting || scene.job && ["queued", "running"].includes(scene.job.status));
   const eligible = ["completed", "best_effort"].includes(scene.stage) && Boolean(scene.exportVersion);
   const state = scene.threeRTRender;
   const current = state?.exportVersion === scene.exportVersion && state?.iteration === scene.workflowState?.presentation.iteration;
-  el<HTMLButtonElement>("render-threert").disabled = busy || !eligible || !scene.threeRT?.available;
+  el<HTMLButtonElement>("render-threert").disabled = busy || !eligible || Boolean(unavailable);
   el("render-threert").textContent = busy ? "正在连接……" : liveViewer ? "重新连接" : "连接实时渲染";
   el("threert-status").textContent = !eligible ? "完成场景审核与导出后可用。" :
-    !scene.threeRT?.available ? scene.threeRT?.reason ?? "当前服务未配置 ThreeRT 原生引擎。" :
+    unavailable ? unavailable :
     current && state?.status === "failed" ? state.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" :
     threeRTRequestPending || scene.job?.kind === "threert" && ["queued", "running"].includes(scene.job.status) ? "正在准备材质与本机渲染场景，完成后连接实时视图。" :
     (liveStatus || "连接后可在网页拖动、缩放和平移；画面帧率取决于本机渲染与传输速度。") + (current ? ` ${state?.warnings?.join(" ") ?? ""}` : "");
@@ -359,25 +382,32 @@ async function openRealtime() {
     setMode(mode);
   } catch (error) {
     liveWanted = false; liveStatus = error instanceof Error ? error.message : "实时连接失败，请重试。";
-    message(liveStatus);
+    if (snapshot?.id === scene.id && snapshot.exportVersion === scene.exportVersion) {
+      preferredBackend = "web"; setMode(viewer ? "3d" : "render"); message(liveStatus);
+    }
   } finally { liveConnecting = false; updateThreeRT(); }
 }
 
 async function startThreeRT() {
   if (!snapshot || threeRTRequestPending) return;
+  if (threeRTLiveUnavailableReason()) { setMode("threert"); return; }
   const id = snapshot.id;
   liveViewer?.dispose(); liveViewer = undefined; liveWanted = true; liveStatus = "";
+  message("");
   if (snapshot.threeRTRender?.status === "done" && snapshot.threeRTRender.exportVersion === snapshot.exportVersion) {
     await openRealtime(); return;
   }
-  threeRTRequestPending = true; updateThreeRT(); message("");
+  threeRTRequestPending = true; updateThreeRT();
   try {
     const output = await app.callServerTool({ name: "scene_render_high_quality", arguments: { sceneId: id } });
     if (snapshot?.id !== id) return;
     if (output.isError) throw new Error(output.content?.filter(item => item.type === "text").map(item => item.text).join(" ") || "ThreeRT 渲染请求失败。");
     receive(output.structuredContent);
   } catch (error) {
-    if (snapshot?.id === id) message(error instanceof Error ? error.message : "ThreeRT 渲染请求失败。");
+    if (snapshot?.id === id) {
+      liveWanted = false; preferredBackend = "web"; setMode(viewer ? "3d" : "render");
+      message(error instanceof Error ? error.message : "ThreeRT 渲染请求失败。");
+    }
   } finally { threeRTRequestPending = false; updateThreeRT(); }
 }
 
@@ -544,7 +574,8 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         whiteBalance: { value: new THREE.Vector3(...(appearance?.whiteBalance ?? [1, 1, 1]) as [number, number, number]) },
         contrast: { value: appearance?.contrast ?? 1 },
         sunDepth: { value: null }, sunMatrix: { value: new THREE.Matrix4() }, sunDirection: { value: sunDirection },
-        sunColor: { value: sun ? sun.color.clone().multiplyScalar(sun.intensity / Math.PI) : new THREE.Color(0, 0, 0) },
+        // The shader's HG lobe omits 1/(4π); normalize here to conserve scattered energy.
+        sunColor: { value: sun ? sun.color.clone().multiplyScalar(sun.intensity / (4 * Math.PI)) : new THREE.Color(0, 0, 0) },
         hasSunShadow: { value: false }, shadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
       },
       vertexShader: "varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}",
@@ -850,7 +881,7 @@ async function loadModel(url: string) {
     const display = await displayTransform(profile, textures);
     const effects = previewEffects(renderer, scene, camera, profile);
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
-    const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }) : undefined;
+    const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true }) : undefined;
     const resize = new ResizeObserver(() => {
       const w = el("stage").clientWidth, h = el("stage").clientHeight;
       if (!w || !h) return;
@@ -894,13 +925,19 @@ async function loadModel(url: string) {
         if (denoiseTarget) {
           denoiseTarget.setSize(tracer.target.width, tracer.target.height);
           renderer.setRenderTarget(denoiseTarget); denoise.render(renderer); renderer.setRenderTarget(null);
-          if (effects) effects.render(denoiseTarget.texture, display);
-          else if (display) {
-            (display.material as THREE.ShaderMaterial).uniforms.source!.value = denoiseTarget.texture;
-            display.render(renderer);
-          }
         } else denoise.render(renderer);
+      } else if (denoiseTarget) {
+        // Preserve atmosphere and the display transform while orbiting, before samples converge.
+        denoiseTarget.setSize(tracer.target.width, tracer.target.height);
+        renderer.setRenderTarget(denoiseTarget); renderer.render(scene, camera); renderer.setRenderTarget(null);
       } else renderer.render(scene, camera);
+      if (denoiseTarget) {
+        if (effects) effects.render(denoiseTarget.texture, display);
+        else if (display) {
+          (display.material as THREE.ShaderMaterial).uniforms.source!.value = denoiseTarget.texture;
+          display.render(renderer);
+        }
+      }
       renderer.domElement.dataset.samples = tracer.samples.toFixed(1);
       viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
       gl.flush();
@@ -918,7 +955,7 @@ async function loadModel(url: string) {
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
     el("empty").style.display = "none";
-    setMode(mode === "threert" ? "threert" : "3d");
+    setMode(mode === "threert" ? "threert" : mode === "render" && preferredBackend === "threert" ? "render" : "3d");
     renderer.render(scene, camera);
     if (selectedNodeId && graphNodes.some((node) => node.id === selectedNodeId)) focusNode(selectedNodeId);
   } catch (error) {
@@ -931,6 +968,7 @@ function receive(data: unknown) {
   if (!data || typeof data !== "object" || !("id" in data)) return;
   const next = data as Snapshot;
   if (snapshot && snapshot.id !== next.id) {
+    preferredBackend = undefined;
     liveViewer?.dispose(); liveViewer = undefined; liveWanted = false; liveStatus = "";
     dispose(); loadedURL = ""; mode = "render";
     referenceListKey = ""; reviewImagesKey = ""; selectedNodeId = ""; expanded.clear(); graphNodes = [];
@@ -1033,6 +1071,10 @@ function receive(data: unknown) {
   const glb = artifact("final.glb");
   if (glb && glb !== loadedURL && glb !== loadingURL) void loadModel(glb);
   setMode(mode);
+  if (!busy && !preferredBackend && !threeRTLiveUnavailableReason()) {
+    preferredBackend = "threert";
+    showPreview();
+  }
   clearTimeout(timer);
   if (busy || (!next.error && !["completed", "best_effort"].includes(next.stage))) {
     timer = setTimeout(() => { void refreshScene(next.id); }, 2000);
@@ -1058,11 +1100,10 @@ app.onhostcontextchanged = (context) => {
   if (context.displayMode) document.documentElement.dataset.display = context.displayMode;
 };
 el("mode-render").onclick = () => setMode("render");
-el("mode-3d").onclick = () => setMode("3d");
+el("mode-3d").onclick = showPreview;
 el<HTMLSelectElement>("render-backend").onchange = () => {
-  setMode(el<HTMLSelectElement>("render-backend").value === "threert" ? "threert" : viewer ? "3d" : "render");
-  updateThreeRT();
-  if (mode === "threert" && !liveViewer && !liveConnecting) void startThreeRT();
+  preferredBackend = el<HTMLSelectElement>("render-backend").value === "threert" ? "threert" : "web";
+  showPreview();
 };
 el("render-threert").onclick = () => { void startThreeRT(); };
 el("reset").onclick = () => {

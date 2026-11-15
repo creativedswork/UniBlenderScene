@@ -222,7 +222,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
     }, annotations: write,
   }, (args) => guarded(() => result(store.export(args.sceneId, false, args.lightingBakes, args.previewAppearance))));
   server.registerTool("scene_render_high_quality", {
-    title: "Render scene with ThreeRT (experimental)",
+    title: "Render scene with ThreeRT",
     description: "Render the exported delivery checkpoint with the configured local threert-render engine. Produces a static PNG using the saved main camera, source PBR materials, lights and local fog. Does not approve composition, change the scene or consume edit attempts. Requires THREERT_BIN or threert-render on PATH. Async: poll scene_get with images=none.",
     inputSchema: idSchema, annotations: { ...write, destructiveHint: false }, _meta: { "openai/widgetAccessible": true },
   }, ({ sceneId }) => guarded(() => result(store.renderHighQuality(sceneId))));
@@ -233,7 +233,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   }, (args) => guarded(() => result(store.export(args.sceneId, true))));
   server.registerTool("scene_view", {
     title: "View Blender scene",
-    description: "Show the embedded Three.js viewer with the current-stage render and available GLB downloads. First call scene_get with images=none; open this viewer only when renderUrl is non-null. Poll jobs with scene_get images=none, which does not open a viewer. The optional asset request transfers a bounded chunk to an existing viewer.",
+    description: "Show the bundled viewer with the current-stage render and available GLB downloads. Exported deliveries default to native ThreeRT when configured; gray review and browser fallback use Three.js. First call scene_get with images=none; open this viewer only when renderUrl is non-null. Poll jobs with scene_get images=none, which does not open a viewer. The optional asset request transfers a bounded chunk to an existing viewer.",
     inputSchema: { ...idSchema, asset: z.object({ name: z.enum(assetNames), offset: z.number().int().min(0) }).optional() },
     annotations: read, _meta: widgetMeta,
   }, ({ sceneId, asset }) => guarded(() => {

@@ -6,7 +6,8 @@ plugin entries for **Codex** and **Claude Code**.
 Turn reference images or text into editable Blender scenes. Both plugins share
 the same Skills, staged workflow and MCP service: plan the scene, build geometry,
 confirm composition in gray, then refine materials and lighting. Deliver renders,
-`.blend` files and GLBs, with an interactive Three.js viewer in compatible hosts.
+`.blend` files and GLBs, with native ThreeRT preview in compatible MCP Apps hosts.
+Three.js remains available for structural review and browser-only inspection.
 
 | Host | Integration | Visual review |
 | --- | --- | --- |
@@ -18,50 +19,43 @@ The host supplies the model, planning, code generation and visual judgment. The
 service executes scene operations through a dedicated Blender process and enforces
 scene state, checkpoints, stage budgets and approval. Additional harnesses need
 their own MCP connection and instruction loading; native plugin packaging is
-provided for Codex and Claude Code. The embedded viewer requires MCP Apps and
-WebGL 2.
+provided for Codex and Claude Code. The embedded viewer requires MCP Apps;
+the Three.js backend requires WebGL 2. ThreeRT runs on the service host.
 
-## Showcase: gamer bedroom from multiple views
+## Showcase: winter cabin at blue hour
 
-This reconstruction uses three reference views in Blender 5.1.1. The images
-below show iteration 15, after composition approval and material and lighting
-calibration against the primary reference.
+A single reference image guided this scene in Blender 5.1.1. After gray-model
+composition approval, the scene received packed PBR textures, cool exterior
+lighting, warm windows and a localized chimney plume. The images show the
+exported iteration 9 checkpoint, rendered in Blender and ThreeRT.
 
 <table>
   <tr>
-    <th width="50%">Reference room</th>
-    <th width="50%">Refined Blender render</th>
+    <th width="33%">Reference</th>
+    <th width="33%">Blender render</th>
+    <th width="33%">ThreeRT render</th>
   </tr>
   <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/gameroom-reference.webp" alt="Reference image of a gamer bedroom" width="480" />
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/gameroom-showcase.webp" alt="Blender reconstruction with a lit desk, display shelves, mesh chair, and bed" width="480" />
-    </td>
+    <td align="center" valign="top"><img src="docs/winter-cabin-reference.webp" alt="Reference of a snow-covered log cabin with warm windows and fir trees at dusk" width="360" /></td>
+    <td align="center" valign="top"><img src="docs/winter-cabin-blender.webp" alt="Blender reconstruction with a snowy roof, lit log facade and winding stone path" width="360" /></td>
+    <td align="center" valign="top"><img src="docs/winter-cabin-threert.webp" alt="The exported cabin rendered by the native ThreeRT engine" width="360" /></td>
   </tr>
 </table>
 
-The reference image is included with the user's permission. The request was to
-reconstruct the room as closely as possible, using the primary view for composition
-and the other views for equipment details and spatial layout.
+The user authorized this reference for the README showcase and explicitly chose
+local Blender modeling for this example. The reconstruction is stylized: fir
+branches and shrubs are simpler, and the path is narrower than the reference.
+ThreeRT uses its own display transform and a gradient approximation of the
+exported environment, so sky brightness, window color and smoke differ from
+Blender. Editable scenes and runtime data stay outside Git.
 
-Standalone furniture, equipment, and accessories use externally generated GLB
-assets assembled in Blender, with procedural room surfaces and fittings. The
-monitor uses artwork extracted from the supplied screen image. Golden shelf
-lighting, cool gray window fill, wood surfaces, and the transparent speaker dome
-were refined while preserving the approved geometry and camera. Local wall
-brightness, curtain shadows, shelf shapes, and small generated details still
-differ from the reference; this is a best-effort reconstruction. Scene files
-remain local artifacts.
+![Bundled viewer showing the winter cabin through native ThreeRT with live frame-rate status](docs/winter-cabin-viewer.jpg)
 
-![Chrome Three.js preview with the chair selected in the scene tree, an orange 3D bounding box, and XYZ direction arrows](docs/gameroom-viewer.jpg)
-
-The Chrome screenshot shows the updated GLB in the bundled viewer through a local
-MCP Apps host. Chair selection, its bounding box and XYZ arrows, and camera reset
-were checked after export. The preview uses the Blender display transform and
-progressive path tracing. The browser host used for this check is a local session
-helper; it is not a packaged standalone preview server.
+The screenshot shows the bundled MCP Apps viewer connected to the native
+ThreeRT client through a local validation host. Default connection, camera
+orbit and reset, and Render/3D switching were checked on this scene. The viewer
+reports the delivered frame rate; the local validation host is not a packaged
+standalone preview server.
 
 ## What's in the plugin
 
@@ -75,7 +69,7 @@ The five modules are grouped by responsibility:
 | Skills | Explain setup and guide scene planning, editing, visual review, required single-object Provider discovery, and bundled Blender production techniques. | [`skills/blender-setup/`](skills/blender-setup/SKILL.md), [`skills/blender-scene/`](skills/blender-scene/SKILL.md), [`skills/scenario-blender-*/`](skills/scenario-blender-expert/SKILL.md) |
 | MCP service | Exposes scene tools, tracks jobs and review state, saves checkpoints, and provides artifact URLs. | [`src/service/server.ts`](src/service/server.ts), [`src/service/store.ts`](src/service/store.ts) |
 | Blender bridge | Executes scene code in a dedicated Blender process, then renders and exports the result. | [`runtime/blender/bridge.py`](runtime/blender/bridge.py), [`runtime/blender/export.py`](runtime/blender/export.py) |
-| Three.js viewer | Shows the render, progressive path-traced GLB preview, selectable scene tree, and composition review controls inside an MCP Apps host. | [`src/viewer/widget.ts`](src/viewer/widget.ts), [`src/viewer/widget.html`](src/viewer/widget.html) |
+| Preview viewer | Shows Blender renders, native ThreeRT interaction, and Three.js structural review with scene-tree selection inside an MCP Apps host. | [`src/viewer/widget.ts`](src/viewer/widget.ts), [`src/viewer/widget.html`](src/viewer/widget.html) |
 
 Standalone objects must use an applicable separately configured 3D API Provider.
 The host checks both connected tools and available Skills, including Providers
@@ -120,7 +114,7 @@ plugin.json, mcp.json       Portable plugin entry for Codex
 skills/                    Shared scene workflow and production knowledge
 harnesses/                 Client-specific MCP configuration and agent templates
 src/service/               MCP tools, scene state, workflow checks, Blender client
-src/viewer/                MCP Apps Three.js viewer
+src/viewer/                MCP Apps viewer with ThreeRT and Three.js previews
 runtime/blender/           Dedicated Python bridge and export code
 scripts/                   Build, configure, package, upstream checks
 tests/                     Workflow, Blender, viewer, and harness validation
@@ -153,6 +147,7 @@ The [scene Skill](skills/blender-scene/SKILL.md) describes this tool sequence:
 | `scene_preview` | Prepare current geometry/composition work or a pending checkpoint as a gray 3D preview without approving it |
 | `scene_export` | Export the best reviewed `.blend` and GLB after completion |
 | `scene_view` | Open the interactive viewer after the current-stage render is ready |
+| `scene_render_high_quality` | Prepare the native ThreeRT delivery scene and render its main camera without spending an edit |
 | `scene_continue` | Refine an existing scene |
 
 The service saves a checkpoint before each edit, supplies an iteration-bound inspection, and exports the best reviewed scene. See the [0.2.0 acceptance checklist](docs/acceptance-0.2.0.md) for Provider, multi-view and approval checks.
@@ -320,24 +315,27 @@ meshes. The viewer supports:
 - Switch between the Blender render and 3D preview; review the five neutral views
   before approving or requesting changes to composition.
 
-The arrows show world-axis directions and do not edit transforms. Blender renders
-remain the visual review source. The viewer requires an MCP Apps host and WebGL 2;
+The arrows show world-axis directions and do not edit transforms. Scene Graph
+bounds and axis overlays use Three.js and require WebGL 2. Blender renders remain
+the visual review source. Both preview backends use an MCP Apps host;
 the MCP endpoint itself is not a Chrome preview page. See the
 [viewer checklist](docs/acceptance-0.2.1.md) and
 [service setup](docs/operations.md#open-the-interactive-preview).
 
-### Experimental ThreeRT rendering
+### ThreeRT preview
 
-The viewer's rendering menu includes **ThreeRT · 实时交互（实验）**. Selecting it
-connects the browser's orbit, zoom and pan controls to the native renderer and
-continuously displays its current frames. Reset restores the saved main camera;
-switching modes pauses frame reception. The saved main-camera render remains
-available as a separate static-image download.
+The viewer defaults to **ThreeRT · 实时交互** for a completed, exported scene
+when the service has a native client configured. It prepares the native scene
+if needed, then connects the browser's orbit, zoom and pan controls to the native
+renderer. Choosing another backend is preserved while the scene refreshes.
+**Render** shows the Blender image; **3D** returns to the selected backend.
+Reset restores the saved main camera. A separate download provides the native
+main-camera static render.
 
-ThreeRT runs on the service host. This experimental transport reads PNG frames
+ThreeRT runs on the service host. The preview transport reads PNG frames
 from the native client; it is not a browser GPU renderer or a video stream.
-Full-resolution readback measured about 5 frames/second on an M4 Pro, with added
-input latency. The viewer displays the actual delivered frame rate. Use
+The winter-cabin check delivered roughly 4–5 frames/second through this path;
+readback adds input latency. The viewer displays the actual delivered frame rate. Use
 **Three.js · 网页交互** when smooth local interaction is required. Only one
 native viewport can be controlled at a time; connecting another viewer replaces
 the previous session. Native client credentials remain on the service host.
@@ -352,10 +350,12 @@ THREERT_BIN=/Applications/ThreeRT.app/Contents/MacOS/threert
 
 Live interaction requires the native `threert` CLI; the standalone
 `threert-render` executable supports static rendering only. The executable may
-also be found on `PATH`. No native engine is bundled or
-downloaded automatically. The menu explains when it is missing. A delivered,
-exported scene is required; structural review and composition approval continue
-to use Blender evidence.
+also be found on `PATH`. No native engine is bundled or downloaded automatically.
+The menu disables native interaction when the client is unavailable, and a
+failed connection restores the browser preview. The local launcher reads `.env`
+when starting the service. A delivered, exported scene is required; structural
+review and composition approval continue to use Blender evidence and Three.js.
+Selecting a Scene Graph object opens Three.js for its bounds and axis overlay.
 
 `scene_render_high_quality` exports unbaked source PBR materials on a Blender
 copy, then calls the native engine. This avoids treating baked lightmaps as
@@ -365,14 +365,16 @@ Poll `scene_get` with `images: "none"`; the current successful image is exposed 
 `threert/` directory in `.canova/runs/`. Older exports' images are not presented
 as current, and a failed render can be retried without rebuilding the scene.
 
-This first version imports perspective cameras, source lights, PBR materials,
+The adapter imports perspective cameras, source lights, PBR materials,
 environment lighting and local fog volumes. The native engine currently rejects
 HDRI environments, so the adapter fits a zenith/horizon/ground gradient from the
 exported EXR and approximates a separate camera background by its horizon color;
 the viewer labels this difference. Disk area lights are approximated
-by rectangles; ThreeRT uses its own filmic display transform. Local fog is a
-static participating medium, without the browser preview's animated density
-noise. Orthographic cameras are currently unsupported. Image quality and native
+by rectangles; ThreeRT uses its own filmic display transform. Local dust uses
+animated world-space density noise and the exported wind, lit and occluded by
+the native engine. Its live volume lighting differs from both the offline path
+tracer and the browser's single-scattering preview. Orthographic cameras are
+currently unsupported. Image quality and native
 GPU support must be verified for each scene; the option makes no photorealism
 guarantee.
 

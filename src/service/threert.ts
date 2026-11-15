@@ -34,8 +34,11 @@ export function threeRTCapability() {
   const candidates = configured ? [configured] : (process.env.PATH ?? "").split(delimiter).flatMap(dir =>
     [join(dir, `threert-render${extension}`), join(dir, `threert${extension}`)]);
   const binary = candidates.find(path => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } });
-  return binary ? { available: true as const, binary: resolve(binary) } : {
-    available: false as const, reason: "未找到 ThreeRT。请安装原生客户端，并在服务端设置 THREERT_BIN 为 threert 或 threert-render 的路径。",
+  const liveAvailable = Boolean(binary && basename(binary).replace(/\.exe$/i, "") === "threert");
+  return binary ? { available: true as const, binary: resolve(binary),
+    liveAvailable, liveReason: liveAvailable ? undefined : "当前 ThreeRT 仅支持静态渲染，实时交互需要原生客户端",
+  } : {
+    available: false as const, liveAvailable: false, reason: "未找到 ThreeRT。请安装原生客户端，并在服务端设置 THREERT_BIN 为 threert 或 threert-render 的路径。",
   };
 }
 
@@ -49,7 +52,7 @@ export function cameraFromGLB(bytes: Buffer, cameraName?: string): ThreeRTInput[
   if (index < 0) index = nodes.findIndex(n => n.camera !== undefined);
   if (index < 0) throw new Error("The scene has no exported camera.");
   const view = gltf.cameras[nodes[index]!.camera!];
-  if (view.type !== "perspective") throw new Error("ThreeRT experimental rendering currently requires a perspective camera.");
+  if (view.type !== "perspective") throw new Error("ThreeRT rendering currently requires a perspective camera.");
   const parents = new Map<number, number>();
   nodes.forEach((node, parent) => node.children?.forEach(child => parents.set(child, parent)));
   const matrix = new Matrix4(), seen = new Set<number>();

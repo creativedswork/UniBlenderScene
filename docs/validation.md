@@ -1,5 +1,34 @@
 # Validation
 
+## ThreeRT default preview and winter-cabin showcase — 2026-11-15
+
+Exported delivery scenes now select native ThreeRT automatically when its client
+is available. Manual backend choices survive progress refreshes; Render/3D
+switching retains the selected backend. Structural review stays in Three.js.
+Missing clients and failed native connections keep a usable browser preview.
+
+`npm run check`, `npm run build` and all 60 unit tests passed. Regression checks
+cover native defaults, manual choices, in-flight work, structural review,
+backend availability, failure fallback and `.env` loading during local startup.
+
+`npm run test:blender` also passed on Blender 5.1.1, including 70 bounded
+revision cases and source restoration. Evidence remains local under
+`.canova/runs/blender-integration-I6jIMn/`.
+
+The iteration 9 winter cabin was rendered by the installed native client and
+opened in the bundled MCP Apps viewer through a local validation host. The
+viewer selected **ThreeRT · 实时交互** automatically, displayed roughly 4–5
+frames/second and advanced its native frame sequence. A pointer drag changed
+the native camera and image; reset restored the main camera. Render/3D
+switching paused and resumed the same backend. The
+[README showcase](../README.md#showcase-winter-cabin-at-blue-hour) contains the
+actual reference, Blender render, native render and viewer screenshot.
+
+This check does not establish lighting equivalence: ThreeRT uses an environment
+gradient and its own display transform, with visible differences in sky,
+window color and smoke. No GitHub publication, plugin-directory approval or
+client installation is implied by these local checks.
+
 ## Official Claude Code entry point — 2026-11-13
 
 Current setup instructions and `npm run test:claude` use the official `claude`
