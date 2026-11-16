@@ -392,6 +392,47 @@ test("single objects require provider discovery, local generated artifacts or ex
   store.edit(fallback.id,"pass");await store.settled();assert.equal(fallback.stage,"review");
 });
 
+test("independent provider tasks resume and finish out of order before a single scene assembly", async () => {
+  const { store, root, blender } = setup();
+  const scene = store.create("A chair and lamp"); await store.settled();
+  const provider = "skill:fixture-provider";
+  const nodeIds = ["cube", "lamp"];
+  preparePlan(store, scene, { ...plan,
+    graph: [...plan.graph!, { id: "lamp", label: "Lamp", kind: "object", parentId: null,
+      description: "Independent lamp", blenderObjectNames: ["Lamp"] }],
+    assets: nodeIds.map(nodeId => ({ nodeId, kind: "object", reason: "Independent generated asset" })),
+  });
+  for (const nodeId of nodeIds) store.recordAsset(scene.id, { nodeId, providers: [provider], provider,
+    taskId: `task-${nodeId}`, evidence: "Provider returned a verified running task; download is pending" });
+  const resumed = new SceneStore(root, blender);
+  const pending = resumed.get(scene.id);
+  assert.deepEqual(pending.assetStrategies!.map(asset => [asset.nodeId, asset.taskId]),
+    [["cube", "task-cube"], ["lamp", "task-lamp"]]);
+  assert.throws(() => resumed.edit(scene.id, "pass"), /downloaded local GLB/);
+  const source = readFileSync(resumed.path(pending, "current.blend"));
+  // The second submitted asset finishes first; the first remains pending.
+  for (const nodeId of [...nodeIds].reverse()) {
+    const directory = resumed.path(pending, `inputs/${nodeId}`); mkdirSync(directory, { recursive: true });
+    writeGlbFixture(directory, [{ name: nodeId }]);
+    resumed.recordAsset(scene.id, { nodeId, providers: [provider], provider, taskId: `task-${nodeId}`,
+      artifactPath: join(directory, "final.glb"), evidence: "Task succeeded and its local GLB was downloaded" });
+    if (nodeId === "lamp") {
+      const saved = new SceneStore(root, blender).get(scene.id);
+      assert.match(saved.assetStrategies!.find(asset => asset.nodeId === "lamp")!.sha256!, /^[a-f0-9]{64}$/);
+      assert.equal(saved.assetStrategies!.find(asset => asset.nodeId === "cube")!.artifactPath, undefined);
+      assert.throws(() => resumed.edit(scene.id, "pass"), /downloaded local GLB/);
+      assert.equal(pending.iteration, 0);
+      assert.deepEqual(readFileSync(resumed.path(pending, "current.blend")), source);
+    }
+  }
+  assert.equal(pending.assetStrategies!.length, 2);
+  resumed.edit(scene.id, "pass");
+  assert.throws(() => resumed.edit(scene.id, "pass"), /still running/);
+  await resumed.settled();
+  assert.equal(pending.iteration, 1);
+  assert.equal(pending.stage, "review");
+});
+
 test("legacy fallback discovery can be refreshed after composition without reopening asset generation", async () => {
   const { store } = setup();
   const scene = store.create("An existing procedural object"); await store.settled();

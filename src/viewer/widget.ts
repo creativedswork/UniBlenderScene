@@ -26,7 +26,7 @@ type Snapshot = {
   threeRTRender?: { status: string; iteration: number; exportVersion: string; error?: string; warnings?: string[] };
   artifacts: { name: string; url: string }[];
   plan?: { graph?: GraphNode[]; workflow?: { stages: { name: string }[] } }; workflowIndex?: number;
-  reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
+  reviewViews?: string[]; remainingGaps?: string[];
   workflowState?: { phase: string | null; status: string; compositionApproved: boolean; presentation: {
     mode: "structural" | "appearance"; purpose: "work" | "confirmation" | "delivery"; source: string; iteration: number;
   } };
@@ -265,7 +265,27 @@ function renderGraph() {
   append(null, 0);
 }
 
+function updateSceneStats(root?: THREE.Object3D) {
+  const stats = el("scene-stats");
+  stats.hidden = !root;
+  stats.textContent = "";
+  if (!root) return;
+  let meshes = 0, vertices = 0, triangles = 0;
+  const materials = new Set<THREE.Material>();
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const instances = object instanceof THREE.InstancedMesh ? object.count : 1;
+    const positions = object.geometry.getAttribute("position")?.count ?? 0;
+    meshes += instances;
+    vertices += positions * instances;
+    triangles += (object.geometry.index?.count ?? positions) / 3 * instances;
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
+  });
+  stats.textContent = `GLB preview: ${meshes.toLocaleString("en-US")} meshes · ${vertices.toLocaleString("en-US")} vertices · ${triangles.toLocaleString("en-US")} triangles · ${materials.size.toLocaleString("en-US")} materials`;
+}
+
 function dispose() {
+  updateSceneStats();
   el("selection-box").style.display = "none";
   if (!viewer) return;
   clearInterval(viewer.frameTimer);
@@ -957,6 +977,7 @@ async function loadModel(url: string) {
     el("empty").style.display = "none";
     setMode(mode === "threert" ? "threert" : mode === "render" && preferredBackend === "threert" ? "render" : "3d");
     renderer.render(scene, camera);
+    updateSceneStats(gltf.scene);
     if (selectedNodeId && graphNodes.some((node) => node.id === selectedNodeId)) focusNode(selectedNodeId);
   } catch (error) {
     console.error("Scene preview failed:", error);
@@ -1000,11 +1021,7 @@ function receive(data: unknown) {
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
   if (!busy && !next.error && presentation) el("status").textContent = `${state!.phase ?? "Planning"} / ${state!.status} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
   el("review-panel").hidden = !pending && !(structural && next.reviewViews?.length);
-  el("review-panel").querySelector("h2")!.textContent = pending ? "Confirm geometry and composition" : "Structural work preview — not approved";
-  for (const name of ["review-approve", "review-composition", "review-geometry", "review-feedback"]) {
-    const control = el<HTMLButtonElement | HTMLInputElement>(name);
-    control.hidden = !pending; control.disabled = Boolean(busy);
-  }
+  el("review-panel").querySelector("h2")!.textContent = pending ? "Geometry and composition preview" : "Structural work preview — not approved";
   el("review-gaps").textContent = (next.remainingGaps?.length ? `Remaining differences: ${next.remainingGaps.join(", ")}. ` : "") + `${pending ? "Review" : "Work draft: review"} geometry, wall directions and camera in neutral gray. Original materials are preserved for later stages. Auxiliary views hide walls and ceilings to reveal the layout.`;
   if (structural && !busy && next.reviewViews) {
     const key = `${next.id}:${next.iteration}:${next.job?.id ?? ""}:${next.reviewViews.join(",")}`;
@@ -1019,7 +1036,6 @@ function receive(data: unknown) {
       }
     }
   }
-  el<HTMLButtonElement>("send").disabled = busy || !["completed", "best_effort"].includes(next.stage);
   const render = ["completed", "best_effort"].includes(next.stage) ? next.bestRenderUrl : next.renderUrl;
   if (render) {
     const name = structural && next.reviewViews?.includes("review-main.png") ? "review-main.png" : ["completed", "best_effort"].includes(next.stage) ? "best.png" : "render";
@@ -1120,22 +1136,6 @@ document.addEventListener("keydown", (event) => {
   const target = event.target;
   if (event.key === "Escape" && !(target instanceof HTMLElement && (target.isContentEditable || target.matches("input,textarea,select")))) selectNode("");
 });
-async function decideReview(approved: boolean, returnTo?: "geometry" | "composition") {
-  if (!snapshot || snapshot.stage !== "awaiting_review") return;
-  const feedback = el<HTMLInputElement>("review-feedback").value.trim();
-  if (!approved && !feedback) { message("Describe the requested change first."); return; }
-  const output = await app.callServerTool({ name: "scene_review_decision", arguments: {
-    sceneId: snapshot.id, approved, ...(approved ? {} : { feedback, returnTo }),
-  } });
-  if (output.isError) { message("Review decision failed. Check the scene in the conversation."); return; }
-  receive(output.structuredContent);
-  await app.sendMessage({ role: "user", content: [{ type: "text", text: approved ?
-    `I confirm the geometry and composition of Blender scene ${snapshot.id}. Continue from the approved checkpoint.` :
-    `Revise Blender scene ${snapshot.id} at the ${returnTo} stage: ${feedback}` }] });
-}
-el("review-approve").onclick = () => { void decideReview(true); };
-el("review-composition").onclick = () => { void decideReview(false, "composition"); };
-el("review-geometry").onclick = () => { void decideReview(false, "geometry"); };
 el("fullscreen").onclick = async () => {
   try {
     const result = await app.requestDisplayMode({ mode: "fullscreen" });
@@ -1143,22 +1143,6 @@ el("fullscreen").onclick = async () => {
     if (result.mode === "fullscreen") el("stage").style.height = "calc(100vh - 180px)";
   } catch { message("Expanded view is unavailable in this client."); }
 };
-async function sendRefinement() {
-  const input = el<HTMLInputElement>("prompt");
-  if (!snapshot || !input.value.trim()) return;
-  try {
-    const output = await app.sendMessage({
-      role: "user", content: [{ type: "text", text: `Refine Blender scene ${snapshot.id}: ${input.value.trim()}` }],
-    });
-    if (output.isError) throw new Error("Message rejected.");
-    input.value = ""; message("Refinement sent to the conversation");
-  } catch { message("Refinement could not be sent. Enter it in the conversation."); }
-}
-el("send").onclick = () => { void sendRefinement(); };
-el<HTMLInputElement>("prompt").onkeydown = (event) => {
-  if (event.key === "Enter" && !el<HTMLButtonElement>("send").disabled) void sendRefinement();
-};
-
 type OpenAIHost = {
   uploadFile(file: File): Promise<{ fileId: string }>;
   getFileDownloadUrl(input: { fileId: string }): Promise<{ downloadUrl: string }>;
@@ -1202,7 +1186,7 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
       const output = await app.callServerTool({
         name: append ? "scene_continue" : "scene_create", arguments: {
           ...(append ? { sceneId: current!.id } : {}),
-          prompt: el<HTMLInputElement>("prompt").value.trim() || (append ? "Refine the same scene using these additional views to correct spatial layout." : "Create a Blender scene from these views. The first image sets the camera and composition; auxiliary views calibrate spatial layout."),
+          prompt: append ? "Refine the same scene using these additional views to correct spatial layout." : "Create a Blender scene from these views. The first image sets the camera and composition; auxiliary views calibrate spatial layout.",
           references,
         },
       });

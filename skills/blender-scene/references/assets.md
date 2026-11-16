@@ -37,8 +37,10 @@ delivery, or a concrete blocker; report the exact blocker when stopping early.
    model, format and cost; obtain paid-generation approval under the Provider's
    rules. Pending approval, API failure or exhausted credits leave the asset
    unresolved; they do not establish that no Provider exists.
-3. Generate the model, poll its task, and download a GLB through the Provider's
-   supported tools into `.canova/runs/<scene-id>/inputs/`. Call
+3. After `scene_plan_review` passes, generate independent models using
+   [parallel generation](#parallel-generation). Poll each task and download its
+   GLB through the Provider's supported tools into a separate
+   `.canova/runs/<scene-id>/inputs/<node-id>/` directory. Call
    `scene_asset_strategy` with `nodeId`, discovered `providers`, `evidence`, the
    chosen `provider`, its `taskId` and the local `artifactPath`. The service
    validates workspace containment and the GLB container, and records a SHA-256.
@@ -69,3 +71,40 @@ delivery, or a concrete blocker; report the exact blocker when stopping early.
    correction or report the unresolved result; do not silently accept it.
 
 This workflow remains independent of Meshy or any other particular Provider.
+
+## Parallel generation
+
+The host coordinates generation; the scene service does not submit Provider
+tasks. Freeze each asset's node ID, description, reference, dimensions, style,
+output format and applicable authorization before dispatch. A parent/child
+relationship used only for placement does not make generation dependent.
+Wait when an asset's input actually requires another asset's generated result.
+Within one asset, preserve the Provider's geometry, texture, rigging and animation
+dependencies and required user choices.
+
+Use supported asynchronous Provider operations to keep independent tasks in
+flight together. Start with at most three active assets, reducing this to the
+Provider's documented limit, the host's capacity and the user's authorized scope.
+Refill a slot when an asset finishes rather than waiting for the whole batch.
+When the Provider permits control to return after submission, the coordinator
+records its verified `provider` and `taskId` through `scene_asset_strategy` without
+`artifactPath`; this pending record supports resumption but cannot authorize an
+edit. Resume recorded tasks instead of submitting them again.
+
+If a Provider requires one asset per session or immediate create-and-wait, keep
+that sequence intact. With user-authorized host subagents, use one isolated
+[asset worker](orchestration.md#asset-workers) per active asset. A worker follows
+the selected Provider Skill for that one asset; it does not coordinate a batch
+inside the Provider session. Without compatible async operations or authorized
+isolated workers, generate serially and report that limitation. Do not bypass
+Provider session, concurrency, cost, reference-choice or recovery requirements.
+
+During asset generation, only the coordinator calls `scene_asset_strategy` and
+other scene mutation tools.
+Register completed local GLBs as they arrive, in any order, retaining their
+node-to-task mapping. Keep completed results if another task fails; follow that
+Provider's recovery rules without automatically recreating or canceling tasks.
+Continue observing already-running independent tasks within the authorized scope.
+Missing, failed or pending assets keep assembly blocked. After every required
+asset resolves, use serial `scene_edit` operations to import, tag, place and
+inspect the complete scene; never let workers edit the shared Blender scene.

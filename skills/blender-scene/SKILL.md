@@ -125,7 +125,10 @@ evidence through the service or report that it is not ready.
    depth, occlusion and conflicts. For example, distinguish a side-wall curtain
    perpendicular to a desk's long edge from a curtain on the rear wall. Failed
    checks return to planning. Use an authorized read-only subagent when available;
-   otherwise perform this pass sequentially before generation.
+   otherwise perform this pass sequentially before generation. After it passes,
+   generate independent object assets concurrently under the
+   [asset workflow](references/assets.md#parallel-generation). Resolve every
+   required asset before the first `scene_edit`; Blender assembly stays serial.
 5. Read [Blender code guidance](references/blender-code.md) and the selected
    production domain's procedures before its edit. Call `scene_edit` with one
    bounded, complete executable `bpy` change. Configure an active camera,

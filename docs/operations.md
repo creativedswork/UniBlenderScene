@@ -183,7 +183,10 @@ Poll progress with `scene_get` and `images: "none"`. Only call `scene_view`
 when its snapshot has a non-null `renderUrl`, in a client that supports MCP Apps.
 Three.js structural review requires WebGL 2. Creation, edits and polling return data without opening a viewer. The `scene_view`
 embedded viewer includes the Scene Graph, orbit controls, render/3D switching,
-and composition review controls. Completed, exported scenes default to native
+composition review images, downloads, and GLB preview statistics. The statistics
+count mesh instances, vertices, triangles, and unique materials in the loaded GLB.
+Send approval or requested changes in the conversation; the host records the
+user's decision through `scene_review_decision`. Completed, exported scenes default to native
 ThreeRT when its client is available; structural review uses Three.js. A manual
 backend choice is retained during scene updates. See the
 [ThreeRT setup and limits](../README.md#threert-preview).

@@ -78,6 +78,11 @@ both inventories; the service cannot inspect the host's catalog itself.
 Geometry plans record each object strategy and its downloaded GLB provenance;
 room surfaces and simple primitives can be procedural.
 The plugin does not bundle a 3D asset provider or its credentials.
+After graph verification, the host can generate independent assets concurrently
+when the Provider and host support it. The coordinator records results as they
+arrive and waits for all required assets before serial Blender assembly. See the
+[parallel asset workflow](skills/blender-scene/references/assets.md#parallel-generation)
+for concurrency limits and isolated workers for Providers with single-asset sessions.
 
 ## Quick start
 
