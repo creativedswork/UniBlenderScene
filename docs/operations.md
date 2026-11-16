@@ -189,7 +189,7 @@ Send approval or requested changes in the conversation; the host records the
 user's decision through `scene_review_decision`. Completed, exported scenes default to native
 ThreeRT when its client is available; structural review uses Three.js. A manual
 backend choice is retained during scene updates. See the
-[ThreeRT setup and limits](../README.md#threert-preview).
+[ThreeRT setup and limits](#threert-setup-and-limits).
 For geometry/composition work or a scene in `awaiting_review`, first call
 `scene_preview` with its `sceneId` and poll `scene_get` with `images: "none"` until the job finishes.
 This prepares review assets without approving composition or enabling final
@@ -232,6 +232,61 @@ Do not report interactive viewer checks as passed from a CLI export alone.
 Review assets are stored under `previews/<iteration>/` inside the scene run;
 final exports use `artifacts/<iteration>/`. Both include the GLB, render profile,
 Scene Graph, and manifest. Keep these runtime files outside Git.
+
+### ThreeRT setup and limits
+
+To enable native interaction, install the [ThreeRT native client](https://threert.dev/download/),
+set `THREERT_BIN` to its `threert` executable in the service environment, and
+restart the service. No native engine is bundled. ThreeRT runs on the service
+host and may differ visually from Blender; delivered frame rate is shown in
+the viewer. The standalone `threert-render` executable supports static rendering
+only.
+
+### Static lighting bakes and browser rendering
+
+After final scene review, call `scene_bake` with `lightingBakes` entries naming
+each receiver (`objectName`), `samples` (16–1024, default 128), and `resolution`
+(64–4096, default 512). The new tool defaults to `mode: "lightmap"`. Poll
+`scene_get` until the job completes, then call `scene_export` to package the result.
+These bakes preserve PBR materials and source UVs, add a separate UV channel,
+and export `lightmap-*.png` files alongside the GLB and render profile. The
+bundled viewer uses raster rendering for these exports, so camera movement
+does not restart progressive sampling. Keep the profile and lightmaps with the
+GLB; a standalone GLB viewer will not apply these lightmaps.
+
+Baking prepares a separate scene copy without changing the reviewed checkpoint
+or its workflow stage. Results are cached by source file content, bake settings
+and bake script version under `.canova/runs/<scene>/postprocess/bakes/<id>/`.
+Changing only preview appearance reuses the prepared copy. The existing
+`scene_export.lightingBakes` argument remains supported and prepares missing
+results automatically; its omitted `mode` retains legacy appearance baking.
+On `scene_bake`, omitted `lightingBakes` reuses the active selection; `[]`
+clears explicit receivers (source object bake flags still apply).
+
+The implementation follows the existing service/runtime/viewer boundaries:
+
+```text
+src/service/postprocess.ts             # bake settings, provenance and cache
+src/service/store.ts                   # scene_bake job and scene lifecycle
+runtime/blender/postprocess/bake.py     # prepare UVs, textures and scene copy
+runtime/blender/export.py              # package the prepared scene
+src/viewer/lighting.ts                 # apply lightmaps and reflection captures
+```
+
+Offline baking belongs to asset preparation. Bloom, exposure and real-time
+reflections remain viewer operations; they do not rerun the bake.
+
+Set `previewAppearance.planarReflection` to the name of a horizontal receiver
+mesh to add one real-time planar reflection, such as a wet road. Reflection is
+an approximation: the receiver retains its PBR material, while other reflective
+objects use the environment map. Set `previewAppearance.reflectionProbe` to a
+Blender Z-up `[x, y, z]` position to capture the static surroundings once for
+those materials. The capture uses the full light rig; subsequent raster passes
+retain the 12 local lights with the largest estimated contribution at the
+initial camera, plus directional lights. Bloom and atmospheric preview effects remain
+active. `previewAppearance.renderMode: "raster"` also enables this rendering
+mode without lightmaps. Existing appearance bakes and unbaked path-traced
+exports remain supported. ThreeRT exports use the source materials.
 
 ## Image history and recovery
 
