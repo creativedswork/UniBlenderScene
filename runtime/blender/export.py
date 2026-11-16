@@ -380,13 +380,17 @@ def prepare_structural_preview(scene):
     shader = material.node_tree.nodes.get("Principled BSDF")
     shader.inputs["Base Color"].default_value = (0.7, 0.7, 0.7, 1)
     shader.inputs["Roughness"].default_value = 0.8
+    structural_data_copies = {}
     for obj in list(scene.objects):
         if obj.type == "LIGHT":
             obj.data = obj.data.copy()
             obj.data.energy = 0
             obj.data.color = (1, 1, 1)
         elif hasattr(obj.data, "materials"):
-            obj.data = obj.data.copy()
+            source_data = obj.data.as_pointer()
+            if source_data not in structural_data_copies:
+                structural_data_copies[source_data] = obj.data.copy()
+            obj.data = structural_data_copies[source_data]
             obj.data.materials.clear()
             obj.data.materials.append(material)
             for slot in obj.material_slots:

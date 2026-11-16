@@ -991,6 +991,7 @@ for obj in meshes:
 scene.render.resolution_x = 512
 scene.render.resolution_y = 512
 camera_data = bpy.data.cameras.new("Review camera")
+camera_data.clip_end = max(1000.0, radius * 6)
 camera = bpy.data.objects.new("Review camera", camera_data)
 scene.collection.objects.link(camera)
 scene.camera = camera
