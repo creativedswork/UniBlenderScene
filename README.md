@@ -1,10 +1,17 @@
 # UniBlenderScene
 
+English | [简体中文](README.zh-CN.md)
+
 A Blender scene creation and review plugin for **Codex** and **Claude Code**.
 
-Turn reference images or text into editable Blender scenes. Plan the scene,
-confirm composition in gray, then refine materials and lighting. Deliver renders,
-`.blend` files and GLBs, with interactive 3D preview in compatible MCP Apps hosts.
+Turn reference images or text into editable Blender scenes. Combine your agent
+harness with 3D APIs such as [Tripo](https://developers.tripo3d.ai/en/docs/introduction)
+or [Meshy](https://docs.meshy.ai/en/api) to generate individual objects, then
+assemble and refine the scene in Blender.
+
+Deliver renders, `.blend` files and GLBs, with interactive 3D preview in
+compatible MCP Apps hosts. Completed scenes can also be prepared for rendering
+and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev/ThreeRT).
 
 | Host | How to use it |
 | --- | --- |
@@ -50,9 +57,11 @@ builds and renders the scene, and the viewer supports interactive inspection.
 Codex and Claude Code use the same scene workflow.
 
 Standalone objects use an applicable, separately configured 3D asset provider;
-room surfaces and simple primitives can be procedural. If no applicable provider
-is available, the workflow can fall back to Blender modeling. The plugin does
-not bundle a provider or its credentials. See the
+connect Tripo, Meshy or another provider through your agent harness's tools or
+Skills. The agent imports the generated assets into Blender for placement and
+scene review. Room surfaces and simple primitives can be procedural. If no
+applicable provider is available, the workflow can fall back to Blender modeling.
+Provider access, API keys and generation costs are configured separately. See the
 [asset workflow](skills/blender-scene/references/assets.md).
 
 ## Quick start
@@ -127,6 +136,8 @@ For later runs, or to customize a step:
 | Start the local service again | Run `node --import tsx scripts/start-local.ts` from the plugin source directory. It reuses its own running processes. See [launcher behavior and logs](docs/operations.md#start-the-local-processes-together). |
 | Start Blender and the MCP service separately | Follow [manual service startup](docs/operations.md#run-the-local-service) for the Blender bridge command and `npm start`. |
 | Use Claude Code | Follow [Claude Code setup](docs/operations.md#claude-code) to load the same plugin from a separate scene project. |
+| Generate objects with Tripo or Meshy | Connect the provider's tools or Skill to your agent harness, configure its API access, then ask the agent to use it for scene assets. See the [asset workflow](skills/blender-scene/references/assets.md). |
+| Present the result with ThreeRT | Install the native client and configure `THREERT_BIN`, then ask the agent to render or open the completed scene with ThreeRT. See [ThreeRT preview](#threert-preview). |
 | Use reference images | Attach up to 6 images and identify the primary view. For local file access, configure `LOCAL_REFERENCE_ROOTS` as described in [configuration and access](docs/operations.md#configuration-and-access). |
 | Connect to a remote service | Follow [remote service setup](docs/operations.md#connect-a-remote-service). |
 
@@ -170,9 +181,10 @@ the visual review source. See [preview setup](docs/operations.md#open-the-intera
 
 ### ThreeRT preview
 
-Completed, exported scenes default to native ThreeRT when its client is
-configured. Use **Three.js · 网页交互** for smoother browser interaction; use
-**Render** to see the Blender image.
+The plugin prepares completed Blender scenes for Meshy's ThreeRT, including
+geometry, materials, cameras and lighting. When its native client is configured,
+exported scenes default to ThreeRT in the viewer. Use **Three.js · 网页交互**
+for smoother browser interaction; use **Render** to see the Blender image.
 
 To enable native interaction, install the [ThreeRT native client](https://threert.dev/download/),
 set `THREERT_BIN` to its `threert` executable in the service environment, and
