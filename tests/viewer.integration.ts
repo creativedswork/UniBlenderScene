@@ -168,9 +168,10 @@ try {
   await page.locator("#viewer").screenshot({ path: resolve(root, "viewer-render.png") });
   await frame.getByRole("button", { name: "3D", exact: true }).click();
   assert.equal(await frame.locator("#selection-box").isVisible(), true);
-  await frame.getByRole("textbox", { name: "Scene refinement" }).fill("Soften the light");
-  await frame.getByRole("button", { name: "Refine", exact: true }).click();
-  await page.getByText(`Refine Blender scene ${snapshot.id}: Soften the light`, { exact: true }).waitFor();
+  assert.equal(await frame.locator('input[type="text"]').count(), 0);
+  const stats = frame.getByRole("status", { name: "GLB preview statistics" });
+  assert.match(await stats.innerText(), /^GLB preview: [\d,]+ meshes · [\d,]+ vertices · [\d,]+ triangles · [\d,]+ materials$/);
+  assert.equal(await stats.isVisible(), true);
   await frame.getByRole("button", { name: "Expand viewer" }).click();
   await page.waitForFunction(() => (document.getElementById("viewer") as HTMLElement)?.style.height === "650px",
     undefined, { timeout: 10000 });
@@ -225,7 +226,7 @@ try {
   assert.equal(await frame.locator("#reference-upload").isVisible(), false);
   await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?work=1`);
   await frame.locator("#review-panel").waitFor({ state: "visible" });
-  assert.equal(await frame.locator("#review-approve").isVisible(), false, "Work drafts must not offer approval");
+  assert.equal(await frame.locator("#review-panel button, #review-panel input").count(), 0);
   assert.match(await frame.locator("#status").innerText(), /geometry.*work draft.*iteration 1.*structural/);
   await page.waitForFunction(() => {
     const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("canvas");
@@ -261,17 +262,11 @@ try {
   await canvas.screenshot({ path: resolve(root, "viewer-structural-3d.png") });
   await page.locator("#viewer").screenshot({path:resolve(root,"viewer-composition.png")});
   await frame.locator("#review-panel").screenshot({path:resolve(root,"viewer-composition-panel.png")});
-  await frame.locator("#review-feedback").fill("Window must be perpendicular to the desk");
-  await frame.getByRole("button",{name:"Revise geometry",exact:true}).click();
-  await page.waitForFunction(()=>document.getElementById("sent")?.dataset.decision?.includes('"approved":false'));
-  assert.equal(JSON.parse((await page.locator("#sent").getAttribute("data-decision"))!).returnTo,"geometry");
-  await page.reload();await frame.locator("#review-panel").waitFor({state:"visible"});
-  await frame.getByRole("button",{name:"Approve",exact:true}).click();
-  await page.waitForFunction(()=>document.getElementById("sent")?.dataset.decision?.includes('"approved":true'));
+  assert.equal(await frame.locator("#review-panel button, #review-panel input").count(), 0);
   assert.deepEqual(errors, []);
   await writeFile(resolve(root, "viewer-report.json"), JSON.stringify({
     status: "passed", browser: browser.version(),
-    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "composition approve and revise-geometry controls", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "orbit drag", "camera reset", "render/3D switching", "refinement host message", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
+    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
     pageErrors: errors,
   }, null, 2));
   console.log(`Viewer integration passed; screenshots saved under ${root}`);
