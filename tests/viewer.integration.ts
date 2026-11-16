@@ -30,10 +30,32 @@ include(lightmapSnapshot.renderUrl); include(lightmapSnapshot.bestRenderUrl);
 lightmapSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
 const host = await build({ entryPoints: ["tests/viewer-host.ts"], bundle: true, platform: "browser", format: "esm", write: false });
 const widget = await readFile("dist/widget.html");
+const nativeClient = await build({ stdin: { contents: `import { connectThreeRT } from './src/viewer/threert-live.ts';
+  await connectThreeRT(document.querySelector('canvas'), location.origin + '/native', () => {});`, resolveDir: process.cwd() },
+  bundle: true, platform: "browser", format: "esm", write: false });
+const initialNativePose = { position: [0, 6, 10], target: [0, 1, 0], fov: 50 };
+let nativePose = structuredClone(initialNativePose);
 const server = createServer(async (request, response) => {
   try {
     const path = new URL(request.url!, "http://localhost").pathname;
-    if (path === "/favicon.ico") response.writeHead(204).end();
+    if (path === "/native-test") {
+      response.writeHead(200, { "Content-Type": "text/html" }).end(`<canvas width="640" height="360"></canvas><script type="module">${nativeClient.outputFiles[0]!.text.replace(/<\/script/gi, "<\\/script")}</script>`);
+    } else if (path === "/native/start") {
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ sessionId: "fixture", camera: initialNativePose }));
+    } else if (path === "/native/camera") {
+      const body: Buffer[] = []; for await (const chunk of request) body.push(Buffer.from(chunk));
+      nativePose = JSON.parse(Buffer.concat(body).toString());
+      response.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+    } else if (path === "/native/stream") {
+      const png = await readFile(resolve(root, "render.png"));
+      response.writeHead(200, { "Content-Type": "application/octet-stream" });
+      let sequence = 0;
+      const timer = setInterval(() => {
+        const header = Buffer.alloc(16); header.writeUInt32BE(png.length); header.writeUInt32BE(++sequence, 4); header.writeDoubleBE(Date.now(), 8);
+        response.write(Buffer.concat([header, png]));
+      }, 40);
+      response.once("close", () => clearInterval(timer));
+    } else if (path === "/favicon.ico") response.writeHead(204).end();
     else if (path === "/") {
       response.writeHead(200, { "Content-Type": "text/html" }).end(`<!doctype html><html><head><title>MCP iframe integration</title></head><body style="margin:24px;font:14px system-ui;background:#eeede7"><iframe id="viewer" title="Blender scene" sandbox="allow-scripts allow-same-origin allow-downloads" style="width:850px;height:520px;border:1px solid #ccc;border-radius:12px"></iframe><p id="sent"></p><script type="module">${host.outputFiles[0]!.text.replace(/<\/script/gi, "<\\/script")}</script></body></html>`);
     } else if (path === "/widget") {
@@ -139,6 +161,10 @@ try {
   const first = await canvas.screenshot();
   const initialOutline = await frame.locator("#selection-outline").getAttribute("d");
   const initialAxis = await frame.locator("#selection-axis-x").getAttribute("d");
+  await canvas.focus();
+  await page.keyboard.down("a"); await page.waitForTimeout(400); await page.keyboard.up("a");
+  assert.notEqual(await frame.locator("#selection-outline").getAttribute("d"), initialOutline, "WASD moves the camera and its selection projection");
+  await frame.getByRole("button", { name: "Reset camera" }).click();
   const box = await canvas.boundingBox(); assert.ok(box);
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   await page.mouse.down();
@@ -273,10 +299,24 @@ try {
   }, undefined, { timeout: 60000 });
   assert.equal(await frame.locator("#canvas canvas").getAttribute("data-samples"), "0");
   await frame.locator("#canvas canvas").screenshot({ path: resolve(root, "viewer-lightmap.png") });
+  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/native-test`);
+  await page.waitForFunction(() => document.querySelector("canvas")?.dataset.renderer === "threert-native-live");
+  await page.locator("canvas").click();
+  await page.keyboard.down("w"); await page.waitForTimeout(400); await page.keyboard.up("w");
+  await page.waitForFunction(() => Number(JSON.parse(document.querySelector("canvas")!.dataset.camera ?? "{}").position?.[2]) < 10);
+  assert.ok(nativePose.position[2]! < initialNativePose.position[2]!);
+  assert.ok(nativePose.position[1]! < initialNativePose.position[1]!, "Looking down and pressing W lowers the native camera");
+  assert.ok(Math.abs(nativePose.position[1]! - nativePose.target[1]! - 5) < 1e-6);
+  assert.ok(Math.abs(nativePose.position[2]! - nativePose.target[2]! - 10) < 1e-6);
+  const heightBeforeS = nativePose.position[1]!;
+  await page.keyboard.down("s"); await page.waitForTimeout(400); await page.keyboard.up("s");
+  await page.waitForFunction(height => Number(JSON.parse(document.querySelector("canvas")!.dataset.camera ?? "{}").position?.[1]) > height,
+    heightBeforeS);
+  assert.ok(nativePose.position[1]! > heightBeforeS, "Looking down and pressing S raises the native camera");
   assert.deepEqual(errors, []);
   await writeFile(resolve(root, "viewer-report.json"), JSON.stringify({
     status: "passed", browser: browser.version(),
-    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "raster lightmaps and planar reflection without progressive sampling", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
+    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "raster lightmaps and planar reflection without progressive sampling", "WASD moves the web camera and selection projection", "ThreeRT WASD camera synchronization with a transport fixture", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
     pageErrors: errors,
   }, null, 2));
   console.log(`Viewer integration passed; screenshots saved under ${root}`);
@@ -285,7 +325,7 @@ try {
   const failed = browser.contexts()[0]?.pages()[0];
   if (failed) {
     await failed.screenshot({ path: resolve(root, "viewer-failure.png"), timeout: 5000 }).catch(() => {});
-    console.error(await failed.frameLocator("#viewer").locator("body").innerText());
+    if (await failed.locator("#viewer").count()) console.error(await failed.frameLocator("#viewer").locator("body").innerText());
   }
   throw error;
 } finally {

@@ -172,6 +172,7 @@ Learning runs during agent tasks; it does not change model weights. See the
 Ask the agent to open the preview in a host that supports MCP Apps. You can:
 
 - Orbit, zoom, pan and reset the camera.
+- Click the Three.js or ThreeRT view: W/S moves along the viewing direction, including up or down when tilted; A/D moves sideways. Hold Shift to move faster.
 - Select objects in the scene tree or 3D view to inspect their bounds.
 - Switch between the Blender render and interactive 3D preview.
 - Review neutral gray views, then approve composition or request changes in chat.

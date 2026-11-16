@@ -11,6 +11,7 @@ import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 import { connectThreeRT } from "./threert-live.js";
+import { keyboardNavigation } from "./navigation.js";
 import { addPlanarReflection, applyLightmaps, captureEnvironment, limitRasterLights, type Lightmap } from "./lighting.js";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
@@ -62,6 +63,7 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let viewer: {
   renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   controls: OrbitControls; tracer?: WebGLPathTracer; denoise: FullScreenQuad; denoiseTarget?: THREE.WebGLRenderTarget;
+  navigation: ReturnType<typeof keyboardNavigation>;
   reflection?: ReturnType<typeof addPlanarReflection>;
   probe?: THREE.WebGLRenderTarget;
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
@@ -293,6 +295,7 @@ function dispose() {
   el("selection-box").style.display = "none";
   if (!viewer) return;
   clearInterval(viewer.frameTimer);
+  viewer.navigation.dispose();
   viewer.resize.disconnect();
   viewer.controls.dispose();
   viewer.scene.traverse((object) => {
@@ -334,8 +337,10 @@ function showPreview() {
 }
 
 function setMode(value: string) {
+  const previousMode = mode;
   const unavailable = value === "threert" && threeRTLiveUnavailableReason();
   mode = unavailable ? viewer ? "3d" : "render" : value;
+  if (mode !== previousMode) viewer?.navigation?.clear();
   if (unavailable) { preferredBackend = "web"; message(`ThreeRT 实时交互不可用，已保留网页预览。${unavailable}`); }
   el("mode-render").setAttribute("aria-pressed", String(mode === "render"));
   el("mode-3d").setAttribute("aria-pressed", String(mode === "3d" || mode === "threert"));
@@ -347,7 +352,7 @@ function setMode(value: string) {
   el("threert-live").style.display = mode === "threert" ? "flex" : "none";
   liveViewer?.setActive(mode === "threert");
   if (mode === "threert") el("empty").style.display = "none";
-  el("note").textContent = mode === "threert" ? "ThreeRT 原生实时帧 · 拖动绕转 · 滚轮缩放 · 右键平移" : "Drag to orbit · Scroll to zoom · Right-drag to pan";
+  el("note").textContent = mode === "threert" ? "点击画面后 WASD 移动 · Shift 加速 · 拖动绕转 · 滚轮缩放 · 右键平移" : "Click view, then WASD to move · Shift to speed up · Drag to orbit · Scroll to zoom · Right-drag to pan";
   el<HTMLButtonElement>("reset").disabled = mode === "threert" ? !liveViewer : mode !== "3d" || !viewer;
   updateSelectionBox();
 }
@@ -896,6 +901,7 @@ async function loadModel(url: string) {
       profile.camera!.dof!.focusDistance : camera.position.distanceTo(center) || extent;
     controls.target.copy(exportedCamera ? camera.position.clone().addScaledVector(initialDirection, focusDistance) : center);
     controls.enableDamping = true; controls.update();
+    const navigation = keyboardNavigation(camera, controls, renderer.domElement, () => mode === "3d" && controls.enabled);
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
     const probe = raster && profile.previewAppearance?.reflectionProbe ?
       captureEnvironment(renderer, scene, profile.previewAppearance.reflectionProbe, camera.far) : undefined;
@@ -952,6 +958,7 @@ async function loadModel(url: string) {
     const previousPosition = position.clone(), previousQuaternion = camera.quaternion.clone();
     const previousProjection = camera.projectionMatrix.clone();
     const frameTimer = setInterval(() => {
+      navigation.update();
       if (mode !== "3d" || !viewer || viewer.tracer !== tracer) return;
       controls.update();
       updateSelectionBox();
@@ -992,7 +999,7 @@ async function loadModel(url: string) {
       viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
       gl.flush();
     }, 16);
-    viewer = { renderer, scene, camera, controls, tracer, reflection, probe, denoise, denoiseTarget, display, effects, frameTimer,
+    viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, frameTimer,
       position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
     resize.observe(el("stage"));
     renderer.domElement.dataset.renderer = raster ? "raster" : "path-tracing";

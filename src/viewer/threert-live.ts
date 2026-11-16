@@ -1,5 +1,6 @@
 import { PerspectiveCamera } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { keyboardNavigation } from "./navigation.js";
 
 type CameraPose = { position: number[]; target: number[]; fov: number };
 const endpoint = (base: string, action: string, session?: string) => {
@@ -19,6 +20,8 @@ export async function connectThreeRT(canvas: HTMLCanvasElement, base: string, st
   controls.target.fromArray(initial.target); controls.update(); controls.enableDamping = false;
   const context = canvas.getContext("2d")!;
   let active = true, disposed = false, running = false, pendingPose: CameraPose | undefined, controller: AbortController | undefined;
+  const navigation = keyboardNavigation(camera, controls, canvas, () => active && !disposed && controls.enabled);
+  const navigationTimer = setInterval(() => navigation.update(), 16);
   let count = 0, since = performance.now(), lastSize = "";
   controls.addEventListener("change", () => {
     pendingPose = { position: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov };
@@ -76,7 +79,7 @@ export async function connectThreeRT(canvas: HTMLCanvasElement, base: string, st
         if (elapsed >= 1000) {
           const fps = count * 1000 / elapsed;
           canvas.dataset.fps = fps.toFixed(1);
-          status(`ThreeRT 实时交互 · ${fps.toFixed(1)} 帧/秒 · 拖动绕转，滚轮缩放，右键平移`);
+          status(`ThreeRT 实时交互 · ${fps.toFixed(1)} 帧/秒 · WASD 移动，Shift 加速`);
           count = 0; since = performance.now();
         }
       }
@@ -89,9 +92,9 @@ export async function connectThreeRT(canvas: HTMLCanvasElement, base: string, st
   };
   void loop();
   return {
-    setActive(value: boolean) { active = value; controls.enabled = value; if (value) { since = performance.now(); count = 0; void loop(); } else controller?.abort(); },
+    setActive(value: boolean) { active = value; controls.enabled = value; if (value) { since = performance.now(); count = 0; void loop(); } else { navigation.clear(); controller?.abort(); } },
     reset() { camera.position.fromArray(initial.position); camera.fov = initial.fov; controls.target.fromArray(initial.target); controls.update(); },
-    dispose() { disposed = true; active = false; controller?.abort(); observer.disconnect(); controls.dispose();
+    dispose() { disposed = true; active = false; clearInterval(navigationTimer); navigation.dispose(); controller?.abort(); observer.disconnect(); controls.dispose();
       void fetch(endpoint(base, "stop", session), { method: "POST", keepalive: true }).catch(() => {}); },
   };
 }

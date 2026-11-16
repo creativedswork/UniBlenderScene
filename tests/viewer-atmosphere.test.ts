@@ -38,7 +38,7 @@ test("moving and converged previews both apply atmosphere to the linear scene im
       assert.equal(image, texture); assert.equal(transform, display); calls.push("atmosphere");
     } };
     const same = { equals: () => true };
-    const context = createContext({ mode: "3d", viewer: { tracer, renderer }, controls: { update() {} }, updateSelectionBox() {},
+    const context = createContext({ mode: "3d", viewer: { tracer, renderer }, navigation: { update() {} }, controls: { update() {} }, updateSelectionBox() {},
       camera: { position: same, quaternion: same, projectionMatrix: same }, previousPosition: same, previousQuaternion: same, previousProjection: same,
       renderer, tracer, effects, denoiseTarget: target, display, scene: {},
       denoise: { material: {}, render() { calls.push("denoise"); } },
@@ -55,7 +55,7 @@ test("raster previews cache the scene during atmosphere animation and redraw aft
   const projection = { equals: () => !projectionChanged }, previousProjection = { copy() { projectionChanged = false; } };
   const renderer = { domElement: { dataset: {}, width: 80, height: 45 },
     setRenderTarget(value: unknown) { calls.push(value === target ? "target" : "screen"); }, render() { calls.push("scene"); } };
-  const context = createContext({ mode: "3d", viewer: { renderer }, controls: { update() {} }, updateSelectionBox() {},
+  const context = createContext({ mode: "3d", viewer: { renderer }, navigation: { update() {} }, controls: { update() {} }, updateSelectionBox() {},
     camera: { position: same, quaternion: same, projectionMatrix: projection }, previousPosition: same, previousQuaternion: same, previousProjection,
     renderer, tracer: undefined, effects: { animated: true, render(image: unknown) { assert.equal(image, texture); calls.push("atmosphere"); } },
     denoiseTarget: target, display, scene: {}, gl: { fenceSync() {}, flush() {} },
