@@ -107,3 +107,11 @@ test("structural review cannot select native delivery rendering", async () => {
   assert.equal(fixture.requests(), 0);
   assert.equal(runInContext("mode", fixture.context), "3d");
 });
+
+test("mode changes clear keyboard input while same-mode refreshes preserve held keys", () => {
+  const fixture = setup({ available: false });
+  runInContext('let clears = 0; viewer.navigation = { clear() { clears++; } }; setMode("3d"); setMode("3d")', fixture.context);
+  assert.equal(runInContext("clears", fixture.context), 1);
+  runInContext('setMode("render")', fixture.context);
+  assert.equal(runInContext("clears", fixture.context), 2);
+});

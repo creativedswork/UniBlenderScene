@@ -46,6 +46,11 @@ export function writeGraphExport(directory: string, iteration: number, graph: Sc
   const glbSha256 = createHash("sha256").update(readFileSync(glb)).digest("hex");
   const profilePath = join(directory, "render-profile.json");
   const profile = JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>;
+  const lightmaps = (profile.lightmaps ?? []) as { uri: string }[];
+  if (lightmaps.length > 100 || lightmaps.some(map => !/^lightmap-\d+\.png$/.test(map.uri))) {
+    throw new Error("Export profile contains an invalid lightmap filename.");
+  }
+  for (const map of lightmaps) readFileSync(join(directory, map.uri));
   const camera = profile.camera as { name?: string; projectionMatrix?: number[] } | null;
   if (!camera?.name || !nodes.some((node) => node.camera !== undefined && node.name === camera.name) ||
     camera.projectionMatrix && (camera.projectionMatrix.length !== 16 || camera.projectionMatrix.some((value) => !Number.isFinite(value)))) {
@@ -67,7 +72,8 @@ export function writeGraphExport(directory: string, iteration: number, graph: Sc
   writeFileSync(join(directory, "manifest.json"), JSON.stringify({ version: 1, iteration, outcome, remainingGaps: gaps,
     previewMode: profile.previewMode,
     source: profile.source, glbSha256, sourceBlendSha256: hash(resolve(directory, blend)),
+    bake: profile.bake,
     sourceRenderSha256: hash(resolve(directory, render)),
     ...(source.blend === "best.blend" ? { bestBlendSha256: hash(resolve(directory, blend)), bestRenderSha256: hash(resolve(directory, render)) } : {}),
-    files: [...(source.blend === "best.blend" ? [blend] : []), render, "final.glb", "render-profile.json", "scene-graph.json"] }, null, 2));
+    files: [...(source.blend === "best.blend" ? [blend] : []), render, "final.glb", "render-profile.json", "scene-graph.json", ...lightmaps.map(map => map.uri)] }, null, 2));
 }

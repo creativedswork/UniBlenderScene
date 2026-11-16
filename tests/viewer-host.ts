@@ -5,7 +5,7 @@ const bridge = new AppBridge(null, { name: "Integration host", version: "1.0.0" 
   serverTools: {}, message: { text: {} }, openLinks: {},
 }, { hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] } });
 const query = new URLSearchParams(location.search);
-const snapshot = await (await fetch(query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
+const snapshot = await (await fetch(query.has("lightmap") ? "/scene?lightmap=1" : query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
 const inaccessible = (url: string | null) => url ? `http://127.0.0.1:1${new URL(url).pathname}` : null;
 const widgetSnapshot = {
   ...snapshot,
@@ -14,6 +14,18 @@ const widgetSnapshot = {
   references: snapshot.references?.map((image: { url: string }) => ({ ...image, url: inaccessible(image.url) })),
   artifacts: snapshot.artifacts.map((item: { name: string; url: string }) => ({ ...item, url: inaccessible(item.url) })),
 };
+const assetBuffers = new Map<string, Promise<Uint8Array>>();
+function loadAssetBytes(url: string): Promise<Uint8Array> {
+  let pending = assetBuffers.get(url);
+  if (!pending) {
+    pending = fetch(url).then(async response => {
+      if (!response.ok) throw new Error("Preview asset could not be loaded.");
+      return new Uint8Array(await response.arrayBuffer());
+    }).catch(error => { assetBuffers.delete(url); throw error; });
+    assetBuffers.set(url, pending);
+  }
+  return pending;
+}
 bridge.oncalltool = async ({ name, arguments: args }) => {
   if (name === "scene_review_decision") {
     document.getElementById("sent")!.dataset.decision=JSON.stringify(args);
@@ -46,8 +58,7 @@ bridge.oncalltool = async ({ name, arguments: args }) => {
     (input.name === "reference" ? snapshot.reference?.url : undefined) ??
     snapshot.artifacts.find((item: { name: string }) => item.name === input.name)?.url;
   if (!url) return { isError: true, content: [{ type: "text", text: "Missing asset" }] };
-  const response = await fetch(url);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await loadAssetBytes(url);
   const chunk = bytes.subarray(input.offset, input.offset + 256 * 1024);
   let binary = "";
   for (let i = 0; i < chunk.length; i += 8192) binary += String.fromCharCode(...chunk.subarray(i, i + 8192));

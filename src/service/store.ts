@@ -8,6 +8,7 @@ import { verifyAssetStrategy, verifyGraphReview, type AssetRequirement, type Ass
 import { ExperienceLibrary, fileHash, type RetrospectiveInput, type Replay, type FixtureResult } from "./experience.js";
 import { renderThreeRT, threeRTCapability } from "./threert.js";
 import { ThreeRTLive } from "./threert-live.js";
+import { lightingBakeRequests, prepareBake, type BakeResult, type LightingBake } from "./postprocess.js";
 
 export type Criterion = { id: string; description: string; severity: "blocker" | "major" | "minor" };
 export type ImageBox = [number, number, number, number];
@@ -60,6 +61,9 @@ export type Review = {
 };
 type Job = { id: string; kind: string; status: "queued" | "running" | "done" | "failed"; error?: string };
 export type PreviewAppearance = {
+  renderMode?: "pathtracing" | "raster";
+  planarReflection?: string;
+  reflectionProbe?: [number, number, number];
   exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
   dust?: { color: number[]; wind: number[]; volumes: { center: number[]; radius: number[]; density: number }[] };
 };
@@ -84,7 +88,8 @@ export type Scene = {
   compositionRevalidation?: boolean;
   assetStrategyHistory?: { revisionId?: string; strategy: AssetStrategy }[];
   pendingAttempt?: { revisionId?: string; phase?: StageName; previousContentIteration: number };
-  exportLighting?: { objectName: string; resolution: number }[];
+  exportLighting?: LightingBake[];
+  bake?: BakeResult & { iteration: number };
   exportVersion?: string;
   exportPipelineHash?: string;
   exportAppearance?: PreviewAppearance;
@@ -1090,23 +1095,43 @@ result = {"reviewViews": 5}
     return revisionId ? `revisions/${revisionId}/previews/${this.workflowState(scene).phase}/${iteration}` : `previews/${iteration}`;
   }
 
-  export(id: string, preview = false, lightingBakes?: { objectName: string; resolution: number }[], previewAppearance?: PreviewAppearance): Scene {
+  bake(id: string, lightingBakes?: LightingBake[]): Scene {
+    const scene = this.get(id);
+    this.idle(scene);
+    const target = this.workflowState(scene).presentation;
+    if (!["completed", "best_effort"].includes(scene.stage) || target.mode !== "appearance" || !scene.best) {
+      throw new Error("Complete scene review before baking the delivery checkpoint.");
+    }
+    const requests = lightingBakeRequests(lightingBakes?.map(bake => ({ ...bake, mode: bake.mode ?? "lightmap" })) ??
+      scene.bake?.lightingBakes ?? scene.exportLighting ?? []);
+    this.enqueue(scene, "bake", async () => {
+      scene.bake = { ...await prepareBake(this.blender, this.path(scene, "best.blend"), this.path(scene, "."), requests),
+        iteration: target.iteration };
+    });
+    return scene;
+  }
+
+  export(id: string, preview = false, lightingBakes?: LightingBake[], previewAppearance?: PreviewAppearance): Scene {
     const scene = this.get(id);
     this.idle(scene);
     if (preview ? !this.canPreviewStructure(scene) : !scene.best || !["completed", "best_effort"].includes(scene.stage)) {
       throw new Error(preview ? "A saved geometry/composition scene or composition checkpoint is required for a structural preview." : "Complete scene review before exporting the best version.");
     }
     const state = this.workflowState(scene), target = state.presentation;
-    const bakes = structuredClone(lightingBakes ?? (preview ? [] : scene.exportLighting ?? []))
-      .sort((a, b) => a.objectName.localeCompare(b.objectName));
-    if (bakes.length > 100 || new Set(bakes.map((item) => item.objectName)).size !== bakes.length ||
-        bakes.some((item) => !item.objectName.trim() || item.objectName.length > 256 ||
-          !Number.isInteger(item.resolution) || item.resolution < 64 || item.resolution > 4096) || preview && bakes.length) {
-      throw new Error("Lighting bakes need distinct mesh names and resolutions from 64 to 4096 on a final export.");
-    }
+    const bakes = lightingBakeRequests(lightingBakes ?? (preview ? [] : scene.bake?.lightingBakes ?? scene.exportLighting ?? []));
+    if (preview && bakes.length) throw new Error("Lighting bakes require a final export.");
     const marker = preview ? "previewedIteration" : "exportedIteration";
     const appearance = structuredClone(preview ? {} : previewAppearance ?? scene.exportAppearance ?? {});
+    if (appearance.renderMode !== undefined && !["pathtracing", "raster"].includes(appearance.renderMode) ||
+        appearance.planarReflection !== undefined && (!appearance.planarReflection.trim() || appearance.planarReflection.length > 256)) {
+      throw new Error("Choose a web render mode and a mesh name for the planar reflection.");
+    }
+    if (bakes.some(bake => bake.mode === "lightmap") || appearance.planarReflection || appearance.reflectionProbe) {
+      if (appearance.renderMode === "pathtracing") throw new Error("Lightmaps and reflection captures require raster preview.");
+      appearance.renderMode = "raster";
+    }
     const vector = (v: number[], low: number, high: number) => v.length === 3 && v.every(n => Number.isFinite(n) && n >= low && n <= high);
+    if (appearance.reflectionProbe && !vector(appearance.reflectionProbe, -10000, 10000)) throw new Error("Invalid reflection probe position.");
     if ((appearance.exposureEV !== undefined && (!Number.isFinite(appearance.exposureEV) || Math.abs(appearance.exposureEV) > 3)) ||
         (appearance.saturation !== undefined && (!Number.isFinite(appearance.saturation) || appearance.saturation < 0 || appearance.saturation > 2)) ||
         (appearance.whiteBalance !== undefined && !vector(appearance.whiteBalance, 0.25, 4)) ||
@@ -1118,10 +1143,12 @@ result = {"reviewViews": 5}
       throw new Error("Invalid preview appearance: use finite exposure, saturation and up to six bounded dust volumes.");
     }
     const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
-    const pipelineHash = createHash("sha256").update(template).digest("hex");
+    const pipelineHash = createHash("sha256").update(template)
+      .update(readFileSync(new URL("../../runtime/blender/postprocess/bake.py", import.meta.url))).digest("hex");
     const sameLighting = preview || (JSON.stringify(scene.exportLighting ?? []) === JSON.stringify(bakes) &&
       JSON.stringify(scene.exportAppearance ?? {}) === JSON.stringify(appearance));
-    if (sameLighting && (preview || scene.exportPipelineHash === pipelineHash) && scene[marker] === target.iteration && scene.job?.status !== "failed" && (!preview || this.hasStructuralPreview(scene))) return scene;
+    const sameSource = preview || scene.bake?.sourceBlendSha256 === fileHash(this.path(scene, "best.blend"));
+    if (sameLighting && sameSource && (preview || scene.exportPipelineHash === pipelineHash) && scene[marker] === target.iteration && scene.job?.status !== "failed" && (!preview || this.hasStructuralPreview(scene))) return scene;
     const iteration = target.iteration;
     const directory = this.path(scene, preview ? this.previewDirectory(scene, iteration) : `artifacts/${iteration}`);
     mkdirSync(directory, { recursive: true });
@@ -1129,9 +1156,15 @@ result = {"reviewViews": 5}
     this.enqueue(scene, preview ? "preview" : "export", async () => {
       if (preview && !this.reviewViewsReady(scene)) await this.generateReviewViews(scene, target);
       const blend = target.source === "current" ? "current.blend" : "best.blend";
+      const bake = preview ? undefined : await prepareBake(this.blender, this.path(scene, blend), this.path(scene, "."), bakes);
+      if (bake) {
+        scene.bake = { ...bake, iteration };
+        for (const map of bake.lightmaps) copyFileSync(this.path(scene, `${bake.directory}/${map.uri}`), `${directory}/${map.uri}`);
+      }
       const code = template.replace("__SOURCE_BLEND__", py(this.path(scene, blend)))
         .replace("__OUTPUT_DIRECTORY__", py(directory))
-        .replace("__LIGHTING_BAKES__", py(bakes))
+        .replace("__PREPARED_BLEND__", bake ? py(this.path(scene, `${bake.directory}/prepared.blend`)) : "None")
+        .replace("__BAKE_METADATA_JSON__", py(JSON.stringify(bake ?? {})))
         .replace("__PREVIEW_APPEARANCE__", py(appearance))
         .replace("__STRUCTURAL_PREVIEW__", preview ? "True" : "False");
       await this.blender.execute(code);
@@ -1167,10 +1200,13 @@ result = {"reviewViews": 5}
       try {
         const output = this.path(scene, directory);
         mkdirSync(output, { recursive: true });
-        // Export unbaked source materials on a copy. Baked emissive lightmaps would become physical emitters.
+        // ThreeRT uses the materials-only copy, keeping baked illumination out of physical emitters.
+        const bake = await prepareBake(this.blender, this.path(scene, "best.blend"), this.path(scene, "."), [], false);
         const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
         const code = template.replace("__SOURCE_BLEND__", py(this.path(scene, "best.blend")))
-          .replace("__OUTPUT_DIRECTORY__", py(output)).replace("__LIGHTING_BAKES__", "[]")
+          .replace("__OUTPUT_DIRECTORY__", py(output))
+          .replace("__PREPARED_BLEND__", py(this.path(scene, `${bake.directory}/prepared.blend`)))
+          .replace("__BAKE_METADATA_JSON__", py(JSON.stringify(bake)))
           .replace("__PREVIEW_APPEARANCE__", py(scene.exportAppearance ?? {})).replace("__STRUCTURAL_PREVIEW__", "False");
         await this.blender.execute(code);
         state.warnings = await renderThreeRT(output, capability.binary);
@@ -1303,6 +1339,9 @@ result = {"reviewViews": 5}
       for (const name of ["final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json"]) {
         const file = `${directory}/${name}`;
         if (existsSync(this.path(scene, file))) files.push(file);
+      }
+      for (const name of readdirSync(this.path(scene, directory)).filter(name => /^lightmap-\d+\.png$/.test(name))) {
+        files.push(`${directory}/${name}`);
       }
     }
     if (target.mode === "appearance" && target.purpose === "delivery" &&
