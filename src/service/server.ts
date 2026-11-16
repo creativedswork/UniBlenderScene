@@ -55,7 +55,8 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
   const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json", "best.blend",
     "review-main.png", "review-front.png", "review-side.png", "review-top.png", "review-perspective.png", "threert.png"] as const;
-  const assetChunk = async (sceneId: string, name: typeof assetNames[number], offset: number): Promise<CallToolResult> => {
+  const assetName = z.union([z.enum(assetNames), z.string().regex(/^lightmap-\d+\.png$/)]);
+  const assetChunk = async (sceneId: string, name: string, offset: number): Promise<CallToolResult> => {
     const scene = store.get(sceneId);
     const file = name === "render" || name === "best.png" ? store.renderFile(scene) :
       store.allowedFiles(scene).find((file) => file.split("/").at(-1) === name) ?? name;
@@ -204,13 +205,30 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
     description: "Generate five gray views for the authoritative workflowState presentation: current working scene during geometry/composition, preserved checkpoint during awaiting_review. Read-only scene inspection; never advances a stage, resets budgets or approves structure. Replaces stale views with this source/iteration. Async: poll scene_get with images=none.",
     inputSchema: idSchema, annotations: write,
   }, ({ sceneId }) => guarded(() => result(store.retryReviewViews(sceneId))));
+  const lightingBake = z.object({
+    objectName: z.string().trim().min(1).max(256), resolution: z.number().int().min(64).max(4096),
+    mode: z.enum(["appearance", "lightmap"]).optional().describe("lightmap preserves PBR materials and original UVs; appearance replaces surface response with emission."),
+    samples: z.number().int().min(16).max(1024).optional().describe("Cycles samples; defaults to 128 for lightmaps and 16 for appearance bakes."),
+  });
+  server.registerTool("scene_bake", {
+    title: "Bake reviewed scene",
+    description: "Prepare static lighting and portable material textures on a copy of the reviewed delivery checkpoint. Preserves source .blend, workflow and iteration. Results are cached by source bytes, settings and bake implementation. Async: poll scene_get images=none; scene.bake reports files, source hash and cacheHit. Then call scene_export to package the prepared scene. Requires completed or best_effort state.",
+    inputSchema: { ...idSchema, lightingBakes: z.array(lightingBake.extend({
+      resolution: z.number().int().min(64).max(4096).default(512),
+      mode: z.enum(["appearance", "lightmap"]).default("lightmap"),
+    })).max(100).optional().describe("Static receivers. Omitted reuses the active bake settings; [] bakes portable materials without explicit lighting receivers. Source legacy markers still apply."),
+    }, annotations: write,
+  }, ({ sceneId, lightingBakes }) => guarded(() => result(store.bake(sceneId, lightingBakes))));
   server.registerTool("scene_export", {
     title: "Export reviewed scene",
-    description: "Export the best reviewed .blend to GLB, profile, scene-graph.json and manifest.json. Built graph nodes must map by scene_node_id to exported meshes. Async: poll scene_get with images=none, then verify GLB and interactive viewer. Requires completed or best_effort state.",
-    inputSchema: { ...idSchema, lightingBakes: z.array(z.object({
-      objectName: z.string().trim().min(1).max(256), resolution: z.number().int().min(64).max(4096),
-    })).max(100).optional().describe("Optional static diffuse-light bakes on the export copy. Existing export settings are reused when omitted; an empty array clears them."),
+    description: "Package the reviewed scene and prepared bake as GLB, profile, lightmaps, scene-graph.json and manifest.json. Prefer scene_bake first; legacy callers prepare a missing bake automatically. Reuses valid prepared textures when only preview appearance changes. Built graph nodes must map by scene_node_id to exported meshes. Async: poll scene_get images=none, then verify the viewer. Requires completed or best_effort state.",
+    inputSchema: { ...idSchema, lightingBakes: z.array(lightingBake).max(100).optional()
+      .describe("Compatibility input; prefer scene_bake. Omitted uses the active bake settings. [] clears explicit receivers; omitted mode retains legacy appearance baking."),
       previewAppearance: z.object({ exposureEV: z.number().min(-3).max(3).optional(), saturation: z.number().min(0).max(2).optional(),
+        renderMode: z.enum(["pathtracing", "raster"]).optional().describe("Raster displays baked lightmaps without progressive sampling."),
+        planarReflection: z.string().trim().min(1).max(256).optional().describe("Name of a horizontal mesh whose top surface supplies one real-time planar reflection in raster mode."),
+        reflectionProbe: z.tuple([z.number().min(-10000).max(10000), z.number().min(-10000).max(10000), z.number().min(-10000).max(10000)]).optional()
+          .describe("Position of one static environment capture for metallic and glossy materials, in Blender Z-up coordinates. Used in raster mode."),
         whiteBalance: z.tuple([z.number().min(0.25).max(4), z.number().min(0.25).max(4), z.number().min(0.25).max(4)]).optional().describe("Linear RGB gains applied before the Blender display transform."),
         contrast: z.number().min(0.5).max(2).optional(), hazeScale: z.number().min(0).max(2).optional(),
         dust: z.object({ color: z.tuple([z.number().min(0).max(10), z.number().min(0).max(10), z.number().min(0).max(10)]),
@@ -234,7 +252,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   server.registerTool("scene_view", {
     title: "View Blender scene",
     description: "Show the bundled viewer with the current-stage render and available GLB downloads. Exported deliveries default to native ThreeRT when configured; gray review and browser fallback use Three.js. First call scene_get with images=none; open this viewer only when renderUrl is non-null. Poll jobs with scene_get images=none, which does not open a viewer. The optional asset request transfers a bounded chunk to an existing viewer.",
-    inputSchema: { ...idSchema, asset: z.object({ name: z.enum(assetNames), offset: z.number().int().min(0) }).optional() },
+    inputSchema: { ...idSchema, asset: z.object({ name: assetName, offset: z.number().int().min(0) }).optional() },
     annotations: read, _meta: widgetMeta,
   }, ({ sceneId, asset }) => guarded(() => {
     if (asset) return assetChunk(sceneId, asset.name, asset.offset);
@@ -247,7 +265,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
     description: "Read a bounded chunk of an approved scene artifact for the embedded viewer when direct artifact URLs are unavailable.",
     inputSchema: {
       ...idSchema,
-      name: z.enum(assetNames),
+      name: assetName,
       offset: z.number().int().min(0).default(0),
     }, annotations: read, _meta: { "openai/widgetAccessible": true },
   }, ({ sceneId, name, offset }) => guarded(() => assetChunk(sceneId, name, offset)));

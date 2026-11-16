@@ -39,11 +39,27 @@ test("moving and converged previews both apply atmosphere to the linear scene im
     } };
     const same = { equals: () => true };
     const context = createContext({ mode: "3d", viewer: { tracer, renderer }, controls: { update() {} }, updateSelectionBox() {},
-      camera: { position: same, quaternion: same }, previousPosition: same, previousQuaternion: same,
+      camera: { position: same, quaternion: same, projectionMatrix: same }, previousPosition: same, previousQuaternion: same, previousProjection: same,
       renderer, tracer, effects, denoiseTarget: target, display, scene: {},
       denoise: { material: {}, render() { calls.push("denoise"); } },
       gl: { fenceSync() {}, flush() {} }, setInterval(callback: () => void) { callback(); } });
     runInContext(code, context);
     assert.deepEqual(calls, ["target", samples < 4 ? "raster" : "denoise", "screen", "atmosphere"]);
   }
+});
+
+test("raster previews cache the scene during atmosphere animation and redraw after projection changes", () => {
+  const calls: string[] = [], texture = {}, display = {};
+  const target = { texture, setSize() {} }, same = { equals: () => true, copy() {} };
+  let projectionChanged = false;
+  const projection = { equals: () => !projectionChanged }, previousProjection = { copy() { projectionChanged = false; } };
+  const renderer = { domElement: { dataset: {}, width: 80, height: 45 },
+    setRenderTarget(value: unknown) { calls.push(value === target ? "target" : "screen"); }, render() { calls.push("scene"); } };
+  const context = createContext({ mode: "3d", viewer: { renderer }, controls: { update() {} }, updateSelectionBox() {},
+    camera: { position: same, quaternion: same, projectionMatrix: projection }, previousPosition: same, previousQuaternion: same, previousProjection,
+    renderer, tracer: undefined, effects: { animated: true, render(image: unknown) { assert.equal(image, texture); calls.push("atmosphere"); } },
+    denoiseTarget: target, display, scene: {}, gl: { fenceSync() {}, flush() {} },
+    setInterval(callback: () => void) { callback(); callback(); projectionChanged = true; callback(); } });
+  runInContext(`let rasterDirty = true; ${code}`, context);
+  assert.deepEqual(calls, ["target", "scene", "screen", "atmosphere", "atmosphere", "target", "scene", "screen", "atmosphere"]);
 });

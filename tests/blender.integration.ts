@@ -116,7 +116,7 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 22);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 23);
   const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
@@ -453,6 +453,48 @@ bpy.context.scene.render.resolution_y=128
     const color = material.pbrMetallicRoughness?.baseColorFactor;
     return color && color[0] > color[1] * 2 && color[0] > color[2] * 2;
   }), "The red source material must survive gray preview generation");
+  const lightmapSource = join(root, ".canova/runs", stagedId, "best.blend");
+  const lightmapSourceBefore = await readFile(lightmapSource);
+  await call("scene_bake", { sceneId: stagedId,
+    lightingBakes: [{ objectName: "ShadowReceiver", resolution: 128, samples: 32 }] });
+  const prepared = await poll(stagedId);
+  assert.equal(prepared.stage, "completed");
+  assert.equal(prepared.bake.cacheHit, false);
+  assert.equal(prepared.bake.lightingBakes[0].mode, "lightmap");
+  assert.ok((await readFile(join(root, ".canova/runs", stagedId, prepared.bake.directory, "prepared.blend"))).length > 0);
+  assert.deepEqual(await readFile(lightmapSource), lightmapSourceBefore);
+  await call("scene_export", { sceneId: stagedId,
+    previewAppearance: { renderMode: "raster", planarReflection: "ShadowReceiver" } });
+  const lightmapped = await poll(stagedId);
+  assert.equal(lightmapped.bake.id, prepared.bake.id);
+  assert.equal(lightmapped.bake.cacheHit, true);
+  assert.deepEqual(await readFile(lightmapSource), lightmapSourceBefore);
+  const lightmapDirectory = join(root, ".canova/runs", stagedId, `artifacts/${lightmapped.exportedIteration}`);
+  const lightmapProfile = JSON.parse(await readFile(join(lightmapDirectory, "render-profile.json"), "utf8"));
+  assert.equal(lightmapProfile.previewAppearance.renderMode, "raster");
+  assert.equal(lightmapProfile.lightmaps.length, 1);
+  const lightmap = lightmapProfile.lightmaps[0];
+  assert.equal(lightmap.objectName, "ShadowReceiver");
+  assert.equal(lightmap.uvChannel, 1);
+  assert.equal(lightmap.samples, 32);
+  const lightmapBytes = await readFile(join(lightmapDirectory, "final.glb"));
+  const lightmapGltf = JSON.parse(lightmapBytes.subarray(20, 20 + lightmapBytes.readUInt32LE(12)).toString("utf8"));
+  const receiverPrimitive = lightmapGltf.meshes[lightmapGltf.nodes.find((node: any) => node.name === "ShadowReceiver").mesh].primitives[0];
+  assert.ok(receiverPrimitive.attributes.TEXCOORD_0 !== undefined);
+  assert.ok(receiverPrimitive.attributes.TEXCOORD_1 !== undefined);
+  const receiverMaterial = lightmapGltf.materials[receiverPrimitive.material];
+  assert.ok(receiverMaterial.normalTexture, "Lightmap export preserves the source normal texture");
+  assert.equal(receiverMaterial.normalTexture.texCoord ?? 0, 0);
+  assert.equal(receiverMaterial.emissiveTexture, undefined, "Baked illumination must not become a physical emitter");
+  assert.ok(Math.abs(receiverMaterial.pbrMetallicRoughness.roughnessFactor - 0.8) < 1e-6);
+  assert.ok(lightmapped.artifacts.some((file: any) => file.name === lightmap.uri));
+  const lightmapChunk = await call("scene_asset_chunk", { sceneId: stagedId, name: lightmap.uri, offset: 0 });
+  assert.equal(lightmapChunk.isError, undefined, JSON.stringify(lightmapChunk.content));
+  assert.equal(Buffer.from((lightmapChunk.structuredContent as { data: string }).data, "base64").readUInt32BE(0), 0x89504e47);
+  const lightmapManifest = JSON.parse(await readFile(join(lightmapDirectory, "manifest.json"), "utf8"));
+  assert.ok(lightmapManifest.files.includes(lightmap.uri));
+  assert.equal(lightmapManifest.bake.id, prepared.bake.id);
+  await writeFile(join(root, "lightmap-scene.json"), JSON.stringify(lightmapped, null, 2));
   const boundedRevisionCases = await testBoundedRevisionGuard(new BlenderClient("127.0.0.1", blenderPort), root);
   const guardPerformance = await testGuardPerformance(new BlenderClient("127.0.0.1", blenderPort), root);
   const report = {

@@ -140,6 +140,28 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 
 要启用原生交互，请安装 [ThreeRT 原生客户端](https://threert.dev/download/)，在服务环境中将 `THREERT_BIN` 设置为其 `threert` 可执行文件路径，再重启服务。插件不附带原生引擎。ThreeRT 在服务所在机器上运行，其视觉效果可能与 Blender 不同；预览器会显示实际输出帧率。独立的 `threert-render` 可执行文件仅支持静态渲染。
 
+完成最终场景复核后，调用 `scene_bake`，通过 `lightingBakes` 指定接收面的 `objectName`、`samples`（16–1024，默认 128）和 `resolution`（64–4096，默认 512）。新工具默认使用 `mode: "lightmap"`。轮询 `scene_get` 等待任务完成，再调用 `scene_export` 打包结果。
+
+这种烘焙保留 PBR 材质和原有 UV，新增独立的光照 UV，并在 GLB 和渲染配置旁导出 `lightmap-*.png`。预览器使用光栅渲染，拖动相机后无需重新积累光照采样。交付时需保留渲染配置和光照贴图；单独打开 GLB 不会加载这些光照贴图。
+
+烘焙生成独立场景副本，不改变已复核的源文件和流程阶段。结果按源文件内容、烘焙参数和脚本版本缓存到 `.canova/runs/<scene>/postprocess/bakes/<id>/`。只调整预览外观时复用已有副本。旧的 `scene_export.lightingBakes` 参数继续兼容，并自动准备缺失的烘焙结果；旧接口省略 `mode` 时仍为外观烘焙。`scene_bake` 省略 `lightingBakes` 时复用当前选择，传 `[]` 清除显式接收面，但源物体上的烘焙标记仍生效。
+
+目录沿用服务、Blender 执行和预览三层边界：
+
+```text
+src/service/postprocess.ts             # 烘焙参数、来源记录和缓存
+src/service/store.ts                   # scene_bake 任务和场景生命周期
+runtime/blender/postprocess/bake.py     # UV、贴图与场景副本生成
+runtime/blender/export.py              # 打包处理后的场景
+src/viewer/lighting.ts                 # 光照贴图和反射捕获的运行时应用
+```
+
+烘焙属于离线资产处理；辉光、曝光和实时反射继续由预览器执行，无需重新烘焙。
+
+将 `previewAppearance.planarReflection` 设为水平接收面的网格名称，可为湿路等表面增加一处实时平面反射。接收面保留原有 PBR 材质，其他反光物体使用环境贴图近似。可将 `previewAppearance.reflectionProbe` 设为 Blender Z-up 坐标 `[x, y, z]`，在该位置捕获一次静态环境，为这些材质提供周围场景的反射。辉光和空气效果继续生效。也可单独设置 `previewAppearance.renderMode: "raster"` 使用光栅预览。原有的外观烘焙和未烘焙光追导出继续支持，ThreeRT 导出仍使用源材质。
+
+环境捕获使用全部灯光；之后的光栅渲染保留按初始机位估算贡献最大的 12 盏局部灯光及方向光，其余静态光照通过烘焙和环境捕获近似。
+
 ## 相关研究
 
 - [VIGA: Vision-as-Inverse-Graphics Agent via Interleaved Multimodal Reasoning](https://arxiv.org/abs/2601.11109)（Yin 等，2026）通过生成代码、渲染、观察和修正的循环，从图片重建可编辑场景。其视觉反馈方法与本插件的场景复核流程相关。

@@ -11,6 +11,7 @@ const root = resolve(evidence);
 const snapshot = JSON.parse(await readFile(resolve(root, "scene.json"), "utf8"));
 const reviewSnapshot = JSON.parse(await readFile(resolve(root, "composition.json"), "utf8"));
 const workSnapshot = JSON.parse(await readFile(resolve(root, "geometry.json"), "utf8"));
+const lightmapSnapshot = JSON.parse(await readFile(resolve(root, "lightmap-scene.json"), "utf8"));
 const files = new Map<string, string>();
 const include = (url: string | null) => {
   if (!url) return;
@@ -25,6 +26,8 @@ include(reviewSnapshot.renderUrl);include(reviewSnapshot.bestRenderUrl);
 reviewSnapshot.artifacts.forEach((item:{url:string})=>include(item.url));
 include(workSnapshot.renderUrl); include(workSnapshot.bestRenderUrl);
 workSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
+include(lightmapSnapshot.renderUrl); include(lightmapSnapshot.bestRenderUrl);
+lightmapSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
 const host = await build({ entryPoints: ["tests/viewer-host.ts"], bundle: true, platform: "browser", format: "esm", write: false });
 const widget = await readFile("dist/widget.html");
 const server = createServer(async (request, response) => {
@@ -40,7 +43,7 @@ const server = createServer(async (request, response) => {
       }).end(widget.toString().replace("<head>", `<head><script>window.openai={uploadFile:async(file)=>({fileId:file.name}),getFileDownloadUrl:async({fileId})=>({downloadUrl:'https://files.oaiusercontent.com/'+encodeURIComponent(fileId)})};</script>`));
     } else if (path === "/scene") {
       const query = new URL(request.url!, "http://localhost").searchParams;
-      const selected = query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
+      const selected = query.has("lightmap") ? lightmapSnapshot : query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       const rewrite = (url: string | null) => url ? `${origin}${new URL(url).pathname}` : null;
       response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
@@ -263,10 +266,17 @@ try {
   await page.locator("#viewer").screenshot({path:resolve(root,"viewer-composition.png")});
   await frame.locator("#review-panel").screenshot({path:resolve(root,"viewer-composition-panel.png")});
   assert.equal(await frame.locator("#review-panel button, #review-panel input").count(), 0);
+  await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?lightmap=1`);
+  await page.waitForFunction(() => {
+    const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("#canvas canvas");
+    return canvas?.getAttribute("data-renderer") === "raster" && Number(canvas.getAttribute("data-frame")) >= 1;
+  }, undefined, { timeout: 60000 });
+  assert.equal(await frame.locator("#canvas canvas").getAttribute("data-samples"), "0");
+  await frame.locator("#canvas canvas").screenshot({ path: resolve(root, "viewer-lightmap.png") });
   assert.deepEqual(errors, []);
   await writeFile(resolve(root, "viewer-report.json"), JSON.stringify({
     status: "passed", browser: browser.version(),
-    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
+    checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "raster lightmaps and planar reflection without progressive sampling", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
     pageErrors: errors,
   }, null, 2));
   console.log(`Viewer integration passed; screenshots saved under ${root}`);

@@ -11,6 +11,7 @@ import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 import { connectThreeRT } from "./threert-live.js";
+import { addPlanarReflection, applyLightmaps, captureEnvironment, limitRasterLights, type Lightmap } from "./lighting.js";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
 type GraphNode = { id: string; label: string; kind: string; parentId: string | null; description: string;
@@ -38,7 +39,8 @@ type Profile = {
   camera: { name: string; projectionMatrix?: number[]; lens?: number; dof?: { enabled: boolean; focusDistance: number; fStop: number; blades: number; rotation: number; ratio: number } } | null;
   bakedObjects?: string[];
   bakedTints?: Record<string, number[]>;
-  previewAppearance?: { exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
+  lightmaps?: Lightmap[];
+  previewAppearance?: { renderMode?: "pathtracing" | "raster"; planarReflection?: string; reflectionProbe?: number[]; exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
     dust?: { color: number[]; wind: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
   postprocessing?: {
     bloom?: { strength?: number; threshold?: number; radius?: number };
@@ -59,7 +61,9 @@ const expanded = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 let viewer: {
   renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
-  controls: OrbitControls; tracer: WebGLPathTracer; denoise: FullScreenQuad; denoiseTarget?: THREE.WebGLRenderTarget;
+  controls: OrbitControls; tracer?: WebGLPathTracer; denoise: FullScreenQuad; denoiseTarget?: THREE.WebGLRenderTarget;
+  reflection?: ReturnType<typeof addPlanarReflection>;
+  probe?: THREE.WebGLRenderTarget;
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
   effects?: ReturnType<typeof previewEffects>;
   position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
@@ -302,7 +306,9 @@ function dispose() {
     if (object instanceof THREE.Light) object.dispose();
   });
   for (const texture of viewer.textures) texture.dispose();
-  viewer.tracer.dispose();
+  viewer.tracer?.dispose();
+  viewer.reflection?.dispose();
+  viewer.probe?.dispose();
   viewer.denoise.material.dispose(); viewer.denoise.dispose();
   viewer.denoiseTarget?.dispose();
   viewer.display?.material.dispose(); viewer.display?.dispose();
@@ -771,6 +777,8 @@ async function loadModel(url: string) {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     const scene = new THREE.Scene(); scene.add(gltf.scene);
+    const raster = profile.previewAppearance?.renderMode === "raster";
+    if (raster) { renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true; }
     const meshesById = new Map<string, THREE.Mesh[]>();
     const indexMeshes = (object: THREE.Object3D, inherited?: string, visible = true) => {
       const id = typeof object.userData.scene_node_id === "string" ? object.userData.scene_node_id : inherited;
@@ -828,6 +836,7 @@ async function loadModel(url: string) {
     });
     applyLights(gltf.scene, profile);
     const textures: THREE.Texture[] = [];
+    if (raster) textures.push(...await applyLightmaps(gltf.scene, profile.lightmaps ?? [], name => assetURL(name, url)));
     const world = profile.world;
     let environment: THREE.Texture;
     if (world.environmentUri) {
@@ -882,26 +891,40 @@ async function loadModel(url: string) {
     }
     const initialDirection = camera.getWorldDirection(new THREE.Vector3());
     const controls = new OrbitControls(camera, renderer.domElement);
-    const focusDistance = camera.position.distanceTo(center) || extent;
+    // A wide city foundation can put the orbit pivot hundreds of metres away.
+    const focusDistance = raster && (profile.camera?.dof?.focusDistance ?? 0) > 0 ?
+      profile.camera!.dof!.focusDistance : camera.position.distanceTo(center) || extent;
     controls.target.copy(exportedCamera ? camera.position.clone().addScaledVector(initialDirection, focusDistance) : center);
     controls.enableDamping = true; controls.update();
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
-    const tracer = new WebGLPathTracer(renderer);
-    tracer.bounces = 8;
-    tracer.transmissiveBounces = 12;
-    tracer.filterGlossyFactor = 0.2;
-    tracer.renderScale = Math.min(1, 1 / renderer.getPixelRatio());
-    tracer.tiles.set(1, 1);
-    tracer.minSamples = 1;
-    tracer.renderDelay = 100;
-    tracer.dynamicLowRes = true;
-    tracer.textureSize.set(1024, 1024);
-    tracer.setScene(scene, camera);
-    tracer.renderToCanvas = false;
+    const probe = raster && profile.previewAppearance?.reflectionProbe ?
+      captureEnvironment(renderer, scene, profile.previewAppearance.reflectionProbe, camera.far) : undefined;
+    if (probe) {
+      scene.environment = probe.texture; scene.environmentIntensity = 1;
+      limitRasterLights(scene, camera);
+    }
+    const reflection = raster && profile.previewAppearance?.planarReflection ?
+      addPlanarReflection(scene, gltf.scene, profile.previewAppearance.planarReflection) : undefined;
+    const tracer = raster ? undefined : new WebGLPathTracer(renderer);
+    if (tracer) {
+      tracer.bounces = 8;
+      tracer.transmissiveBounces = 12;
+      tracer.filterGlossyFactor = 0.2;
+      tracer.renderScale = Math.min(1, 1 / renderer.getPixelRatio());
+      tracer.tiles.set(1, 1);
+      tracer.minSamples = 1;
+      tracer.renderDelay = 100;
+      tracer.dynamicLowRes = true;
+      tracer.textureSize.set(1024, 1024);
+      tracer.setScene(scene, camera);
+      tracer.renderToCanvas = false;
+    }
     const display = await displayTransform(profile, textures);
     const effects = previewEffects(renderer, scene, camera, profile);
+    if (raster) renderer.shadowMap.needsUpdate = true;
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
-    const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true }) : undefined;
+    const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, samples: raster ? 4 : 0 }) : undefined;
+    let rasterDirty = true;
     const resize = new ResizeObserver(() => {
       const w = el("stage").clientWidth, h = el("stage").clientHeight;
       if (!w || !h) return;
@@ -919,13 +942,15 @@ async function loadModel(url: string) {
         camera.projectionMatrix.elements[0]! *= aspect / viewportAspect;
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
-      tracer.updateCamera();
+      tracer?.updateCamera();
+      rasterDirty = true;
       effects?.resize(w, h);
     });
     el("canvas").appendChild(renderer.domElement);
     const gl = renderer.getContext() as WebGL2RenderingContext;
     const position = camera.position.clone(), target = controls.target.clone();
     const previousPosition = position.clone(), previousQuaternion = camera.quaternion.clone();
+    const previousProjection = camera.projectionMatrix.clone();
     const frameTimer = setInterval(() => {
       if (mode !== "3d" || !viewer || viewer.tracer !== tracer) return;
       controls.update();
@@ -934,23 +959,26 @@ async function loadModel(url: string) {
         if (gl.clientWaitSync(viewer.gpuFence, 0, 0) === gl.TIMEOUT_EXPIRED) return;
         gl.deleteSync(viewer.gpuFence); viewer.gpuFence = undefined;
       }
-      if (!camera.position.equals(previousPosition) || !camera.quaternion.equals(previousQuaternion)) {
-        tracer.updateCamera(); previousPosition.copy(camera.position); previousQuaternion.copy(camera.quaternion);
+      if (!camera.position.equals(previousPosition) || !camera.quaternion.equals(previousQuaternion) || !camera.projectionMatrix.equals(previousProjection)) {
+        tracer?.updateCamera(); previousPosition.copy(camera.position); previousQuaternion.copy(camera.quaternion);
+        previousProjection.copy(camera.projectionMatrix);
+        rasterDirty = true;
         if (effects) effects.depthDirty = true;
       }
-      if (tracer.samples >= 512 && !effects?.animated) return;
-      if (tracer.samples < 512) tracer.renderSample();
-      if (tracer.samples >= 4) {
+      if (tracer && tracer.samples >= 512 && !effects?.animated) return;
+      if (!tracer && !rasterDirty && !effects?.animated) return;
+      if (tracer && tracer.samples < 512) tracer.renderSample();
+      if (tracer && tracer.samples >= 4) {
         (denoise.material as DenoiseMaterial).map = tracer.target.texture;
         if (denoiseTarget) {
           denoiseTarget.setSize(tracer.target.width, tracer.target.height);
           renderer.setRenderTarget(denoiseTarget); denoise.render(renderer); renderer.setRenderTarget(null);
         } else denoise.render(renderer);
-      } else if (denoiseTarget) {
+      } else if (denoiseTarget && (tracer || rasterDirty)) {
         // Preserve atmosphere and the display transform while orbiting, before samples converge.
-        denoiseTarget.setSize(tracer.target.width, tracer.target.height);
+        denoiseTarget.setSize(tracer?.target.width ?? renderer.domElement.width, tracer?.target.height ?? renderer.domElement.height);
         renderer.setRenderTarget(denoiseTarget); renderer.render(scene, camera); renderer.setRenderTarget(null);
-      } else renderer.render(scene, camera);
+      } else if (!denoiseTarget && (tracer || rasterDirty)) renderer.render(scene, camera);
       if (denoiseTarget) {
         if (effects) effects.render(denoiseTarget.texture, display);
         else if (display) {
@@ -958,15 +986,17 @@ async function loadModel(url: string) {
           display.render(renderer);
         }
       }
-      renderer.domElement.dataset.samples = tracer.samples.toFixed(1);
+      renderer.domElement.dataset.samples = tracer?.samples.toFixed(1) ?? "0";
+      renderer.domElement.dataset.frame = String(Number(renderer.domElement.dataset.frame ?? 0) + 1);
+      rasterDirty = false;
       viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
       gl.flush();
     }, 16);
-    viewer = { renderer, scene, camera, controls, tracer, denoise, denoiseTarget, display, effects, frameTimer,
+    viewer = { renderer, scene, camera, controls, tracer, reflection, probe, denoise, denoiseTarget, display, effects, frameTimer,
       position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
     resize.observe(el("stage"));
-    renderer.domElement.dataset.renderer = "path-tracing";
-    renderer.domElement.dataset.bounces = String(tracer.bounces);
+    renderer.domElement.dataset.renderer = raster ? "raster" : "path-tracing";
+    renderer.domElement.dataset.bounces = String(tracer?.bounces ?? 0);
     renderer.domElement.dataset.displayTransform = display ? "blender-lut" : "three-tone-mapping";
     renderer.domElement.dataset.samples = "0";
     renderer.domElement.dataset.effects = Object.keys(profile.postprocessing ?? {}).join(",");
@@ -1014,7 +1044,7 @@ function receive(data: unknown) {
   const state = next.workflowState, presentation = state?.presentation;
   const structural = presentation?.mode === "structural", pending = next.stage === "awaiting_review";
   el("status").textContent = busy ? next.job!.kind === "threert" ? "ThreeRT 渲染中" : next.job!.kind === "references" ? "Loading reference views" :
-    next.job!.kind === "create" ? "Preparing scene" : next.job!.kind === "preview" ? "Preparing 3D review preview" : `${next.job!.kind === "export" ? "Exporting" : "Rendering"} scene` :
+    next.job!.kind === "create" ? "Preparing scene" : next.job!.kind === "bake" ? "正在烘焙场景" : next.job!.kind === "preview" ? "Preparing 3D review preview" : `${next.job!.kind === "export" ? "Exporting" : "Rendering"} scene` :
     next.error ? next.job?.kind === "threert" ? "ThreeRT 渲染失败" : "Scene needs attention" : next.stage === "completed" ? "Ready" :
     next.stage === "best_effort" ? "Best version" : next.stage === "awaiting_review" ? "Confirm composition" :
     next.stage === "review" ? "Awaiting review" :

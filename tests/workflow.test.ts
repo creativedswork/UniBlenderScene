@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -13,11 +13,21 @@ import { createMcpServer } from "../src/service/server.js";
 import { writeGraphExport } from "../src/service/graph-export.js";
 
 class FakeBlender extends BlenderClient {
+  bakeExecutions = 0;
   failNext = false;
   failMessage = "Invalid Python edit";
   value = "initial";
   override async execute(code: string) {
     if (this.failNext) { this.failNext = false; throw new Error(this.failMessage); }
+    const bakeInfo = code.match(/^bake_info = json.loads\((".*")\)$/m);
+    if (bakeInfo) {
+      this.bakeExecutions++;
+      const directory = JSON.parse(code.match(/^directory = (".*")$/m)![1]!);
+      writeFileSync(join(directory, "prepared.blend"), this.value);
+      writeFileSync(join(directory, "bake.json"), JSON.stringify({ ...JSON.parse(JSON.parse(bakeInfo[1]!)),
+        bakedObjects: [], lightmaps: [], bakedTints: {}, materials: { objects: 0, textures: 0 } }));
+      return {};
+    }
     if (code.includes('obj = bpy.data.objects.get("Chair")')) {
       return { name: "Chair", type: "MESH", rotationMode: "QUATERNION", polygonCount: 42,
         matrixWorld: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
@@ -602,8 +612,50 @@ test("restores failed edits, refuses unfinished exports, accepts verified criter
   assert.equal(scene.stage, "completed");
 });
 
+test("standalone baking preserves workflow and invalidates prepared results when inputs or files change", async () => {
+  const { store, blender } = setup();
+  const scene = store.create("A cube"); await store.settled();
+  assert.throws(() => store.bake(scene.id), /review/);
+  preparePlan(store, scene, plan);
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, review(scene, 1, 95, true));
+  const source = readFileSync(store.path(scene, "best.blend"));
+  store.bake(scene.id, [{ objectName: "Cube", resolution: 128 }]); await store.settled();
+  assert.equal(scene.job?.status, "done", scene.error);
+  assert.equal(scene.stage, "completed"); assert.equal(scene.iteration, 1);
+  assert.equal(scene.bake?.lightingBakes[0]?.mode, "lightmap");
+  const firstId = scene.bake!.id;
+  store.bake(scene.id); await store.settled();
+  assert.equal(scene.bake?.cacheHit, true); assert.equal(blender.bakeExecutions, 1);
+  assert.deepEqual(readFileSync(store.path(scene, "best.blend")), source);
+  store.bake(scene.id, [{ objectName: "Cube", resolution: 256 }]); await store.settled();
+  assert.notEqual(scene.bake?.id, firstId); assert.equal(blender.bakeExecutions, 2);
+  const secondId = scene.bake!.id;
+  writeFileSync(store.path(scene, "best.blend"), "changed fixture checkpoint");
+  store.bake(scene.id); await store.settled();
+  assert.notEqual(scene.bake?.id, secondId); assert.equal(blender.bakeExecutions, 3);
+  unlinkSync(store.path(scene, `${scene.bake!.directory}/prepared.blend`));
+  store.bake(scene.id); await store.settled();
+  assert.equal(scene.bake?.cacheHit, false); assert.equal(blender.bakeExecutions, 4);
+  const metadataPath = store.path(scene, `${scene.bake!.directory}/bake.json`);
+  const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+  writeFileSync(metadataPath, JSON.stringify({ ...metadata, lightmaps: [{ uri: "lightmap-99.png" }] }));
+  store.bake(scene.id); await store.settled();
+  assert.equal(scene.bake?.cacheHit, false); assert.equal(blender.bakeExecutions, 5);
+  unlinkSync(store.path(scene, `${scene.bake!.directory}/prepared.blend`));
+  blender.failNext = true;
+  store.bake(scene.id); await store.settled();
+  assert.equal(scene.job?.status, "failed");
+  assert.equal(scene.stage, "completed");
+  assert.throws(() => readFileSync(metadataPath), /ENOENT/, "Failed rebuilds cannot retain a completion report");
+  store.bake(scene.id); await store.settled();
+  assert.equal(scene.job?.status, "done"); assert.equal(blender.bakeExecutions, 6);
+  assert.throws(() => store.bake(scene.id, [{ objectName: "Cube", resolution: 128, samples: 1 }]), /samples/);
+  assert.equal(scene.exportedIteration, undefined, "Baking does not publish an export");
+});
+
 test("explicit lighting bakes invalidate final export cache without changing the checkpoint", async () => {
-  const { store } = setup();
+  const { store, blender } = setup();
   const scene = store.create("A cube"); await store.settled(); preparePlan(store, scene, plan);
   store.edit(scene.id, "pass"); await store.settled();
   store.review(scene.id, review(scene, 1, 95, true));
@@ -635,6 +687,7 @@ test("explicit lighting bakes invalidate final export cache without changing the
   assert.equal(scene.exportAppearance?.exposureEV, 0.8);
   assert.deepEqual(scene.exportAppearance?.whiteBalance, [0.9, 1, 1.4]);
   assert.equal(scene.exportAppearance?.contrast, 1.3);
+  assert.equal(blender.bakeExecutions, 2, "Exporter and appearance changes reuse prepared textures");
   assert.throws(() => store.export(scene.id, false, undefined, { exposureEV: Infinity }), /appearance/);
   assert.throws(() => store.export(scene.id, false, undefined, { whiteBalance: [1, 0, 1] }), /appearance/);
   assert.throws(() => store.export(scene.id, false, undefined, { contrast: 3 }), /appearance/);
@@ -855,7 +908,7 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   await server.connect(a); await client.connect(b);
   try {
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 22);
+    assert.equal(tools.tools.length, 23);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_render_high_quality")?._meta?.["openai/widgetAccessible"], true);
     assert.ok(tools.tools.some((tool) => tool.name === "scene_preview"));
     const create = tools.tools.find((tool) => tool.name === "scene_create")!;

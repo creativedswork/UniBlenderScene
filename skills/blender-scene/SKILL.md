@@ -167,7 +167,9 @@ evidence through the service or report that it is not ready.
    Provide at most three ranked `repairs`. Measure reference anchors in
    composition and final reviews.
 8. Follow the returned stage. In `edit`, make the requested correction and repeat
-   the render/review loop. In `completed` or `best_effort`, call `scene_export`,
+   the render/review loop. In `completed` or `best_effort`, optionally run
+   `scene_bake` for static surface lightmaps (see [Blender code guidance](references/blender-code.md))
+   and poll `scene_get` until it completes. Then call `scene_export`,
    poll `scene_get` with `images: "none"` for completion, and provide the returned GLB, Blender file,
    and render links. In an MCP Apps host, open the bundled `scene_view` viewer.
    Delivered appearance defaults to ThreeRT when the native client is available;

@@ -15,12 +15,34 @@ available. Use imports for other modules you need.
 - The viewer exports the active camera, reconstructs lights from a render
   profile, and loads the world EXR when present. Blender compositor effects,
   volumes, and indirect lighting can differ in WebGL. Review the PNG render.
-- For a static opaque surface that needs closer WebGL lighting, set
-  `obj["codex_bake_lighting"] = 256` (or 512 for a large wall or floor). Export
-  bakes its direct and indirect light into an emissive texture on a copy of the
-  scene. Use this selectively because each surface adds export time and GLB
-  size. `obj["codex_preview_emissive_tint"] = [r, g, b]` optionally adjusts that
-  surface in the viewer without changing the reviewed Blender render.
+- For a clear interactive preview of static opaque surfaces, use
+  `scene_bake` after final review, with `lightingBakes` entries containing
+  `objectName`, `resolution` (start at 512), and `samples: 128`. The tool defaults
+  to `mode: "lightmap"`. Poll `scene_get`, then call `scene_export` to package
+  the prepared result. Prepare source material UVs
+  during scene production; the bake needs a free UV channel below 4. This
+  preserves PBR materials and source UVs, and selects raster preview without
+  progressive sampling. Deliver the render profile and `lightmap-*.png`
+  alongside the GLB; a standalone GLB viewer will not apply these lightmaps.
+  Each receiver adds bake time and texture storage, so select visible
+  surfaces and verify the result in the bundled viewer.
+  Baking preserves the reviewed checkpoint and workflow stage. Results are
+  reused while source content, bake settings and bake script version match;
+  changing only preview appearance does not rebake. Omitted `lightingBakes`
+  reuses the active selection; `[]` clears explicit receivers while source
+  object bake flags still apply.
+- For wet roads, `scene_export.previewAppearance.planarReflection` selects one
+  horizontal mesh by name. `reflectionProbe: [x, y, z]` captures the static
+  surroundings at a Blender Z-up position for metallic and glossy materials.
+  Compare the saved camera and orbit views; these captures approximate
+  reflections and require recapture after scene or lighting changes.
+- Use legacy appearance baking only when replacing the surface response is
+  acceptable: set `obj["codex_bake_lighting"]` to a texture resolution, or omit
+  `mode` in a legacy `scene_export.lightingBakes` entry. On `scene_bake`, request
+  `mode: "appearance"` explicitly. It replaces the prepared-copy shader with an
+  emissive texture. `obj["codex_preview_emissive_tint"] = [r, g, b]` adjusts that
+  texture in the viewer without changing the reviewed Blender render. Keep
+  reflective surfaces in their PBR materials when their response matters.
 - For a fresh scene, clear the default objects if any. For refinements, identify
   objects by their existing names and change only what the request requires.
 - Do not write outside the scene workspace, delete checkpoints, start background

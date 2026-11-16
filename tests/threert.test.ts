@@ -85,8 +85,19 @@ test("ThreeRT jobs preserve source/workflow, expose only current successful outp
     console.log(JSON.stringify({spp:args[args.indexOf('--spp')+1]}));`, { mode: 0o755 });
   class Exporter extends BlenderClient {
     override async execute(code: string) {
-      assert.match(code, /lighting_bakes = \[\]/);
       const directory = JSON.parse(code.match(/^directory = (".*")$/m)![1]!);
+      const bakeInfo = code.match(/^bake_info = json.loads\((".*")\)$/m);
+      if (bakeInfo) {
+        assert.match(code, /lighting_enabled = False/);
+        const info = JSON.parse(JSON.parse(bakeInfo[1]!));
+        writeFileSync(join(directory, "prepared.blend"), "source materials");
+        writeFileSync(join(directory, "bake.json"), JSON.stringify({ ...info,
+          bakedObjects: [], lightmaps: [], bakedTints: {}, materials: { objects: 0, textures: 0 } }));
+        return {};
+      }
+      const metadata = JSON.parse(JSON.parse(code.match(/^bake_metadata = json.loads\((".*")\)$/m)![1]!));
+      assert.equal(metadata.lightingEnabled, false);
+      assert.deepEqual(metadata.bakedObjects, []);
       writeFileSync(join(directory, "final.glb"), glb());
       writeFileSync(join(directory, "render-profile.json"), JSON.stringify(profile));
       return {};

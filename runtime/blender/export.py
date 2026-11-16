@@ -12,15 +12,11 @@ from mathutils import Matrix, Vector
 source = __SOURCE_BLEND__
 directory = __OUTPUT_DIRECTORY__
 structural_preview = __STRUCTURAL_PREVIEW__
-lighting_bakes = __LIGHTING_BAKES__
+prepared = __PREPARED_BLEND__
+bake_metadata = json.loads(__BAKE_METADATA_JSON__)
 preview_appearance = __PREVIEW_APPEARANCE__
-bpy.ops.wm.open_mainfile(filepath=source)
+bpy.ops.wm.open_mainfile(filepath=prepared or source)
 scene = bpy.context.scene
-for request in lighting_bakes:
-    obj = scene.objects.get(request["objectName"])
-    if obj is None or obj.type != "MESH" or obj.hide_render:
-        raise ValueError("Lighting bake requires a visible mesh: " + request["objectName"])
-    obj["codex_bake_lighting"] = request["resolution"]
 
 
 def volume_only(obj):
@@ -47,211 +43,6 @@ def upstream(socket, kind, seen=None):
             if found:
                 return found
     return None
-
-
-def bake_static_lighting(scene):
-    """Bake opted-in opaque meshes on the export copy into emissive glTF textures."""
-    candidates = [obj for obj in scene.objects if obj.type == "MESH" and obj.get("codex_bake_lighting")]
-    if not candidates:
-        return []
-    scene.render.engine = "CYCLES"
-    scene.cycles.samples = min(scene.cycles.samples, 16)
-    scene.render.bake.margin = 8
-    scene.render.bake.use_clear = True
-    baked = []
-    results = []
-    for obj in candidates:
-        resolution = int(obj["codex_bake_lighting"])
-        if resolution < 64 or resolution > 4096:
-            raise ValueError(f"Invalid light bake resolution on {obj.name}: {resolution}")
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        obj.data = bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph),
-                                                  preserve_all_data_layers=True, depsgraph=depsgraph)
-        obj.modifiers.clear()
-        uv = obj.data.uv_layers.new(name="BakedLighting")
-        obj.data.uv_layers.active = uv
-        uv_name = uv.name
-        bpy.ops.object.select_all(action="DESELECT")
-        obj.select_set(True)
-        bpy.context.view_layer.objects.active = obj
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.select_all(action="SELECT")
-        bpy.ops.uv.smart_project(island_margin=0.01)
-        bpy.ops.object.mode_set(mode="OBJECT")
-        image = bpy.data.images.new(f"{obj.name} baked lighting", width=resolution, height=resolution, alpha=False, float_buffer=True)
-        image.generated_color = (0, 0, 0, 1)
-        materials = []
-        for slot in obj.material_slots:
-            if slot.material is None:
-                slot.material = bpy.data.materials.new(f"{obj.name} material")
-            material = slot.material.copy()
-            material.use_nodes = True
-            slot.material = material
-            nodes = material.node_tree.nodes
-            for node in nodes:
-                node.select = False
-            target = nodes.new("ShaderNodeTexImage")
-            target.image = image
-            target.select = True
-            nodes.active = target
-            materials.append(material)
-        bpy.ops.object.select_all(action="DESELECT")
-        obj.select_set(True)
-        bpy.context.view_layer.objects.active = obj
-        bpy.ops.object.bake(type="COMBINED", pass_filter={"COLOR", "DIFFUSE", "DIRECT", "INDIRECT"}, uv_layer=uv_name)
-        pixels = array("f", [0]) * (resolution * resolution * 4)
-        image.pixels.foreach_get(pixels)
-        peak = max(1.0, max(value for i, value in enumerate(pixels) if i % 4 != 3 and math.isfinite(value)))
-        for i in range(len(pixels)):
-            if i % 4 != 3:
-                value = max(0.0, pixels[i]) / peak
-                pixels[i] = 12.92 * value if value <= 0.0031308 else 1.055 * value ** (1.0 / 2.4) - 0.055
-        # Float bake buffers contain linear radiance. glTF's PNG emissive map
-        # must contain sRGB bytes; packing a float buffer directly stays linear.
-        baked_image = bpy.data.images.new(f"{obj.name} lighting sRGB", width=resolution, height=resolution, alpha=False)
-        baked_image.colorspace_settings.name = "sRGB"
-        image = baked_image
-        image.pixels.foreach_set(pixels)
-        image.pack()
-        results.append((obj, materials, image, uv_name, peak))
-        baked.append(obj.name)
-    # Keep every source shader intact until all objects have sampled the lighting.
-    for obj, materials, image, uv_name, peak in results:
-        # Baked shaders use only this atlas. Export it as TEXCOORD_0 so renderers
-        # with one UV channel (including our path tracer) sample it correctly.
-        for layer in list(obj.data.uv_layers):
-            if layer.name != uv_name:
-                obj.data.uv_layers.remove(layer)
-        obj.data.update()
-        for material in materials:
-            nodes = material.node_tree.nodes
-            nodes.clear()
-            output = nodes.new("ShaderNodeOutputMaterial")
-            shader = nodes.new("ShaderNodeBsdfPrincipled")
-            shader.inputs["Base Color"].default_value = (0, 0, 0, 1)
-            shader.inputs["Roughness"].default_value = 1
-            shader.inputs["Emission Strength"].default_value = peak
-            texture = nodes.new("ShaderNodeTexImage")
-            texture.image = image
-            coordinates = nodes.new("ShaderNodeUVMap")
-            coordinates.uv_map = uv_name
-            material.node_tree.links.new(coordinates.outputs["UV"], texture.inputs["Vector"])
-            material.node_tree.links.new(texture.outputs["Color"], shader.inputs["Emission Color"])
-            material.node_tree.links.new(shader.outputs["BSDF"], output.inputs["Surface"])
-    return baked
-
-
-def bake_procedural_materials(scene):
-    """Bake linked shader inputs on the export copy, keeping lighting live."""
-    channels = ("Base Color", "Roughness", "Metallic", "Normal", "Emission Color")
-
-    def needs_bake(socket):
-        if not socket or not socket.is_linked:
-            return False
-        source = socket.links[0].from_node
-        if source.type == "NORMAL_MAP" and socket.name == "Normal":
-            return needs_bake(source.inputs.get("Color"))
-        if source.type != "TEX_IMAGE":
-            return True
-        vector = source.inputs.get("Vector")
-        if vector and vector.is_linked:
-            link = vector.links[0]
-            return not (link.from_node.type == "UVMAP" or
-                        (link.from_node.type == "TEX_COORD" and link.from_socket.name == "UV"))
-        return False
-
-    report = {"objects": 0, "textures": 0}
-    candidates = []
-    for obj in scene.objects:
-        if obj.type != "MESH" or obj.hide_get() or obj.hide_render or obj.get("codex_bake_lighting"):
-            continue
-        if any(material and material.use_nodes and any(
-            node.type == "BSDF_PRINCIPLED" and any(needs_bake(node.inputs.get(name)) for name in channels)
-            for node in material.node_tree.nodes)
-            for material in (slot.material for slot in obj.material_slots)):
-            candidates.append(obj)
-    if not candidates:
-        return report
-
-    original_engine, original_samples, original_device = scene.render.engine, scene.cycles.samples, scene.cycles.device
-    try:
-        scene.render.engine = "CYCLES"
-        scene.cycles.device = "CPU"
-        scene.cycles.samples = 1
-        scene.render.bake.margin = 8
-        for obj in candidates:
-            obj.data = obj.data.copy()
-            for slot in obj.material_slots:
-                if slot.material:
-                    slot.material = slot.material.copy()
-            if not obj.data.uv_layers:
-                bpy.ops.object.select_all(action="DESELECT")
-                obj.select_set(True)
-                bpy.context.view_layer.objects.active = obj
-                bpy.ops.object.mode_set(mode="EDIT")
-                bpy.ops.mesh.select_all(action="SELECT")
-                bpy.ops.uv.smart_project(island_margin=0.02)
-                bpy.ops.object.mode_set(mode="OBJECT")
-            report["objects"] += 1
-            for channel in channels:
-                records = []
-                if not any(slot.material and slot.material.use_nodes and any(
-                    node.type == "BSDF_PRINCIPLED" and needs_bake(node.inputs.get(channel))
-                    for node in slot.material.node_tree.nodes)
-                    for slot in obj.material_slots):
-                    continue
-                dimensions = sorted(obj.dimensions, reverse=True)
-                resolution = 1024 if dimensions[0] * dimensions[1] > 1.0 else 512
-                image = bpy.data.images.new(f"{obj.name} {channel} preview", width=resolution,
-                                            height=resolution, alpha=False, float_buffer=channel == "Emission Color")
-                image.colorspace_settings.name = "sRGB" if channel in ("Base Color", "Emission Color") else "Non-Color"
-                for slot in obj.material_slots:
-                    material = slot.material
-                    if not material or not material.use_nodes:
-                        continue
-                    tree = material.node_tree
-                    node = next((node for node in tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
-                    socket = node.inputs.get(channel) if node else None
-                    output = next((node for node in tree.nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None)
-                    if not output:
-                        continue
-                    target = tree.nodes.new("ShaderNodeTexImage")
-                    target.image = image
-                    for existing in tree.nodes:
-                        existing.select = False
-                    target.select = True
-                    tree.nodes.active = target
-                    if socket and needs_bake(socket):
-                        surface = output.inputs["Surface"]
-                        sources = [link.from_socket for link in surface.links]
-                        emission = None
-                        if channel != "Normal":
-                            emission = tree.nodes.new("ShaderNodeEmission")
-                            tree.links.new(socket.links[0].from_socket, emission.inputs["Color"])
-                            tree.links.new(emission.outputs[0], surface)
-                        records.append((tree, socket, target, surface, sources, emission))
-                bpy.ops.object.select_all(action="DESELECT")
-                obj.select_set(True)
-                bpy.context.view_layer.objects.active = obj
-                bpy.ops.object.bake(type="NORMAL" if channel == "Normal" else "EMIT", use_clear=True, margin=8)
-                for tree, socket, target, surface, sources, emission in records:
-                    if emission:
-                        tree.nodes.remove(emission)
-                        for source in sources:
-                            tree.links.new(source, surface)
-                    for link in list(socket.links):
-                        tree.links.remove(link)
-                    if channel == "Normal":
-                        normal = tree.nodes.new("ShaderNodeNormalMap")
-                        tree.links.new(target.outputs["Color"], normal.inputs["Color"])
-                        tree.links.new(normal.outputs["Normal"], socket)
-                    else:
-                        tree.links.new(target.outputs["Color"], socket)
-                    target.image.pack()
-                report["textures"] += 1
-    finally:
-        scene.render.engine, scene.cycles.samples, scene.cycles.device = original_engine, original_samples, original_device
-    return report
 
 
 def compositor_profile(scene):
@@ -467,12 +258,10 @@ try:
         scale_y=scene.render.pixel_aspect_y) if camera else None
     if camera:
         camera.name = "__CodexBlenderActiveCamera"
-    baked_objects = [] if structural_preview else bake_static_lighting(scene)
-    material_bakes = {"objects": 0, "textures": 0} if structural_preview else bake_procedural_materials(scene)
-    baked_tints = {
-        name: list(scene.objects[name]["codex_preview_emissive_tint"])
-        for name in baked_objects if "codex_preview_emissive_tint" in scene.objects[name]
-    }
+    baked_objects = bake_metadata.get("bakedObjects", [])
+    lightmaps = bake_metadata.get("lightmaps", [])
+    material_bakes = bake_metadata.get("materials", {"objects": 0, "textures": 0})
+    baked_tints = bake_metadata.get("bakedTints", {})
     profile = {
         "version": 1,
         "previewMode": "structural" if structural_preview else "final",
@@ -507,8 +296,13 @@ try:
             "backgroundEnvironmentUri": background_uri,
         },
         "postprocessing": {} if structural_preview else compositor_profile(scene),
-        "previewAppearance": {} if structural_preview else preview_appearance,
+        "previewAppearance": {} if structural_preview else {
+            **preview_appearance,
+            **({"renderMode": "raster"} if lightmaps or preview_appearance.get("planarReflection") or preview_appearance.get("reflectionProbe") else {}),
+        },
         "bakedObjects": baked_objects,
+        "bake": {key: bake_metadata[key] for key in ("id", "sourceBlendSha256", "pipelineHash") if key in bake_metadata},
+        "lightmaps": lightmaps,
         "bakedTints": baked_tints,
         "materials": material_bakes,
         "lights": [],
