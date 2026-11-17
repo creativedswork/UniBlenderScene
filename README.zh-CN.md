@@ -47,8 +47,30 @@
 
 ## 快速开始
 
-按以下四步，在 macOS 或 Linux 上通过 Codex 体验第一个本地场景。
-开始前，请安装 Git、Node.js 22+、Blender 4.5+ 和 Codex，确保终端可以使用 `codex` CLI，并登录 Codex。启动脚本还需要 `lsof` 和 `ps`。
+先准备环境，再按以下四步，在 macOS 或 Linux 上通过 Codex 体验第一个本地场景。
+
+### 准备环境
+
+本地创建场景必须安装 Blender。local launcher 会启动已安装的 Blender 和 MCP 服务，**不会安装 Blender 或 Node.js**。
+
+| 依赖 | 安装与检查 |
+| --- | --- |
+| Node.js 22+ 和 npm | 从 [Node.js 下载页](https://nodejs.org/en/download)安装，再运行 `node --version` 和 `npm --version` 检查。 |
+| Blender 4.5+ | 从 [Blender 下载页](https://www.blender.org/download/)下载安装包，按下方对应平台的说明安装。 |
+| Git 和 Codex | 安装后运行 `git --version` 和 `codex --version` 检查，并登录 Codex。 |
+| `lsof` 和 `ps` | 运行 `command -v lsof` 和 `command -v ps` 检查。若缺失，通过系统包管理器安装。 |
+
+- **macOS：** 打开下载的 Blender `.dmg`，将 `Blender.app` 拖入 `/Applications`。可参照 [macOS 安装指南](https://docs.blender.org/manual/en/latest/getting_started/installing/macos.html)，然后检查：
+
+  ```bash
+  "/Applications/Blender.app/Contents/MacOS/Blender" --version
+  ```
+
+- **Linux：** 下载适合本机架构的 Blender 压缩包并解压，详见 [Linux 安装指南](https://docs.blender.org/manual/en/latest/getting_started/installing/linux.html)。若 `blender` 已在 `PATH` 中，运行 `blender --version`；否则运行 `"/absolute/path/to/extracted-blender/blender" --version`，并在第 2 步将该可执行文件路径设为 `BLENDER_BIN`。
+
+确认 Blender 输出的版本为 4.5 或以上，再继续。如果检查提示命令或文件不存在，请先完成对应依赖的安装。
+
+### 创建第一个场景
 
 1. **下载并准备插件。** 在终端中执行：
 
