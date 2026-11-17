@@ -66,9 +66,38 @@ Provider access, API keys and generation costs are configured separately. See th
 
 ## Quick start
 
-Follow these four steps for a first local scene in Codex on macOS or Linux.
-Before starting, install Git, Node.js 22+, Blender 4.5+, and Codex with the
-`codex` CLI available. Sign in to Codex. The launcher also requires `lsof` and `ps`.
+Prepare the environment, then follow the four steps below for a first local
+scene in Codex on macOS or Linux.
+
+### Prepare your environment
+
+Blender is required for local scene creation. The local launcher starts an
+installed Blender and the MCP service; it does **not** install Blender or Node.js.
+
+| Dependency | Installation and check |
+| --- | --- |
+| Node.js 22+ and npm | Install from [Node.js downloads](https://nodejs.org/en/download), then check `node --version` and `npm --version`. |
+| Blender 4.5+ | Install from [Blender downloads](https://www.blender.org/download/), following the platform instructions below. |
+| Git and Codex | Install both, check `git --version` and `codex --version`, and sign in to Codex. |
+| `lsof` and `ps` | Check `command -v lsof` and `command -v ps`. If either is missing, install it with your system's package manager. |
+
+- **macOS:** open the downloaded Blender `.dmg` and drag `Blender.app` into
+  `/Applications`. Follow the [macOS installation guide](https://docs.blender.org/manual/en/latest/getting_started/installing/macos.html), then verify:
+
+  ```bash
+  "/Applications/Blender.app/Contents/MacOS/Blender" --version
+  ```
+
+- **Linux:** extract the Blender archive for your architecture, following the
+  [Linux installation guide](https://docs.blender.org/manual/en/latest/getting_started/installing/linux.html).
+  Check `blender --version` if it is on `PATH`; otherwise run
+  `"/absolute/path/to/extracted-blender/blender" --version` and use that executable
+  as `BLENDER_BIN` in step 2.
+
+Confirm that Blender reports version 4.5 or later before continuing. If a check
+reports a missing command or file, finish installing that dependency first.
+
+### Create your first scene
 
 1. **Download the plugin and prepare it.** Run in a terminal:
 
