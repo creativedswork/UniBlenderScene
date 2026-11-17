@@ -5,7 +5,8 @@ description: Set up the UniBlenderScene Blender bridge, MCP service, and host co
 
 # Set up UniBlenderScene
 
-Read `README.md` at the plugin root for commands and client-specific installation.
+Read `docs/quick-start.md` for first-time setup and `docs/operations.md` for
+commands and client-specific installation.
 Check Node.js 22 or later and a dedicated Blender 4.5 or later installation.
 
 Run installation, build and service startup commands from the plugin root;
