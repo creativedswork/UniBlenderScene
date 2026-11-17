@@ -47,6 +47,13 @@ flowchart LR
 | `description` | 对象、部件或分组的识别特征。 |
 | `relations` | 另存为节点之间的空间或语义关系，并引用稳定 ID。 |
 
+新计划可在 `plan.relations` 中声明独立关系节点，以参与对象和角色连接
+`graph` 节点，形成资产与关系的二部图；`parentId` 继续表示对象层级。
+独立关系绑定验收标准，在相应阶段和最终复核中逐项提交结果。当前数值检查
+覆盖世界坐标包围盒的水平支撑、中心对齐和沿轴间距，其他关系使用视觉证据。
+字段、限制和操作步骤见 [空间关系工作流](../skills/blender-scene/references/relations.md)，
+对照方法见 [独立空间关系对照验证](scene-relations-comparison.md)。
+
 图谱必须检查 ID 与对象名引用、父节点存在性、层级环、关系端点及首轮骨架覆盖。重要主体、身份明显的小物件和需要单独检查的部件应有节点。对象是否已经建成是运行状态，不因它出现在计划图谱里就视为已完成。参考项目的类型和检查位于 `canova_code_server/src/host-tools/workflow-memory.ts`；本插件应把相应的数据和状态存入 `SceneStore`，放在 `.canova/runs/<scene-id>/` 下。
 
 ### 图谱与模型的一致性

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { SceneNode } from "./store.js";
+import type { SceneRelation } from "./relations.js";
 
 type GltfNode = { name?: string; mesh?: number; camera?: number; children?: number[];
   extras?: { scene_node_id?: string } };
@@ -17,7 +18,7 @@ export function readGlbNodes(path: string): GltfNode[] {
 export function writeGraphExport(directory: string, iteration: number, graph: SceneNode[], outcome: string, gaps: string[],
   source: { blend: string; render: string; kind: string; purpose: string; phase: string | null;
     revisionId?: string; contentIteration?: number } = { blend: "best.blend", render: "best.png", kind: "best", purpose: "delivery", phase: null },
-  sceneDirectory = resolve(directory, "../..")): void {
+  sceneDirectory = resolve(directory, "../.."), relations: SceneRelation[] = []): void {
   const glb = join(directory, "final.glb");
   const nodes = readGlbNodes(glb);
   const index = new Map<string, number[]>();
@@ -59,7 +60,7 @@ export function writeGraphExport(directory: string, iteration: number, graph: Sc
   for (const light of (profile.lights ?? []) as { energy?: number }[]) if (!Number.isFinite(light.energy) || light.energy! < 0) {
     throw new Error("Export profile has invalid light energy.");
   }
-  const graphData = { version: 1, iteration, glbSha256, nodes: output };
+  const graphData = { version: 1, iteration, glbSha256, nodes: output, relations };
   writeFileSync(join(directory, "scene-graph.json"), JSON.stringify(graphData, null, 2));
   profile.iteration = iteration;
   profile.source = { kind: source.kind, purpose: source.purpose, phase: source.phase, iteration,

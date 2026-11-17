@@ -495,10 +495,98 @@ bpy.context.scene.render.resolution_y=128
   assert.ok(lightmapManifest.files.includes(lightmap.uri));
   assert.equal(lightmapManifest.bake.id, prepared.bake.id);
   await writeFile(join(root, "lightmap-scene.json"), JSON.stringify(lightmapped, null, 2));
+  // Measure through MCP and SceneStore on the dedicated test bridge, including
+  // parent transforms, inherited tags and an abbreviated object inventory.
+  const relationScene = await call("scene_create", { prompt: "Primitive row on a base for spatial relation integration" });
+  const relationId = relationScene.structuredContent!.id as string;
+  await poll(relationId);
+  const relationGraph = [
+    { id: "row", label: "Row", kind: "group", parentId: null, blenderObjectNames: ["RowRoot"], description: "Row group", status: "built" },
+    ...[0, 1, 2].map((i) => ({ id: `item${i}`, label: `Item ${i}`, kind: "object", parentId: "row",
+      blenderObjectNames: [`Item${i}Root`], description: "Primitive row member", status: "built" })),
+    { id: "base", label: "Base", kind: "object", parentId: "row", blenderObjectNames: ["Base"], description: "Horizontal base", status: "built" },
+  ];
+  const members = [0, 1, 2].map((i) => ({ nodeId: `item${i}`, role: "member" }));
+  const relationDefinitions = [
+    { id: "contact", type: "support", description: "First item rests on base", criterionIds: ["layout"], axis: "z", tolerance: 0.001,
+      participants: [{ nodeId: "item0", role: "subject" }, { nodeId: "base", role: "support" }] },
+    { id: "row-alignment", type: "alignment", description: "Centers share world Y", criterionIds: ["layout"], axis: "y", tolerance: 0.001, participants: members },
+    { id: "row-spacing", type: "spacing", description: "Centers are four world units apart", criterionIds: ["layout"], axis: "x", tolerance: 0.001, spacing: 4, participants: members },
+  ];
+  await planFixture({ sceneId: relationId, summary: "Three primitives in a row on a base", graph: relationGraph, relations: relationDefinitions,
+    steps: ["Build primitives and verify support, alignment and spacing"], criteria: [{ id: "layout", severity: "blocker", description: "Supported and evenly spaced row" }] });
+  const rowBuilt = await call("scene_edit", { sceneId: relationId, code: `
+from mathutils import Vector
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete(use_global=False)
+row = bpy.data.objects.new('RowRoot', None)
+bpy.context.collection.objects.link(row)
+row.location = (10, 5, 0)
+row.scale = (2, 1, 1)
+for i, x in enumerate([-2, 0.5, 2]):
+    owner = bpy.data.objects.new('Item%dRoot' % i, None)
+    bpy.context.collection.objects.link(owner)
+    owner['scene_node_id'] = 'item%d' % i
+    owner.parent = row
+    owner.location = (x, 0, 1.5)
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    mesh = bpy.context.object
+    mesh.name = 'Piece%d' % i
+    mesh.parent = owner
+    mesh.location = (0, 0, 0)
+    if i == 0:
+        bpy.ops.mesh.primitive_cube_add(size=100)
+        hidden = bpy.context.object
+        hidden.parent = owner
+        hidden.hide_render = True
+bpy.ops.mesh.primitive_cube_add(size=1, location=(10, 5, 0.5))
+base = bpy.context.object
+base.name = 'Base'
+base.scale = (20, 10, 1)
+base['scene_node_id'] = 'base'
+for i in range(305):
+    empty = bpy.data.objects.new('InventoryPadding%d' % i, None)
+    bpy.context.collection.objects.link(empty)
+bpy.ops.object.camera_add(location=(23, -15, 15))
+camera = bpy.context.object
+camera.rotation_euler = (Vector((10, 5, 1)) - camera.location).to_track_quat('-Z', 'Y').to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.object.light_add(type='AREA', location=(10, 0, 10))
+bpy.context.object.data.energy = 1000
+bpy.context.scene.render.engine = 'CYCLES'
+bpy.context.scene.cycles.samples = 1
+bpy.context.scene.render.resolution_x = 64
+bpy.context.scene.render.resolution_y = 64
+` });
+  assert.equal(rowBuilt.isError, undefined, JSON.stringify(rowBuilt.content));
+  const badRow = await poll(relationId);
+  assert.equal(badRow.summary.inventoryTruncated, true);
+  assert.deepEqual(badRow.inspection.summary.relationBounds.item0, { min: [5, 4.5, 1], max: [7, 5.5, 2] });
+  assert.deepEqual(badRow.inspection.summary.relationChecks.map((c: any) => c.status), ["passed", "passed", "failed"]);
+  const firstRelationReviews = badRow.inspection.summary.relationChecks.map((c: any) => ({ relationId: c.relationId,
+    passed: c.status === "passed", evidence: c.evidence, ...(c.status === "failed" ? { correction: "Move middle item to local X=0" } : {}) }));
+  const falsePass = await call("scene_review", { sceneId: relationId, iteration: badRow.iteration, inspectionId: badRow.inspection.id,
+    criteria: [{ id: "layout", passed: true, evidence: "Attempt to override failed spacing measurement" }],
+    relationReviews: firstRelationReviews.map((r: any) => ({ ...r, passed: true })),
+    visualScore: 100, regressions: [], repairable: true, nextAction: "Export" });
+  assert.equal(falsePass.isError, true);
+  await reviewFixture({ sceneId: relationId, iteration: badRow.iteration, criteria: [{ id: "layout", passed: false, evidence: "Measured unequal row gaps" }],
+    relationReviews: firstRelationReviews, visualScore: 60, regressions: [], repairable: true, nextAction: "Fix middle item" });
+  await call("scene_edit", { sceneId: relationId, code: "bpy.data.objects['Item1Root'].location.x = 0" });
+  const fixedRow = await poll(relationId);
+  assert.deepEqual(fixedRow.inspection.summary.relationChecks.map((c: any) => c.status), ["passed", "passed", "passed"]);
+  await reviewFixture({ sceneId: relationId, iteration: fixedRow.iteration, criteria: [{ id: "layout", passed: true, evidence: "Measured row restored; this test checks mechanics, not visual quality" }],
+    relationReviews: fixedRow.inspection.summary.relationChecks.map((c: any) => ({ relationId: c.relationId, passed: true, evidence: c.evidence })),
+    visualScore: 90, regressions: [], repairable: false, nextAction: "Export fixture" });
+  await call("scene_export", { sceneId: relationId });
+  const rowExport = await poll(relationId);
+  const rowGraphURL = rowExport.artifacts.find((file: any) => file.name === "scene-graph.json").url;
+  assert.deepEqual((await (await fetch(rowGraphURL)).json()).relations, relationDefinitions);
+  await writeFile(join(root, "relation-scene.json"), JSON.stringify(rowExport, null, 2));
   const boundedRevisionCases = await testBoundedRevisionGuard(new BlenderClient("127.0.0.1", blenderPort), root);
   const guardPerformance = await testGuardPerformance(new BlenderClient("127.0.0.1", blenderPort), root);
   const report = {
-    status: "passed", tools: tools.tools.length, sceneId: id, reviewPreviewVerified: true, boundedRevisionCases, guardPerformance, experienceLibrary,
+    status: "passed", tools: tools.tools.length, sceneId: id, relationSceneId: relationId, reviewPreviewVerified: true, boundedRevisionCases, guardPerformance, experienceLibrary,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
     checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "continued scene reference input", "failed-edit checkpoint recovery"],
   };

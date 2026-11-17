@@ -13,6 +13,7 @@ import { createMcpServer } from "../src/service/server.js";
 import { writeGraphExport } from "../src/service/graph-export.js";
 
 class FakeBlender extends BlenderClient {
+  relationBounds?: Record<string, { min: number[]; max: number[] }>;
   bakeExecutions = 0;
   failNext = false;
   failMessage = "Invalid Python edit";
@@ -42,7 +43,7 @@ class FakeBlender extends BlenderClient {
       const render = line.match(/render\.filepath = (".*")/);
       if (render) writeFileSync(JSON.parse(render[1]!), Buffer.from(code.includes('result = {"reviewViews": 5}') ? "review" : "render"));
     }
-    return { objects: [], camera: "Camera" };
+    return { objects: [], camera: "Camera", ...(this.relationBounds ? { relationBounds: this.relationBounds } : {}) };
   }
 }
 const plan: Plan = {
@@ -818,6 +819,39 @@ test("staged review pauses at composition and resumes from the same checkpoint",
   assert.equal(scene.stage, "completed");
 });
 
+test("relation review binds measured geometry to criteria and survives service restart", async () => {
+  const { store, blender, root } = setup();
+  const scene = store.create("Two primitives with an explicit support relation");
+  await store.settled();
+  const relation = { id: "cube-on-base", type: "support" as const, description: "Cube rests on base",
+    participants: [{ nodeId: "cube", role: "subject" }, { nodeId: "base", role: "support" }],
+    criterionIds: ["cube"], axis: "z" as const, tolerance: 0.01 };
+  const graph: SceneNode[] = [...plan.graph!, { id: "base", label: "Base", kind: "object", parentId: null,
+    blenderObjectNames: ["Base"], description: "Base primitive" }];
+  const relationPlan = { ...plan, graph, relations: [relation], assets: [...plan.assets!, { nodeId: "base", kind: "structure" as const, reason: "Primitive base" }] };
+  assert.throws(() => store.plan(scene.id, { ...relationPlan, relations: [{ ...relation, criterionIds: ["missing"] }] }), /criterionIds/);
+  preparePlan(store, scene, relationPlan);
+  blender.relationBounds = { cube: { min: [0, 0, 2], max: [1, 1, 3] }, base: { min: [-1, -1, 0], max: [2, 2, 1] } };
+  store.edit(scene.id, "result = {}"); await store.settled();
+  assert.equal((scene.inspection!.summary.relationChecks as { status: string }[])[0]!.status, "failed");
+  const oldInspection = scene.inspection!.id;
+  const relationReview = { relationId: relation.id, passed: true, evidence: "Measured and visually inspected support" };
+  assert.throws(() => store.review(scene.id, review(scene, 1, 95, true)), /active relation/);
+  assert.throws(() => store.review(scene.id, { ...review(scene, 1, 95, true), relationReviews: [relationReview] }), /cannot pass/);
+  assert.throws(() => store.review(scene.id, { ...review(scene, 1, 95, true), relationReviews: [{ ...relationReview, passed: false, correction: "Lower cube" }] }), /criterion cannot pass/);
+  store.review(scene.id, { ...review(scene, 1, 60, false), relationReviews: [{ ...relationReview, passed: false, correction: "Lower cube" }] });
+  assert.equal(scene.stage, "edit");
+  blender.relationBounds.cube = { min: [0, 0, 1], max: [1, 1, 2] };
+  store.edit(scene.id, "result = {}"); await store.settled();
+  assert.throws(() => store.review(scene.id, { ...review(scene, 2, 95, true), inspectionId: oldInspection, relationReviews: [relationReview] }), /inspectionId/);
+  const resumed = new SceneStore(root, blender);
+  const restored = resumed.get(scene.id);
+  assert.equal(restored.plan!.relations![0]!.id, relation.id);
+  assert.equal((restored.inspection!.summary.relationChecks as { status: string }[])[0]!.status, "passed");
+  resumed.review(scene.id, { ...review(restored, 2, 95, true), relationReviews: [relationReview] });
+  assert.equal(restored.stage, "completed");
+});
+
 test("GLB export maps stable IDs across multiple meshes and rejects missing built nodes", () => {
   const root = mkdtempSync(join(tmpdir(), "uni-graph-export-"));
   const directory = join(root, "artifacts", "7"); mkdirSync(directory, { recursive: true });
@@ -833,9 +867,12 @@ test("GLB export maps stable IDs across multiple meshes and rejects missing buil
     { id: "root", label: "Root", kind: "group", parentId: null, blenderObjectNames: [], description: "All", status: "built" },
     { id: "subject", label: "Subject", kind: "object", parentId: "root", blenderObjectNames: ["Original name"], description: "Main", status: "built" },
   ];
-  writeGraphExport(directory, 7, graph, "completed", []);
+  const relations = [{ id: "subject-in-group", type: "semantic" as const, description: "Subject belongs to the composition",
+    participants: [{ nodeId: "root", role: "group" }, { nodeId: "subject", role: "subject" }], criterionIds: ["layout"] }];
+  writeGraphExport(directory, 7, graph, "completed", [], undefined, root, relations);
   const output = JSON.parse(readFileSync(join(directory, "scene-graph.json"), "utf8"));
   assert.deepEqual(output.nodes[1].gltfNodeIndices, [1, 2]);
+  assert.deepEqual(output.relations, relations);
   assert.equal(output.nodes[0].status, "renderable");
   assert.equal(output.nodes[1].status, "renderable");
   assert.equal(JSON.parse(readFileSync(join(directory, "render-profile.json"), "utf8")).iteration, 7);

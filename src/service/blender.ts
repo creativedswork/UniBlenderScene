@@ -44,7 +44,7 @@ export class BlenderClient {
   }
 }
 
-export function sceneSummaryCode(): string {
+export function sceneSummaryCode(graph?: { id: string; parentId: string | null; blenderObjectNames: string[] }[]): string {
   return `
 bpy.context.view_layer.update()
 result = {
@@ -63,7 +63,39 @@ result = {
     "exposure": bpy.context.scene.view_settings.exposure,
     "viewTransform": bpy.context.scene.view_settings.view_transform,
     "resolution": [bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y]
-}`;
+}
+${graph ? relationBoundsCode(graph) : ""}`;
+}
+
+function relationBoundsCode(graph: { id: string; parentId: string | null; blenderObjectNames: string[] }[]): string {
+  return `
+from mathutils import Vector as _relation_vector
+import math as _relation_math, json as _relation_json
+_relation_graph = {n['id']: n for n in _relation_json.loads(${JSON.stringify(JSON.stringify(graph))})}
+_relation_names = {name: n['id'] for n in _relation_graph.values() for name in n['blenderObjectNames']}
+_relation_bounds = {}
+_relation_depsgraph = bpy.context.evaluated_depsgraph_get()
+for _obj in bpy.context.scene.objects:
+    if _obj.type != 'MESH' or _obj.hide_render: continue
+    _owner, _node_id = _obj, None
+    while _owner:
+        _node_id = _owner.get('scene_node_id') or _relation_names.get(_owner.name)
+        if _node_id: break
+        _owner = _owner.parent
+    if _node_id not in _relation_graph: continue
+    _evaluated = _obj.evaluated_get(_relation_depsgraph)
+    if not len(_evaluated.data.vertices): continue
+    _corners = [_evaluated.matrix_world @ _relation_vector(c) for c in _evaluated.bound_box]
+    _min = [min(c[i] for c in _corners) for i in range(3)]
+    _max = [max(c[i] for c in _corners) for i in range(3)]
+    if not all(_relation_math.isfinite(v) for v in _min + _max): continue
+    while _node_id in _relation_graph:
+        _box = _relation_bounds.setdefault(_node_id, {'min': _min[:], 'max': _max[:]})
+        _box['min'] = [min(a,b) for a,b in zip(_box['min'], _min)]
+        _box['max'] = [max(a,b) for a,b in zip(_box['max'], _max)]
+        _node_id = _relation_graph[_node_id]['parentId']
+result['relationBounds'] = _relation_bounds
+`;
 }
 
 // Keep the stage contract in the bridge transaction: a violation throws before

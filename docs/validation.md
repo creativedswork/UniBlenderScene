@@ -432,6 +432,33 @@ download. It recorded no JavaScript page errors.
 The image shows the bundled viewer with the integration scene. WebGL lighting
 approximates Blender; this check does not establish pixel equivalence.
 
+## Independent spatial relation experiment — 2026-11-17
+
+The `codex/scene-relation-graph` branch starts at `main` commit `dec2998` and
+uses experimental plugin version `0.3.5-relations.1`. It adds independent
+relation nodes alongside the object hierarchy, per-stage relation reviews, and
+world-space bounding-box checks for support, alignment and spacing. Other
+relations use host-reviewed visual evidence; no layout solver is included.
+
+Validation performed:
+
+- `npm run check`, `npm run build`, and all 79 `npm test` cases passed.
+- `npm run test:blender` passed with Blender 5.1.1 on a dedicated test bridge.
+  A transformed row fixture detected unequal world-space center gaps, rejected a
+  passing review of that failed measurement, and passed after correction. It
+  also checked inherited stable IDs, parent scaling, hidden mesh exclusion,
+  measurements beyond the 300-object inventory limit, and exported relations.
+- The local Codex plugin was installed at `0.3.5-relations.1`; installed manifest,
+  relation Skill and service source hashes matched the branch. The local service
+  reported that version and exposed both relation schemas across its 23 tools.
+  A saved scene remained readable and a new empty scene completed creation on the
+  replacement dedicated bridge. The existing run directory was preserved.
+
+Runtime evidence is under `.canova/runs/`, outside Git. These checks establish
+implementation behavior and local installation, not improved visual quality,
+GitHub publication, remote deployment or plugin-directory approval. Use the
+[comparison procedure](scene-relations-comparison.md) to evaluate scene quality.
+
 ## Scope
 
 The package adapts the scene workflow for a host-supplied model. It does not

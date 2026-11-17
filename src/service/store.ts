@@ -4,6 +4,7 @@ import { basename, delimiter, isAbsolute, relative, resolve, sep } from "node:pa
 import { open, readFile, realpath } from "node:fs/promises";
 import { BlenderClient, factorGuardCode, inspectObjectCode, renderCode, sceneSummaryCode, structuralShadingCode } from "./blender.js";
 import { writeGraphExport } from "./graph-export.js";
+import { checkRelations, relationsForScope, validateRelations, verifyRelationReviews, type SceneRelation, type RelationCheck, type RelationReview } from "./relations.js";
 import { verifyAssetStrategy, verifyGraphReview, type AssetRequirement, type AssetStrategy, type GraphReview } from "./workflow-guards.js";
 import { ExperienceLibrary, fileHash, type RetrospectiveInput, type Replay, type FixtureResult } from "./experience.js";
 import { renderThreeRT, threeRTCapability } from "./threert.js";
@@ -17,6 +18,7 @@ export type Plan = {
   summary: string; criteria: Criterion[]; steps: string[]; visualThreshold: number;
   referenceAnchors?: ReferenceAnchor[];
   graph?: SceneNode[];
+  relations?: SceneRelation[];
   assets?: AssetRequirement[];
   workflow?: { stages: { name: StageName; criterionIds: string[]; budget: number }[]; compositionApproval?: boolean };
 };
@@ -45,6 +47,7 @@ export type SceneNode = { id: string; label: string; kind: "group" | "object" | 
   blenderObjectNames: string[]; description: string; status?: "planned" | "built" | "hidden" | "unsupported";
   relations?: { targetId: string; description: string }[] };
 export type Review = {
+  relationReviews?: RelationReview[];
   inspectionId?: string; phase?: StageName; revisionId?: string;
   referenceEvidence?: { reference: string; observation: string }[];
   iteration: number;
@@ -566,6 +569,7 @@ ${sceneSummaryCode()}`);
     }
     if (plan.graph) validateSceneGraph(plan.graph);
     if (!plan.graph?.length || !plan.assets) throw new Error("Plan needs a Scene Graph and explicit asset requirements.");
+    validateRelations(plan.graph, plan.criteria, plan.relations ?? []);
     const subjects = plan.graph.filter((n) => n.kind !== "group");
     if (plan.assets.length !== subjects.length || new Set(plan.assets.map((a) => a.nodeId)).size !== subjects.length ||
         subjects.some((n) => !plan.assets!.some((a) => a.nodeId === n.id && a.reason.trim() &&
@@ -708,9 +712,10 @@ for _asset in _provider_assets:
     if not _matches: raise RuntimeError('Import and tag the recorded provider asset before rendering: ' + _asset['node'])
 bpy.ops.wm.save_as_mainfile(filepath=${py(current)})
 ${renderCode(this.path(scene, render), this.workflowState(scene).presentation.mode === "structural")}
-${sceneSummaryCode()}`);
+${sceneSummaryCode(scene.plan?.relations?.length ? scene.plan.graph : undefined)}`);
         scene.render = render;
         scene.renderMode = this.workflowState(scene).presentation.mode;
+        scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds);
         scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: activeStage ?? "scene", summary: scene.summary };
         scene.currentContentIteration = scene.iteration;
         mkdirSync(this.path(scene, "scripts"), { recursive: true });
@@ -757,6 +762,14 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       throw new Error("Review must bind the current runtime inspectionId from scene_get.");
     }
     const expectedIds = workflowStage?.name === "final" || !workflowStage ? scene.plan.criteria.map((item) => item.id) : workflowStage.criterionIds;
+    verifyRelationReviews(scene.plan.relations ?? [], expectedIds,
+      (scene.inspection.summary.relationChecks ?? []) as RelationCheck[], input.relationReviews ?? []);
+    for (const result of input.relationReviews ?? []) if (!result.passed) {
+      const relation = scene.plan.relations!.find((relation) => relation.id === result.relationId)!;
+      if (input.criteria.some((criterion) => criterion.passed && relation.criterionIds.includes(criterion.id))) {
+        throw new Error("A criterion cannot pass while one of its active relations fails.");
+      }
+    }
     if (input.criteria.length !== expectedIds.length ||
       new Set(input.criteria.map((criterion) => criterion.id)).size !== input.criteria.length ||
       expectedIds.some((id) => !input.criteria.some((result) => result.id === id))) {
@@ -894,9 +907,10 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       scene.summary = await this.blender.execute(`
 bpy.ops.wm.open_mainfile(filepath=${py(this.path(scene, "current.blend"))})
 ${renderCode(this.path(scene, render), true)}
-${sceneSummaryCode()}`);
+${sceneSummaryCode(scene.plan?.relations?.length ? scene.plan.graph : undefined)}`);
       scene.render = render;
       scene.renderMode = "structural";
+      scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds);
       scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: "composition", summary: scene.summary };
       scene.stage = "review";
     });
@@ -1171,7 +1185,7 @@ result = {"reviewViews": 5}
       writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
         blend, render: preview ? "review-main.png" : "best.png", kind: target.source, purpose: target.purpose, phase: state.phase,
         revisionId: target.revisionId, contentIteration: target.contentIteration,
-      }, this.path(scene, "."));
+      }, this.path(scene, "."), scene.plan?.relations ?? []);
       scene[marker] = iteration;
       if (!preview) {
         scene.exportLighting = bakes; scene.exportAppearance = appearance; scene.exportVersion = randomUUID(); scene.exportPipelineHash = pipelineHash;
@@ -1364,6 +1378,7 @@ result = {"reviewViews": 5}
     return {
       ...publicScene,
       workflowState,
+      affectedRelations: relationsForScope(scene.plan?.graph ?? [], scene.plan?.relations ?? [], this.activeRevision(scene)?.request.scopeNodeIds ?? []),
       threeRT,
       realtimeUrl: scene.exportVersion ? `${origin}/realtime/${scene.id}?token=${token}&version=${encodeURIComponent(scene.exportVersion)}` : null,
       learning: this.library.context(scene.id, scene.plan?.summary ?? scene.prompt),

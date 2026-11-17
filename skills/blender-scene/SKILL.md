@@ -109,7 +109,13 @@ evidence through the service or report that it is not ready.
    Every plan requires `graph` and `assets`; full reconstruction also requires
    ordered `workflow` stages ending in final.
    Give every graph node a stable ID, parent, kind, label, description and direct
-   Blender object names. Set ordered stages such as geometry (5 rounds),
+   Blender object names. For new multi-object plans, add independent `relations`
+   with stable IDs, participant roles and `criterionIds`; use `[]` when no
+   inter-object constraint is needed. Keep `parentId` for object hierarchy.
+   Read [spatial relations](references/relations.md) before planning relations
+   or reviewing a scene that has them. Review participant roles, world axes,
+   tolerances and criterion bindings during the graph verification pass.
+   Set ordered stages such as geometry (5 rounds),
    composition (3), materials (3), lighting (2), final (2), with criterion IDs
    for each stage. Reconstruction requires composition; its user confirmation
    cannot be disabled. Stage budgets apply to the whole scene.
@@ -162,6 +168,14 @@ evidence through the service or report that it is not ready.
    its stored asset name. In a staged workflow, provide one `observations` entry per criterion with
    its graph node ID, target, actual observation, visual evidence and
    `sceneEvidence` from the runtime inspection or an explicit limitation.
+   For every relation bound to a current-stage criterion, submit one
+   `relationReviews` entry using `inspection.summary.relationChecks` and visual
+   evidence; final reviews cover all relations. Failed or unmeasurable numeric
+   checks cannot pass. A numeric pass still requires visual verification.
+   Failed relations need a correction and failed linked criteria. After moving
+   an object, recheck its relations, including those involving unmoved objects;
+   `affectedRelations` identifies dependencies during a scoped revision without
+   expanding its authorized edit scope.
    `referenceView` must name a stored reference asset when references exist. Failed items
    also need a reason, concrete correction and rerender acceptance check.
    Provide at most three ranked `repairs`. Measure reference anchors in
