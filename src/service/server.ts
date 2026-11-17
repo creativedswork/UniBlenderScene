@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage } from "node:http";
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { timingSafeEqual } from "node:crypto";
@@ -8,10 +8,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { REFERENCE_ASSETS, SceneStore, type Scene } from "./store.js";
+import { REFERENCE_ASSETS, SceneStore, type ImageBox, type Scene } from "./store.js";
 import { proposalSchema, replaySchema, retrospectiveSchema } from "./experience.js";
 
 const WIDGET_URI = "ui://uni-blender-scene/viewer.html";
+const version: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 const idSchema = { sceneId: z.string().regex(/^scene_[a-f0-9-]+$/) };
 const criterion = z.object({
   id: z.string().min(1).max(80), description: z.string().min(1).max(2000),
@@ -30,7 +31,7 @@ const relationNode = z.object({
   criterionIds: z.array(z.string().min(1)).min(1).max(12),
   axis: z.enum(["x", "y", "z"]).optional(), tolerance: z.number().min(0).optional(), spacing: z.number().positive().optional(),
 });
-const imageBox = z.tuple([z.number(), z.number(), z.number(), z.number()]);
+const imageBox = z.array(z.number()).length(4).transform(value => value as ImageBox);
 const referenceEvidence = z.array(z.object({ reference: z.enum(REFERENCE_ASSETS), observation: z.string().min(1).max(4000) })).max(6);
 const referenceFile = z.object({
   download_url: z.string().url().optional(), file_id: z.string().min(1).optional(),
@@ -46,7 +47,7 @@ const widgetMeta = {
 };
 
 export function createMcpServer(store: SceneStore, origin: string): McpServer {
-  const server = new McpServer({ name: "UniBlenderScene", version: "0.3.5-relations.1" });
+  const server = new McpServer({ name: "UniBlenderScene", version });
   const result = (scene: Scene): CallToolResult => {
     const snapshot = store.snapshot(scene, origin);
     return { content: [{ type: "text", text: JSON.stringify(snapshot) }], structuredContent: snapshot };
@@ -238,14 +239,14 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
       previewAppearance: z.object({ exposureEV: z.number().min(-3).max(3).optional(), saturation: z.number().min(0).max(2).optional(),
         renderMode: z.enum(["pathtracing", "raster"]).optional().describe("Raster displays baked lightmaps without progressive sampling."),
         planarReflection: z.string().trim().min(1).max(256).optional().describe("Name of a horizontal mesh whose top surface supplies one real-time planar reflection in raster mode."),
-        reflectionProbe: z.tuple([z.number().min(-10000).max(10000), z.number().min(-10000).max(10000), z.number().min(-10000).max(10000)]).optional()
+        reflectionProbe: z.array(z.number().min(-10000).max(10000)).length(3).transform(value => value as [number, number, number]).optional()
           .describe("Position of one static environment capture for metallic and glossy materials, in Blender Z-up coordinates. Used in raster mode."),
-        whiteBalance: z.tuple([z.number().min(0.25).max(4), z.number().min(0.25).max(4), z.number().min(0.25).max(4)]).optional().describe("Linear RGB gains applied before the Blender display transform."),
+        whiteBalance: z.array(z.number().min(0.25).max(4)).length(3).optional().describe("Linear RGB gains applied before the Blender display transform."),
         contrast: z.number().min(0.5).max(2).optional(), hazeScale: z.number().min(0).max(2).optional(),
-        dust: z.object({ color: z.tuple([z.number().min(0).max(10), z.number().min(0).max(10), z.number().min(0).max(10)]),
-          wind: z.tuple([z.number().min(-10).max(10), z.number().min(-10).max(10), z.number().min(-10).max(10)]),
-          volumes: z.array(z.object({ center: z.tuple([z.number().min(-10000).max(10000), z.number().min(-10000).max(10000), z.number().min(-10000).max(10000)]),
-            radius: z.tuple([z.number().min(0.05).max(1000), z.number().min(0.05).max(1000), z.number().min(0.05).max(1000)]), density: z.number().min(0).max(2) })).min(1).max(6),
+        dust: z.object({ color: z.array(z.number().min(0).max(10)).length(3),
+          wind: z.array(z.number().min(-10).max(10)).length(3),
+          volumes: z.array(z.object({ center: z.array(z.number().min(-10000).max(10000)).length(3),
+            radius: z.array(z.number().min(0.05).max(1000)).length(3), density: z.number().min(0).max(2) })).min(1).max(6),
         }).optional(),
       }).optional().describe("Web preview exposure offset, saturation and animated local dust in Blender Z-up world coordinates. Omitted reuses prior settings; {} clears them. Does not alter the source render or GLB lighting."),
     }, annotations: write,
@@ -389,7 +390,7 @@ export function startServer() {
         response.writeHead(421).end("Unrecognized host."); return;
       }
       if (url.pathname === "/health" && request.method === "GET") {
-        response.writeHead(200, { "Content-Type": "application/json" }).end('{"status":"ok","service":"UniBlenderScene","version":"0.3.3"}'); return;
+        response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ status: "ok", service: "UniBlenderScene", version })); return;
       }
       if (url.pathname.startsWith("/realtime/")) {
         const [, , id, action] = url.pathname.split("/");

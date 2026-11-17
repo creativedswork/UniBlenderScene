@@ -19,7 +19,8 @@ Blender connection.
 
 For local startup after installation and build, run
 `node --import tsx scripts/start-local.ts` from the plugin root. It starts or
-reuses its own dedicated bridge and MCP service, checks tool discovery, and keeps
+reuses its own dedicated bridge and MCP service, checks the full tool catalog,
+array schema compatibility and agreement with the checkout version, and keeps
 logs/PIDs in `RUNS_ROOT/.service/`. When resuming, preserve the existing
 `RUNS_ROOT`; set `SCENE_ID` to verify that scene is readable. The launcher uses a
 loopback-only unauthenticated service and does not submit scene edit jobs. Read
@@ -30,14 +31,25 @@ manifests. For Claude Code scene production, start in a scene project outside th
 plugin checkout and its subdirectories. Load the plugin with
 `claude --plugin-dir /absolute/path/to/UniBlenderScene` or install it from
 `.claude-plugin/marketplace.json`. Check `/mcp` for the connection and available
-scene tools before scene work. If they are missing or fail, report the error;
-do not write an alternative HTTP client or modify plugin source unless the user
-requests that work. Both clients share `skills/` and the same running service;
+scene tools before scene work. Both clients share `skills/` and the same running service;
 the Claude HTTP connection is in
 `harnesses/claude-code/mcp.json`. Read `docs/operations.md` for commands.
 For ChatGPT web, the service needs a reachable HTTPS endpoint and a host-supported
 authentication flow. Set `PUBLIC_BASE_URL` to the deployed origin and run
 `npm run configure -- https://YOUR_SERVICE_ORIGIN` to update both MCP configurations.
+
+For missing tools, first use the host's tool discovery when available. For a local
+service, run the launcher above from the service checkout with the existing
+`RUNS_ROOT`. Missing `scene_plan`, `scene_review` and `scene_export` while other
+tools remain visible can result from tuple array schemas; the launcher reports
+the affected tool and field. Correct the reported service problem before
+reconnecting the host. Restart an owned service only when no scene job is queued
+or running; preserve `RUNS_ROOT` and scene IDs. If the launcher passes but the
+host still omits tools, refresh its MCP connection or start a new chat, then
+verify the host tool list again. If recovery fails, report the missing tool,
+launcher error and whether the host or server lacks it. Do not write an
+alternative HTTP client or modify plugin source during scene production unless
+the user requests that work.
 
 Do not place credentials in manifests or Git. Ask the operator to supply secrets
 through their connection settings. Stop if the host cannot reach Blender or

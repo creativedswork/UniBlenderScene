@@ -8,6 +8,15 @@ description: Build or refine Blender scenes from text or reference images, revie
 Use the host model for planning, Python generation, and visual review. The MCP
 service owns scenes, checkpoints, convergence decisions, rendering, and export.
 
+Before creating or resuming a scene, verify the host exposes the workflow tools,
+including `scene_plan`, `scene_plan_review`, `scene_edit`, `scene_get`,
+`scene_review`, `scene_preview`, `scene_review_decision`, `scene_export` and
+`scene_view`. Use the host's tool discovery when available; a connected service
+or a partial `scene_*` list does not establish availability. If tools are absent,
+follow [Blender setup](../blender-setup/SKILL.md) to diagnose and recover the
+connection before importing references or creating another scene. Once tools
+are available, resume an existing scene with `scene_get` and `images: "none"`.
+
 At task start, inspect `learning.skills` and retrieve relevant active entries
 with `scene_library_search` before planning. After export and actual viewer
 verification, complete `learning.retrospectiveDue` before the delivery reply.

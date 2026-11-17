@@ -166,8 +166,11 @@ This launcher requires `lsof` and `ps`. It binds the service to `127.0.0.1` with
 the unauthenticated connection used by the bundled local plugin manifest. It
 uses `RUNS_ROOT` when supplied; set it to the existing scene's parent directory
 when resuming a scene. Optionally set `SCENE_ID` to require that scene to be
-readable before startup reports success. It checks HTTP health and MCP tool
-discovery without submitting scene creation or edit jobs.
+readable before startup reports success. It checks HTTP health, the full MCP
+tool catalog, homogeneous array schemas, and agreement between the checkout,
+MCP initialization and health versions without submitting scene creation or edit jobs.
+Startup fails with the affected tool/field or version mismatch instead of reporting
+ready for an incompatible service. Reused processes undergo the same checks.
 
 Logs and PID files are stored in `RUNS_ROOT/.service/`. Repeated launches reuse
 only processes recorded there whose listener PID and command match. An occupied
@@ -176,6 +179,16 @@ Startup failures stop only the processes created by that launch. Successful
 processes remain running after the launcher or Claude exits. This launcher is
 for local use; use the separate authenticated deployment procedure for a remote
 service.
+
+The host must also expose the workflow tools before scene creation. If
+`scene_plan`, `scene_review` and `scene_export` are absent while other tools are
+available, run the launcher against the service checkout: older tuple-style
+array schemas can prevent those three tools from loading in the host. After
+fixing the reported problem, restart the owned MCP service when it has no active
+scene jobs, preserve `RUNS_ROOT`, and refresh the host's MCP connection or start
+a new chat. Verify the host tool list before resuming the saved scene with
+`scene_get` and `images: "none"`. A passing server check alone does not prove the
+host has loaded the tools.
 
 ## Open the interactive preview
 

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { checkSceneTools } from "./check-mcp-tools.js";
 
 const plugin = fileURLToPath(new URL("../", import.meta.url));
 const runs = resolve(process.env.RUNS_ROOT ?? join(plugin, ".canova/runs"));
@@ -67,22 +68,26 @@ try {
   await ensureProcess("mcp", process.execPath,
     ["--env-file-if-exists=.env", "--import", "tsx", join(plugin, "src/service/server.ts")], port);
   const health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(10000) });
-  if (!health.ok || (await health.json()).service !== "UniBlenderScene") throw new Error("Local MCP health check failed.");
+  const healthInfo = await health.json() as { service?: string; version?: string };
+  if (!health.ok || healthInfo.service !== "UniBlenderScene") throw new Error("Local MCP health check failed.");
   const client = new Client({ name: "local-startup-check", version: "1.0.0" });
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
       requestInit: { signal: AbortSignal.timeout(15000) },
     }));
     const { tools } = await client.listTools();
-    for (const name of ["scene_view", "scene_get", "scene_edit"]) {
-      if (!tools.some((tool) => tool.name === name)) throw new Error(`MCP tool unavailable: ${name}`);
+    checkSceneTools(tools);
+    const expectedVersion = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8")).version;
+    const serverVersion = client.getServerVersion()?.version;
+    if (serverVersion !== expectedVersion || healthInfo.version !== expectedVersion) {
+      throw new Error(`MCP version mismatch: checkout=${expectedVersion}, tools=${serverVersion}, health=${healthInfo.version}. Restart the MCP service from this checkout before reconnecting the host.`);
     }
     if (process.env.SCENE_ID) {
-      const state = await client.callTool({ name: "scene_view", arguments: { sceneId: process.env.SCENE_ID } });
+      const state = await client.callTool({ name: "scene_get", arguments: { sceneId: process.env.SCENE_ID, images: "none" } });
       if (state.isError) throw new Error("The existing scene is unavailable in RUNS_ROOT. Check the saved scene directory.");
       console.log(`Existing scene is readable: ${process.env.SCENE_ID}`);
     }
-    console.log(`Ready: ${origin}/mcp (${tools.length} tools).`);
+    console.log(`Ready: ${origin}/mcp (${serverVersion}, ${tools.length} compatible tools). Verify the same tools are available in the host before scene work.`);
   } finally { await client.close(); }
 } catch (error) {
   for (const child of started.reverse()) {

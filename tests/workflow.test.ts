@@ -11,6 +11,7 @@ import { BlenderClient } from "../src/service/blender.js";
 import { allowedDownloadURL, requestsImageReference, SceneStore, validateSceneGraph, type Plan, type Scene, type SceneNode } from "../src/service/store.js";
 import { createMcpServer } from "../src/service/server.js";
 import { writeGraphExport } from "../src/service/graph-export.js";
+import { checkSceneTools } from "../scripts/check-mcp-tools.js";
 
 class FakeBlender extends BlenderClient {
   relationBounds?: Record<string, { min: number[]; max: number[] }>;
@@ -937,6 +938,82 @@ test("validates file host boundary and excludes metadata from downloadable artif
   assert.equal(store.allowedFiles(scene).includes("current.blend"), false);
 });
 
+test("MCP numeric vectors use homogeneous item schemas and retain input constraints", async (t) => {
+  const { store } = setup();
+  const scene = store.create("Schema validation fixture"); await store.settled();
+  const planCall = t.mock.method(store, "plan", () => scene);
+  const reviewCall = t.mock.method(store, "review", () => scene);
+  const exportCall = t.mock.method(store, "export", () => scene);
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "schema-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const { tools } = await client.listTools();
+    function checkItems(value: unknown, path: string) {
+      if (!value || typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "items") assert.equal(Array.isArray(child), false, `${path}.items must be a schema, not a tuple array`);
+        checkItems(child, `${path}.${key}`);
+      }
+    }
+    for (const tool of tools) checkItems(tool.inputSchema, tool.name);
+
+    const boxes = ["scene_plan", "scene_review"].map((name) => ({
+      name, length: 4, minimum: undefined, maximum: undefined,
+      path: name === "scene_plan" ? ["referenceAnchors", "items", "targetBox"] : ["referenceAlignment", "items", "renderBox"],
+      args: (box: unknown) => name === "scene_plan" ? { sceneId: scene.id, ...plan,
+        referenceAnchors: ["first", "second"].map(id => ({ id, description: "Anchor", targetBox: box })) } : {
+        sceneId: scene.id, iteration: 1, inspectionId: "fixture", criteria: [{ id: "cube", passed: true, evidence: "Fixture" }],
+        visualScore: 90, regressions: [], repairable: false, nextAction: "Complete",
+        referenceAlignment: ["first", "second"].map(id => ({ id, renderBox: box, evidence: "Measured" })),
+      },
+      calls: () => (name === "scene_plan" ? planCall : reviewCall).mock.callCount(),
+    }));
+    const vectors = [
+      { path: ["reflectionProbe"], minimum: -10000, maximum: 10000 },
+      { path: ["whiteBalance"], minimum: 0.25, maximum: 4 },
+      { path: ["dust", "color"], minimum: 0, maximum: 10 },
+      { path: ["dust", "wind"], minimum: -10, maximum: 10 },
+      { path: ["dust", "volumes", "items", "center"], minimum: -10000, maximum: 10000 },
+      { path: ["dust", "volumes", "items", "radius"], minimum: 0.05, maximum: 1000 },
+    ].map(({ path, minimum, maximum }) => ({
+      name: "scene_export", path: ["previewAppearance", ...path], length: 3, minimum, maximum,
+      args: (vector: unknown) => {
+        const appearance: Record<string, any> = { reflectionProbe: [0, 0, 0], whiteBalance: [1, 1, 1],
+          dust: { color: [1, 1, 1], wind: [0, 0, 0], volumes: [{ center: [0, 0, 0], radius: [1, 1, 1], density: 1 }] } };
+        let target = appearance;
+        for (const key of path.slice(0, -1)) target = key === "items" ? target[0] : target[key];
+        target[path.at(-1)!] = vector;
+        return { sceneId: scene.id, previewAppearance: appearance };
+      },
+      calls: () => exportCall.mock.callCount(),
+    }));
+    for (const spec of [...boxes, ...vectors]) {
+      let schema: any = tools.find(tool => tool.name === spec.name)!.inputSchema;
+      for (const key of spec.path) schema = key === "items" ? schema.items : schema.properties[key];
+      assert.equal(schema.type, "array");
+      assert.equal(schema.minItems, spec.length); assert.equal(schema.maxItems, spec.length);
+      assert.deepEqual(schema.items, { type: "number", ...(spec.minimum === undefined ? {} : { minimum: spec.minimum, maximum: spec.maximum }) });
+      const valid = Array(spec.length).fill(spec.minimum ?? 0);
+      for (const vector of [valid, Array(spec.length).fill(spec.maximum ?? 1)]) {
+        const before = spec.calls();
+        const result = await client.callTool({ name: spec.name, arguments: spec.args(vector) });
+        assert.equal(result.isError, undefined, JSON.stringify(result.content));
+        assert.equal(spec.calls(), before + 1);
+      }
+      const invalid: unknown[] = [valid.slice(1), [...valid, 0], ["0", ...valid.slice(1)], null];
+      if (spec.minimum !== undefined) invalid.push([spec.minimum - 1, ...valid.slice(1)], [spec.maximum! + 1, ...valid.slice(1)]);
+      for (const vector of invalid) {
+        const before = spec.calls();
+        const result = await client.callTool({ name: spec.name, arguments: spec.args(vector) });
+        assert.equal(result.isError, true, `${spec.name}.${spec.path.join(".")} accepted ${JSON.stringify(vector)}`);
+        assert.equal(spec.calls(), before, "Invalid vectors must not reach the store");
+      }
+    }
+  } finally { await client.close(); await server.close(); }
+});
+
 test("MCP advertises file transfer, UI resource, prompt and validates tool inputs", async () => {
   const { store } = setup();
   const server = createMcpServer(store, "https://example.com");
@@ -945,6 +1022,7 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   await server.connect(a); await client.connect(b);
   try {
     const tools = await client.listTools();
+    checkSceneTools(tools.tools);
     assert.equal(tools.tools.length, 23);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_render_high_quality")?._meta?.["openai/widgetAccessible"], true);
     assert.ok(tools.tools.some((tool) => tool.name === "scene_preview"));
