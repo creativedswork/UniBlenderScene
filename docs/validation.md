@@ -491,7 +491,7 @@ Checks performed:
 Runtime reports, scenes and tests remain under `.canova/runs/`, outside Git.
 The host still owns both learning loops and visual acceptance. This validation
 is not a controlled scene-quality comparison or evidence of autonomous learning.
-See [the library design](spatial-skill-library.md) and
+See [the library design](scene-skill-library.md) and
 [comparison procedure](scene-relations-comparison.md).
 
 ## Scope

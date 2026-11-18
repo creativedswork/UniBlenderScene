@@ -1,4 +1,17 @@
-# Learn from completed scene tasks
+---
+name: blender-skill-library
+description: Use when reusing, validating or evolving scene guidance, Python functions and checks across modeling, materials, lighting, cameras, rendering or export; co-load blender-scene.
+---
+
+# Scene Skill Library
+
+Co-load [blender-scene](../blender-scene/SKILL.md) for scene execution and
+approval. This Skill owns retrieval, evidence-backed lessons, shared candidate
+versions, validation, activation and retirement across scene-production domains.
+The library can store modeling helpers, material/light/camera setup functions,
+render/export checks and diagnostic guidance when supported by verified cases.
+The bundled numeric rewards currently cover spatial relationships; co-load
+[blender-spatial](../blender-spatial/SKILL.md) for their specialized workflow.
 
 The host owns interpretation, visual review and generalization. The service
 captures cases, binds evidence, runs tests and controls the active local library.
@@ -54,7 +67,7 @@ For each supported generalization, call `scene_skill_propose`:
 - `blender_function`: reusable production code.
 - `check`: an executable validation function.
 - `spatial_score`: a pure Python reward used by numeric layout evaluation and
-  search. Co-load [blender-spatial](../../blender-spatial/SKILL.md) for its
+  search. Co-load [blender-spatial](../blender-spatial/SKILL.md) for its
   function contract, version pinning and local candidate trials.
 
 Use a stable descriptive `key`; the service assigns immutable versions. Include
@@ -68,9 +81,6 @@ counterexample fixture. Each fixture defines ordinary `unittest.TestCase` tests
 and receives the candidate module as `skill`. Exercise the supported operation
 and the original failure, including relevant parent transforms or invalid inputs.
 Tests must assert behavior; empty/skipped/expected-failure suites do not qualify.
-Spatial candidates also run the fixtures of earlier passing versions of the
-same key against the new code. These inherited regression cases are reported
-separately and cannot be dropped by weakening the new candidate's fixtures.
 
 ## Validate and activate
 
@@ -92,10 +102,9 @@ Activate only the latest passing validation of the exact version using
 retrieval. A proposed version does not replace the active version automatically.
 Retire an entry when later evidence disproves it; preserve the case and failure.
 An earlier version may be activated with its latest still-passing validation.
-Shared spatial scoring versions require verified source lessons and reviewed
-evidence from at least two distinct scenes. A one-scene candidate that passes
-fixtures can be tried locally through `scene_optimize.scorerOverrides`; trial
-scores do not replace the frozen plan's review scores or thresholds.
+Spatial candidates additionally follow the cross-scene activation, inherited
+regression and local-trial requirements in
+[blender-spatial](../blender-spatial/SKILL.md).
 
 The local library lives under `RUNS_ROOT/experience-library/`, normally
 `.canova/runs/experience-library/`. It survives service restarts. Activation

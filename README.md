@@ -92,7 +92,7 @@ later tasks can retrieve applicable entries.
 
 Memory stays in the service's local data directory and survives restarts.
 Learning runs during agent tasks; it does not change model weights. See the
-[experience workflow](skills/blender-scene/references/experience.md).
+[Scene Skill Library](skills/blender-skill-library/SKILL.md).
 
 ## Interactive 3D preview
 

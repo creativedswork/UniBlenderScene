@@ -5,6 +5,11 @@ description: Use alongside blender-scene for numeric spatial layout optimization
 
 # Spatial scoring and layout learning
 
+This is the spatial module of the
+[Scene Skill Library](../blender-skill-library/SKILL.md); it owns spatial rewards
+and layout search. General guidance, production functions and checks use the
+shared library workflow.
+
 Co-load [blender-scene](../blender-scene/SKILL.md); it owns scene planning,
 Providers, edit budgets, checkpoints, visual review and approval. Use only that
 Skill's dedicated scene tools. Discover `scene_optimize` and the existing
@@ -67,7 +72,7 @@ the owning scene workflow. Do not turn failed prerequisites into a passing score
 ## Outer loop: update the shared local library
 
 After delivery verification, follow
-[experience learning](../blender-scene/references/experience.md) to record the
+[Scene Skill Library](../blender-skill-library/SKILL.md) to record the
 repair, script/render evidence, applicability and limitations. Keep user-specific
 art direction in the case. Consolidate common function improvements under a
 stable key using `kind: "spatial_score"`.

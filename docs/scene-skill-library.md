@@ -1,15 +1,28 @@
-# Spatial Skill Library
+# Scene Skill Library
 
-Version `0.3.5-relations.2` connects the scene relation graph to a packaged Python
-reward library, bounded layout search and the existing versioned experience
-library. The host model remains responsible for planning, interpreting rendered
-feedback and proposing generalizations. The service executes and records those
-steps; it does not contain a background learning model.
+The Scene Skill Library stores reusable guidance, Python production functions
+and checks across scene-production domains. The host interprets rendered
+feedback and proposes generalizations; the service captures evidence, executes
+validation and controls active versions.
 
-The [blender-spatial Skill](../skills/blender-spatial/SKILL.md) owns the operational
-workflow and [scorer contract](../skills/blender-spatial/references/scorer-contract.md).
+The [blender-skill-library Skill](../skills/blender-skill-library/SKILL.md) owns
+retrieval, experience capture, candidate versions, validation and activation.
 It co-loads with blender-scene, which retains Provider selection, scene state,
 budgets, checkpoints, rendering and composition approval.
+
+| Entry kind | Scope |
+| --- | --- |
+| `guidance` | Reusable diagnostic or production instructions. |
+| `blender_function` | Verified production code, including geometry, materials, lighting, camera or rendering helpers. |
+| `check` | Executable validation functions, including export or scene consistency checks. |
+| `spatial_score` | Numeric spatial rewards used by relation evaluation and layout search. |
+
+These kinds describe what the library can retain, not a claim that every domain
+has prebuilt functions. Version `0.3.5-relations.2` bundles spatial Python rewards
+and connects them to bounded search. The
+[blender-spatial module](../skills/blender-spatial/SKILL.md) owns that specialization
+and its [scorer contract](../skills/blender-spatial/references/scorer-contract.md).
+The following sections describe its learning and execution flow.
 
 ## Inner loop
 
