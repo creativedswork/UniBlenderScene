@@ -53,6 +53,9 @@ For each supported generalization, call `scene_skill_propose`:
 - `guidance`: reusable diagnostic or production instructions.
 - `blender_function`: reusable production code.
 - `check`: an executable validation function.
+- `spatial_score`: a pure Python reward used by numeric layout evaluation and
+  search. Co-load [blender-spatial](../../blender-spatial/SKILL.md) for its
+  function contract, version pinning and local candidate trials.
 
 Use a stable descriptive `key`; the service assigns immutable versions. Include
 source lesson IDs, tags, conditions, limitations and concise instructions. Keep
@@ -65,6 +68,9 @@ counterexample fixture. Each fixture defines ordinary `unittest.TestCase` tests
 and receives the candidate module as `skill`. Exercise the supported operation
 and the original failure, including relevant parent transforms or invalid inputs.
 Tests must assert behavior; empty/skipped/expected-failure suites do not qualify.
+Spatial candidates also run the fixtures of earlier passing versions of the
+same key against the new code. These inherited regression cases are reported
+separately and cannot be dropped by weakening the new candidate's fixtures.
 
 ## Validate and activate
 
@@ -86,6 +92,10 @@ Activate only the latest passing validation of the exact version using
 retrieval. A proposed version does not replace the active version automatically.
 Retire an entry when later evidence disproves it; preserve the case and failure.
 An earlier version may be activated with its latest still-passing validation.
+Shared spatial scoring versions require verified source lessons and reviewed
+evidence from at least two distinct scenes. A one-scene candidate that passes
+fixtures can be tried locally through `scene_optimize.scorerOverrides`; trial
+scores do not replace the frozen plan's review scores or thresholds.
 
 The local library lives under `RUNS_ROOT/experience-library/`, normally
 `.canova/runs/experience-library/`. It survives service restarts. Activation

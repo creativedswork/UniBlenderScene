@@ -459,6 +459,41 @@ implementation behavior and local installation, not improved visual quality,
 GitHub publication, remote deployment or plugin-directory approval. Use the
 [comparison procedure](scene-relations-comparison.md) to evaluate scene quality.
 
+## Python spatial Skill Library — 2026-11-18
+
+Experimental version `0.3.5-relations.2` adds the packaged `blender-spatial`
+Skill, pure Python spatial rewards, plan-pinned scorer versions, bounded
+`scene_optimize` search, local candidate trials and shared `spatial_score`
+activation through ExperienceLibrary.
+
+Checks performed:
+
+- `npm run check`, `npm run build`, and all 84 `npm test` cases passed. The unit
+  command includes four Python reward tests for positive, near-miss and failing
+  geometric layouts. The new Skill validator reported no errors or warnings.
+- `npm run test:blender` passed with Blender 5.1.1 on a dedicated test bridge and
+  exposed 24 MCP tools. Numeric search corrected the existing unequal-spacing
+  fixture through the normal checkpoint/edit/render/review transaction.
+- A one-scene scorer passed executable fixtures but was refused shared activation.
+  It was usable as a local optimizer override without replacing frozen review
+  scores. A two-scene version was validated and activated; an existing plan kept
+  its pins, while a subsequent plan executed the newly active Python version.
+- A constant-full-score candidate passed its own weakened fixtures but failed
+  two inherited counterexamples. Activation was rejected and the prior active
+  scorer remained selected.
+- An independently fixture-validated planar facing function was loaded through a
+  custom `skill` relation. Bounded world-Z rotation increased its synthetic score
+  from `0.5` to approximately `0.999756`, exceeding the frozen `0.95` threshold.
+  This establishes code execution/search mechanics, not image fidelity.
+- Scene-local measurement reports retained inspection IDs, numeric outcomes,
+  scorer provenance and optimizer comparisons as later experience evidence.
+
+Runtime reports, scenes and tests remain under `.canova/runs/`, outside Git.
+The host still owns both learning loops and visual acceptance. This validation
+is not a controlled scene-quality comparison or evidence of autonomous learning.
+See [the library design](spatial-skill-library.md) and
+[comparison procedure](scene-relations-comparison.md).
+
 ## Scope
 
 The package adapts the scene workflow for a host-supplied model. It does not

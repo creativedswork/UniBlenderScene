@@ -1,19 +1,23 @@
 export type RelationNode = { id: string; parentId: string | null };
 export type SceneRelation = {
   id: string;
-  type: "support" | "alignment" | "spacing" | "semantic";
+  type: "support" | "alignment" | "spacing" | "semantic" | "skill";
   description: string;
   participants: { nodeId: string; role: string }[];
   criterionIds: string[];
   axis?: "x" | "y" | "z";
   tolerance?: number;
   spacing?: number;
+  scorer?: { id: string; hash: string };
+  minScore?: number;
+  parameters?: Record<string, number>;
 };
 export type RelationReview = { relationId: string; passed: boolean; evidence: string; correction?: string };
 export type RelationCheck = {
   relationId: string; status: "passed" | "failed" | "unmeasurable" | "visual";
-  evidence: string; error?: number; tolerance?: number;
+  evidence: string; error?: number; tolerance?: number; score?: number; scorerId?: string; scorerHash?: string;
 };
+export type SpatialScore = { relationId: string; status: string; score: number | null; scorerId?: string; scorerHash?: string; evidence?: string };
 type Bounds = { min: number[]; max: number[] };
 
 export function relationsForScope(nodes: RelationNode[], relations: SceneRelation[], scope: string[]): SceneRelation[] {
@@ -47,7 +51,17 @@ export function validateRelations(nodes: RelationNode[], criteria: { id: string 
       relation.criterionIds.some((id) => !criteria.some((criterion) => criterion.id === id))) {
       throw new Error("Relation criterionIds must reference distinct frozen criteria.");
     }
-    if (!["support", "alignment", "spacing", "semantic"].includes(relation.type)) throw new Error("Unknown relation type.");
+    if (!["support", "alignment", "spacing", "semantic", "skill"].includes(relation.type)) throw new Error("Unknown relation type.");
+    if (relation.type === "skill") {
+      if (!relation.scorer?.id.trim() || !/^[a-f0-9]{64}$/.test(relation.scorer.hash) ||
+        !Number.isFinite(relation.minScore) || relation.minScore! < 0 || relation.minScore! > 1 ||
+        Object.values(relation.parameters ?? {}).some(value => !Number.isFinite(value)) ||
+        relation.axis !== undefined || relation.tolerance !== undefined || relation.spacing !== undefined) {
+        throw new Error("Skill relations need an exact scorer ID/hash, minScore in [0, 1], and finite numeric parameters; put custom axes/tolerances in parameters.");
+      }
+      continue;
+    }
+    if (relation.scorer || relation.minScore !== undefined || relation.parameters) throw new Error("Custom scorer settings require a skill relation.");
     if (relation.type === "semantic") {
       if (relation.axis !== undefined || relation.tolerance !== undefined || relation.spacing !== undefined) {
         throw new Error("Semantic relations use visual evidence, without numeric measurement parameters.");
@@ -69,12 +83,23 @@ export function validateRelations(nodes: RelationNode[], criteria: { id: string 
 }
 
 // These are world-space bounding-box checks, not surface contact or collision tests.
-export function checkRelations(relations: SceneRelation[], rawBounds: unknown): RelationCheck[] {
+export function checkRelations(relations: SceneRelation[], rawBounds: unknown, scores: SpatialScore[] = []): RelationCheck[] {
   const bounds = (rawBounds ?? {}) as Record<string, Bounds>;
   const valid = (box: Bounds | undefined): box is Bounds => !!box && Array.isArray(box.min) && Array.isArray(box.max) &&
     box.min.length === 3 && box.max.length === 3 && box.min.every((v, i) => Number.isFinite(v) && Number.isFinite(box.max[i]) && v <= box.max[i]!);
   return relations.map((relation) => {
     if (relation.type === "semantic") return { relationId: relation.id, status: "visual", evidence: "Requires host review of render and runtime evidence." };
+    const measured = scores.find(score => score.relationId === relation.id);
+    const reward = measured?.score;
+    const scored = typeof reward === "number" && Number.isFinite(reward) && reward >= 0 && reward <= 1;
+    const provenance = scored ? { score: reward, scorerId: measured!.scorerId, scorerHash: measured!.scorerHash } : {};
+    if (relation.type === "skill") {
+      if (!scored || measured?.scorerId !== relation.scorer?.id || measured?.scorerHash !== relation.scorer?.hash) {
+        return { relationId: relation.id, status: "unmeasurable", evidence: measured?.evidence ?? "No current result from the pinned scorer version." };
+      }
+      return { relationId: relation.id, status: reward! >= relation.minScore! ? "passed" : "failed", ...provenance,
+        evidence: `Pinned spatial scorer=${measured!.scorerId}, score=${reward}, threshold=${relation.minScore}. Independent render review required.` };
+    }
     const boxes = relation.participants.map((p) => bounds[p.nodeId]);
     if (!boxes.every(valid)) return { relationId: relation.id, status: "unmeasurable", evidence: "Visible mapped mesh bounds are missing or invalid; do not infer a pass." };
     const axis = { x: 0, y: 1, z: 2 }[relation.axis!];
@@ -89,7 +114,9 @@ export function checkRelations(relations: SceneRelation[], rawBounds: unknown): 
       }));
     } else if (relation.type === "alignment") error = centers.at(-1)! - centers[0]!;
     else error = Math.max(...centers.slice(1).map((value, i) => Math.abs(value - centers[i]! - relation.spacing!)));
-    return { relationId: relation.id, status: error <= relation.tolerance! ? "passed" : "failed", error, tolerance: relation.tolerance,
+    return { relationId: relation.id,
+      status: error > relation.tolerance! ? "failed" : measured && !scored ? "unmeasurable" : measured && reward! < 0.5 ? "failed" : "passed",
+      error, tolerance: relation.tolerance, ...provenance,
       evidence: `World AABB ${relation.type}, ${relation.axis} axis: error=${error}, tolerance=${relation.tolerance} Blender units. Visual verification still required.` };
   });
 }

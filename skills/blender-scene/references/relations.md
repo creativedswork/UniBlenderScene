@@ -14,7 +14,7 @@ Each participant has a stable `nodeId` and explicit `role`. Bind relations to
 observable global criteria used by the stages that should check them. Placement
 relations normally bind to composition criteria; final reviews check all.
 
-Numeric relations require explicit `axis` and `tolerance`, in Blender world
+Built-in numeric relations require explicit `axis` and `tolerance`, in Blender world
 coordinates and Blender units, after asset scaling. Blender uses Z-up. Choose
 tolerances from the intended scene scale; do not loosen them to conceal errors.
 
@@ -23,6 +23,7 @@ tolerances from the intended scene scale; do not loosen them to conceal errors.
 | `support` | Exactly two: `subject` rests on `support`. Requires `axis: "z"`. Checks subject AABB bottom against support AABB top and subject center against its XY footprint. |
 | `alignment` | Two or more `member` participants. Checks the spread of their AABB center coordinates along the chosen axis. Two axes require two relations. |
 | `spacing` | Two or more `member` participants, plus positive `spacing`. Sorts centers along the chosen axis and checks each adjacent gap against the requested spacing. Use a separate alignment relation to require a straight row. |
+| `skill` | An active validated Python scorer selected by `scorer: {id, hash}`, a frozen `minScore` in `[0, 1]`, and numeric `parameters`. Explicit roles define operands. See [blender-spatial](../../blender-spatial/SKILL.md). |
 | `semantic` | Two or more participants with descriptive roles. Use for camera-relative placement, occlusion, orientation, relative size, curved/sloped support or other constraints without a numeric checker. No numeric parameters; requires render and runtime evidence. |
 
 Example, after planning `vase` and `table` graph nodes and a `table-layout`
@@ -57,6 +58,12 @@ the abbreviated object inventory. Missing visible mapped mesh bounds produce
 `unmeasurable`, never a pass. The check is bound to the inspection and iteration
 used by `scene_review`; old inspection results cannot validate a later edit.
 
+`inspection.summary.spatialEvaluation` also reports Python rewards and exact
+scorer IDs/hashes. The plan pins bundled source and any active learned scoring
+versions. `inspection.spatialReport` names a scene-local measurement report that
+can be referenced by an experience lesson. Shared library updates do not change
+the pins of an existing plan.
+
 These checks approximate geometry with axis-aligned bounding boxes. Hollow or
 sloped shapes, overhangs and geometry instances can need additional inspection.
 They do not establish surface contact, absence of mesh collisions, support
@@ -80,8 +87,10 @@ submit exactly one result:
 Put results in `scene_review.relationReviews`. Numeric `failed` or
 `unmeasurable` results cannot be overridden by a passing host review. A numeric
 pass may still fail visual review. A failed relation must also fail its linked
-current-stage criteria. Report failures before another bounded edit; the service
-does not move objects automatically or refill edit budgets.
+current-stage criteria. Report failures before another bounded edit. During
+geometry/composition, `scene_optimize` can search bounded moves with the pinned
+Python rewards; co-load [blender-spatial](../../blender-spatial/SKILL.md) first.
+It consumes an existing edit allowance and requires a fresh render/review.
 
 During a scoped revision, `affectedRelations` lists relations involving scoped
 nodes or their ancestors/descendants. Use it to identify dependencies to recheck.

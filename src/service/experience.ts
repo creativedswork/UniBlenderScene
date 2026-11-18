@@ -17,7 +17,7 @@ export const retrospectiveSchema = z.object({
   })).min(1).max(10),
 });
 export const proposalSchema = z.object({
-  key: z.string().regex(/^[a-z][a-z0-9-]{1,79}$/), kind: z.enum(["guidance", "blender_function", "check"]),
+  key: z.string().regex(/^[a-z][a-z0-9-]{1,79}$/), kind: z.enum(["guidance", "blender_function", "check", "spatial_score"]),
   title: z.string().trim().min(1).max(200), tags, applicability: text,
   limitations: z.array(text).min(1).max(20), instructions: text,
   sourceLessonIds: z.array(z.string().min(1)).min(1).max(20),
@@ -44,7 +44,8 @@ type Retrospective = { id: string; inputHash: string; requestId: string; source:
 export type Candidate = z.infer<typeof proposalSchema> & { id: string; version: number; hash: string; createdAt: string };
 export type FixtureResult = { name: string; testsRun: number; passed: boolean; errors: string[] };
 type Validation = { id: string; candidateId: string; candidateHash: string; mode: "blender-tests" | "host-review";
-  passed: boolean; replays: Replay[]; fixtures: FixtureResult[]; blenderVersion?: string; error?: string; createdAt: string };
+  passed: boolean; replays: Replay[]; fixtures: FixtureResult[]; regressions?: FixtureResult[];
+  blenderVersion?: string; error?: string; createdAt: string };
 type Library = { cases: Record<string, ExperienceCase>; retrospectives: Retrospective[]; candidates: Candidate[];
   validations: Validation[]; active: Record<string, string> };
 export const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -137,6 +138,27 @@ export class ExperienceLibrary {
     if (!entry) throw new Error("Unknown skill candidate.");
     this.verifySources(entry); return structuredClone(entry);
   }
+  spatialCandidate(id: string, expectedHash: string, activeOnly = false): Candidate {
+    const candidate = this.candidate(id);
+    const validation = this.data.validations.filter(v => v.candidateId === id).at(-1);
+    if (candidate.kind !== "spatial_score" || candidate.hash !== expectedHash || !validation?.passed ||
+      validation.candidateHash !== expectedHash || activeOnly && this.data.active[candidate.key] !== id) {
+      throw new Error("Spatial scoring requires an exact validated spatial_score version; new plans require an active version.");
+    }
+    return candidate;
+  }
+  activeSpatial(key: string): Candidate | undefined {
+    const id = this.data.active[key];
+    if (!id) return undefined;
+    const candidate = this.candidate(id);
+    return this.spatialCandidate(id, candidate.hash, true);
+  }
+  regressionFixtures(candidate: Candidate): Candidate["fixtures"] {
+    if (candidate.kind !== "spatial_score") return [];
+    return this.data.candidates.filter(c => c.key === candidate.key && c.kind === "spatial_score" && c.version < candidate.version &&
+      this.data.validations.some(v => v.candidateId === c.id && v.passed)).flatMap(c =>
+      c.fixtures.map(f => ({ ...f, name: `${c.id}/${f.name}` })));
+  }
   checkReplays(candidate: Candidate, replays: Replay[]): Replay[] {
     const input = replaySchema.parse(replays);
     if (new Set(input.map(r => r.lessonId)).size !== input.length ||
@@ -149,7 +171,8 @@ export class ExperienceLibrary {
     }
     return input;
   }
-  validate(id: string, expectedHash: string, replays: Replay[], results: FixtureResult[], blenderVersion?: string, error?: string): Validation {
+  validate(id: string, expectedHash: string, replays: Replay[], results: FixtureResult[], blenderVersion?: string, error?: string,
+    regressions: FixtureResult[] = []): Validation {
     const candidate = this.candidate(id);
     if (candidate.hash !== expectedHash) throw new Error("Candidate hash changed.");
     this.checkReplays(candidate, replays);
@@ -157,9 +180,13 @@ export class ExperienceLibrary {
       errors: z.array(z.string()) })).parse(results);
     const fixturesPassed = candidate.kind === "guidance" || candidate.fixtures.length === results.length &&
       candidate.fixtures.every(f => results.some(r => r.name === f.name && r.passed && r.testsRun > 0));
+    const expectedRegressions = this.regressionFixtures(candidate);
+    const regressionsPassed = expectedRegressions.length === regressions.length &&
+      expectedRegressions.every(f => regressions.some(r => r.name === f.name && r.passed && r.testsRun > 0));
     const validation: Validation = { id: `validation_${randomUUID()}`, candidateId: id, candidateHash: expectedHash,
       mode: candidate.kind === "guidance" ? "host-review" : "blender-tests",
-      passed: !error && replays.every(r => r.passed) && fixturesPassed, replays, fixtures: results,
+      passed: !error && replays.every(r => r.passed) && fixturesPassed && regressionsPassed, replays, fixtures: results,
+      ...(candidate.kind === "spatial_score" ? { regressions } : {}),
       ...(blenderVersion ? { blenderVersion } : {}), ...(error ? { error } : {}), createdAt: new Date().toISOString() };
     this.data.validations.push(validation);
     if (!validation.passed && this.data.active[candidate.key] === id) delete this.data.active[candidate.key];
@@ -170,6 +197,10 @@ export class ExperienceLibrary {
     const validation = this.data.validations.filter(v => v.candidateId === id).at(-1);
     if (!validation || validation.id !== validationId || validation.candidateHash !== candidate.hash || !validation.passed) {
       throw new Error("Activate only the latest passing validation of this exact candidate.");
+    }
+    if (candidate.kind === "spatial_score" &&
+      (new Set(candidate.sourceLessonIds.map(id => this.lesson(id).record.source.sceneId)).size < 2 || !validation.replays.some(r => r.applies))) {
+      throw new Error("Shared spatial scorers require reviewed evidence from at least two distinct scenes; a single-scene validated candidate can only be tried locally.");
     }
     this.data.active[candidate.key] = id; this.save(); return { candidate, validation };
   }

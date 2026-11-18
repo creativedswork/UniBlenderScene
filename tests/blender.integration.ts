@@ -12,6 +12,7 @@ import { BlenderClient } from "../src/service/blender.js";
 import { testBoundedRevisionGuard } from "./bounded-revision.integration.js";
 import { testGuardPerformance } from "./guard-performance.integration.js";
 import { testExperienceLibrary } from "./experience.integration.js";
+import { prepareSpatialTrial } from "./spatial.integration.js";
 
 await mkdir(".canova/runs", { recursive: true });
 const root = await mkdtemp(resolve(".canova/runs/blender-integration-"));
@@ -116,7 +117,7 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 23);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 24);
   const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
@@ -497,6 +498,7 @@ bpy.context.scene.render.resolution_y=128
   await writeFile(join(root, "lightmap-scene.json"), JSON.stringify(lightmapped, null, 2));
   // Measure through MCP and SceneStore on the dedicated test bridge, including
   // parent transforms, inherited tags and an abbreviated object inventory.
+  const spatialTrial = await prepareSpatialTrial(call, poll, stagedId);
   const relationScene = await call("scene_create", { prompt: "Primitive row on a base for spatial relation integration" });
   const relationId = relationScene.structuredContent!.id as string;
   await poll(relationId);
@@ -572,8 +574,16 @@ bpy.context.scene.render.resolution_y = 64
   assert.equal(falsePass.isError, true);
   await reviewFixture({ sceneId: relationId, iteration: badRow.iteration, criteria: [{ id: "layout", passed: false, evidence: "Measured unequal row gaps" }],
     relationReviews: firstRelationReviews, visualScore: 60, regressions: [], repairable: true, nextAction: "Fix middle item" });
-  await call("scene_edit", { sceneId: relationId, code: "bpy.data.objects['Item1Root'].location.x = 0" });
+  const optimized = await call("scene_optimize", { sceneId: relationId, movableNodeIds: ["item1"], translationStep: 1, passes: 3,
+    scorerOverrides: [{ relationId: "row-spacing", id: spatialTrial.candidate.id, hash: spatialTrial.candidate.hash }] });
+  assert.equal(optimized.isError, undefined, JSON.stringify(optimized.content));
   const fixedRow = await poll(relationId);
+  assert.ok(fixedRow.summary.layoutOptimization.after.score > fixedRow.summary.layoutOptimization.before.score);
+  assert.ok(fixedRow.summary.layoutOptimization.acceptedMoves > 0);
+  assert.equal(fixedRow.summary.layoutOptimization.candidateOverrides[0].id, spatialTrial.candidate.id);
+  assert.equal(fixedRow.summary.spatialEvaluation.results.find((r: any) => r.relationId === "row-spacing").scorerId, "builtin-spatial",
+    "A local candidate trial cannot replace the frozen review scorer");
+  assert.deepEqual(fixedRow.summary.relationBounds.item0, badRow.summary.relationBounds.item0, "Unscoped anchor remains fixed");
   assert.deepEqual(fixedRow.inspection.summary.relationChecks.map((c: any) => c.status), ["passed", "passed", "passed"]);
   await reviewFixture({ sceneId: relationId, iteration: fixedRow.iteration, criteria: [{ id: "layout", passed: true, evidence: "Measured row restored; this test checks mechanics, not visual quality" }],
     relationReviews: fixedRow.inspection.summary.relationChecks.map((c: any) => ({ relationId: c.relationId, passed: true, evidence: c.evidence })),
@@ -583,10 +593,39 @@ bpy.context.scene.render.resolution_y = 64
   const rowGraphURL = rowExport.artifacts.find((file: any) => file.name === "scene-graph.json").url;
   assert.deepEqual((await (await fetch(rowGraphURL)).json()).relations, relationDefinitions);
   await writeFile(join(root, "relation-scene.json"), JSON.stringify(rowExport, null, 2));
+  const { shared: sharedSpatial, facing } = await spatialTrial.consolidate(relationId);
+  const frozenRow = await call("scene_get", { sceneId: relationId, images: "none" });
+  assert.deepEqual((frozenRow.structuredContent!.spatialLibrary as { bindings: unknown[] }).bindings, [], "Activating a new shared scorer cannot change an existing plan");
+  await call("scene_continue", { sceneId: relationId, prompt: "Synthetic follow-up using the activated spacing scorer" });
+  await poll(relationId);
+  await planFixture({ sceneId: relationId, summary: "Verify activated scoring on a new plan", graph: relationGraph, relations: relationDefinitions,
+    steps: ["Verify pinned scorer without moving correct geometry"], criteria: [{ id: "layout", severity: "blocker", description: "Supported and evenly spaced row" }] });
+  const learnedRun = await call("scene_optimize", { sceneId: relationId, movableNodeIds: ["item1"], translationStep: .1, passes: 1 });
+  assert.equal(learnedRun.isError, undefined, JSON.stringify(learnedRun.content));
+  const learnedRow = await poll(relationId);
+  assert.equal(learnedRow.spatialLibrary.bindings[0].id, sharedSpatial.id);
+  assert.equal(learnedRow.summary.spatialEvaluation.results.find((r: any) => r.relationId === "row-spacing").scorerId, sharedSpatial.id);
+  assert.equal(learnedRow.summary.layoutOptimization.acceptedMoves, 0, "A correct layout stays fixed");
+  await reviewFixture({ sceneId: relationId, iteration: learnedRow.iteration, criteria: [{ id: "layout", passed: true, evidence: "Unchanged measured row" }],
+    relationReviews: learnedRow.summary.relationChecks.map((c: any) => ({ relationId: c.relationId, passed: true, evidence: c.evidence })),
+    visualScore: 90, regressions: [], repairable: false, nextAction: "Test custom orientation scorer" });
+  await call("scene_continue", { sceneId: relationId, prompt: "Synthetic planar orientation score test" }); await poll(relationId);
+  const facingRelation = { id: "face-base", type: "skill", description: "First item faces the base center in world XY", criterionIds: ["layout"],
+    participants: [{ nodeId: "item0", role: "subject" }, { nodeId: "base", role: "target" }],
+    scorer: { id: facing.id, hash: facing.hash }, minScore: .95, parameters: { forwardAxis: 1 } };
+  await planFixture({ sceneId: relationId, summary: "Custom Python orientation reward", graph: relationGraph, relations: [facingRelation],
+    steps: ["Rotate one existing item toward its target"], criteria: [{ id: "layout", severity: "blocker", description: "Subject faces target" }] });
+  const rotated = await call("scene_optimize", { sceneId: relationId, movableNodeIds: ["item0"], translationStep: .0001, rotationStepDegrees: 45, passes: 4 });
+  assert.equal(rotated.isError, undefined, JSON.stringify(rotated.content));
+  const facingRow = await poll(relationId);
+  assert.equal(facingRow.summary.relationChecks[0].scorerId, facing.id);
+  assert.equal(facingRow.summary.relationChecks[0].status, "passed");
+  assert.ok(facingRow.summary.layoutOptimization.after.score > facingRow.summary.layoutOptimization.before.score);
   const boundedRevisionCases = await testBoundedRevisionGuard(new BlenderClient("127.0.0.1", blenderPort), root);
   const guardPerformance = await testGuardPerformance(new BlenderClient("127.0.0.1", blenderPort), root);
   const report = {
-    status: "passed", tools: tools.tools.length, sceneId: id, relationSceneId: relationId, reviewPreviewVerified: true, boundedRevisionCases, guardPerformance, experienceLibrary,
+    status: "passed", tools: tools.tools.length, sceneId: id, relationSceneId: relationId, spatialScorerId: sharedSpatial.id,
+    reviewPreviewVerified: true, boundedRevisionCases, guardPerformance, experienceLibrary,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
     checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "continued scene reference input", "failed-edit checkpoint recovery"],
   };

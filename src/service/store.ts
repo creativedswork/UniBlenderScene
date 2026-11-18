@@ -4,7 +4,8 @@ import { basename, delimiter, isAbsolute, relative, resolve, sep } from "node:pa
 import { open, readFile, realpath } from "node:fs/promises";
 import { BlenderClient, factorGuardCode, inspectObjectCode, renderCode, sceneSummaryCode, structuralShadingCode } from "./blender.js";
 import { writeGraphExport } from "./graph-export.js";
-import { checkRelations, relationsForScope, validateRelations, verifyRelationReviews, type SceneRelation, type RelationCheck, type RelationReview } from "./relations.js";
+import { checkRelations, relationsForScope, validateRelations, verifyRelationReviews, type SceneRelation, type RelationCheck, type RelationReview, type SpatialScore } from "./relations.js";
+import { builtinSpatialSource, spatialEvaluationCode, spatialOptimizeCode, type SpatialLibrary, type SpatialRequest, type LayoutSearch } from "./spatial.js";
 import { verifyAssetStrategy, verifyGraphReview, type AssetRequirement, type AssetStrategy, type GraphReview } from "./workflow-guards.js";
 import { ExperienceLibrary, fileHash, type RetrospectiveInput, type Replay, type FixtureResult } from "./experience.js";
 import { renderThreeRT, threeRTCapability } from "./threert.js";
@@ -48,6 +49,7 @@ export type SceneNode = { id: string; label: string; kind: "group" | "object" | 
   relations?: { targetId: string; description: string }[] };
 export type Review = {
   relationReviews?: RelationReview[];
+  spatialReport?: string;
   inspectionId?: string; phase?: StageName; revisionId?: string;
   referenceEvidence?: { reference: string; observation: string }[];
   iteration: number;
@@ -80,7 +82,8 @@ export type Scene = {
   render?: string; exportedIteration?: number; previewedIteration?: number; job?: Job; error?: string;
   workflowIndex?: number; reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
   graphReview?: GraphReview; assetStrategies?: AssetStrategy[];
-  inspection?: { id: string; iteration: number; stage: string; summary: Record<string, unknown> };
+  spatialLibrary?: SpatialLibrary;
+  inspection?: { id: string; iteration: number; stage: string; summary: Record<string, unknown>; spatialReport?: string };
   compositionApproved?: boolean;
   pendingIteration?: number;
   renderMode?: Presentation["mode"]; bestRenderMode?: Presentation["mode"];
@@ -570,6 +573,12 @@ ${sceneSummaryCode()}`);
     if (plan.graph) validateSceneGraph(plan.graph);
     if (!plan.graph?.length || !plan.assets) throw new Error("Plan needs a Scene Graph and explicit asset requirements.");
     validateRelations(plan.graph, plan.criteria, plan.relations ?? []);
+    const bindings: SpatialLibrary["bindings"] = [];
+    for (const relation of plan.relations ?? []) {
+      const candidate = relation.scorer ? this.library.spatialCandidate(relation.scorer.id, relation.scorer.hash, true) :
+        relation.type !== "semantic" ? this.library.activeSpatial(`spatial-${relation.type}`) : undefined;
+      if (candidate) bindings.push({ relationId: relation.id, id: candidate.id, hash: candidate.hash });
+    }
     const subjects = plan.graph.filter((n) => n.kind !== "group");
     if (plan.assets.length !== subjects.length || new Set(plan.assets.map((a) => a.nodeId)).size !== subjects.length ||
         subjects.some((n) => !plan.assets!.some((a) => a.nodeId === n.id && a.reason.trim() &&
@@ -608,6 +617,7 @@ ${sceneSummaryCode()}`);
       }
     }
     scene.plan = plan;
+    scene.spatialLibrary = { builtin: builtinSpatialSource(), bindings };
     delete scene.previewedIteration;
     delete scene.reviewEvidence;
     delete scene.graphReview;
@@ -658,6 +668,55 @@ ${sceneSummaryCode()}`);
     this.save(scene); return scene;
   }
 
+  private spatialRequest(scene: Scene): SpatialRequest {
+    const library = scene.spatialLibrary ?? { builtin: builtinSpatialSource(), bindings: [] };
+    const skills = library.bindings.map(binding => {
+      const candidate = this.library.spatialCandidate(binding.id, binding.hash);
+      return { id: candidate.id, hash: candidate.hash, code: candidate.code! };
+    });
+    return { ...library, graph: scene.plan?.graph ?? [], relations: scene.plan?.relations ?? [], skills };
+  }
+
+  private recordSpatialInspection(scene: Scene): void {
+    if (!scene.inspection || !scene.summary?.spatialEvaluation) return;
+    const file = `measurements/${scene.inspection.id}.json`;
+    mkdirSync(this.path(scene, "measurements"), { recursive: true });
+    writeFileSync(this.path(scene, file), JSON.stringify({ inspectionId: scene.inspection.id, iteration: scene.iteration,
+      phase: scene.inspection.stage, relationChecks: scene.summary.relationChecks,
+      spatialEvaluation: scene.summary.spatialEvaluation, layoutOptimization: scene.summary.layoutOptimization }, null, 2));
+    scene.inspection.spatialReport = file;
+  }
+
+  optimize(id: string, options: LayoutSearch): Scene {
+    const scene = this.get(id); this.idle(scene);
+    const phase = this.workflowState(scene).phase;
+    if (!scene.plan || scene.stage !== "edit" || scene.plan.workflow && !["geometry", "composition"].includes(phase ?? "")) {
+      throw new Error("Optimize layout only during an authorized geometry/composition edit.");
+    }
+    if (!options.movableNodeIds.length || options.movableNodeIds.length > 30 || new Set(options.movableNodeIds).size !== options.movableNodeIds.length ||
+      options.movableNodeIds.some(id => !scene.plan!.graph?.some(node => node.id === id && node.kind !== "group")) ||
+      !Number.isFinite(options.translationStep) || options.translationStep <= 0 || options.translationStep > 1000 ||
+      !Number.isInteger(options.passes) || options.passes < 1 || options.passes > 8 ||
+      !Number.isFinite(options.rotationStepDegrees) || options.rotationStepDegrees < 0 || options.rotationStepDegrees > 45) {
+      throw new Error("Layout search needs 1-30 distinct non-group nodes, a positive step up to 1000 units, 1-8 passes and rotation step in [0, 45] degrees.");
+    }
+    const revision = this.activeRevision(scene);
+    if (revision && options.movableNodeIds.some(id => !revision.request.scopeNodeIds.includes(id))) throw new Error("Layout search cannot expand the authorized revision scope.");
+    const criterionIds = scene.plan.workflow?.stages[scene.workflowIndex ?? 0]?.criterionIds ?? scene.plan.criteria.map(c => c.id);
+    const relationIds = (scene.plan.relations ?? []).filter(r => r.type !== "semantic" && r.criterionIds.some(id => criterionIds.includes(id))).map(r => r.id);
+    if (!relationIds.length) throw new Error("No measurable relations are bound to this stage; semantic descriptions alone cannot drive numeric layout search.");
+    const request = this.spatialRequest(scene);
+    const overrides = options.scorerOverrides ?? [];
+    if (new Set(overrides.map(binding => binding.relationId)).size !== overrides.length || overrides.some(binding => !relationIds.includes(binding.relationId))) {
+      throw new Error("Candidate overrides must reference distinct active measured relations.");
+    }
+    for (const binding of overrides) {
+      const candidate = this.library.spatialCandidate(binding.id, binding.hash);
+      request.skills.push({ id: candidate.id, hash: candidate.hash, code: candidate.code! });
+    }
+    return this.edit(id, spatialOptimizeCode(request, { ...options, relationIds }));
+  }
+
   edit(id: string, code: string): Scene {
     const scene = this.get(id);
     this.idle(scene);
@@ -676,6 +735,7 @@ ${sceneSummaryCode()}`);
     const { spent, limit } = this.attemptLimit(scene);
     if (spent >= limit) throw new Error("Stage edit budget reached. An explicit scene_revise grant is required for additional rounds.");
     const revision = this.activeRevision(scene);
+    const scoring = scene.plan.relations?.length ? this.spatialRequest(scene) : undefined;
     delete scene.previewedIteration;
     delete scene.reviewEvidence;
     this.enqueue(scene, "edit", async () => {
@@ -712,11 +772,14 @@ for _asset in _provider_assets:
     if not _matches: raise RuntimeError('Import and tag the recorded provider asset before rendering: ' + _asset['node'])
 bpy.ops.wm.save_as_mainfile(filepath=${py(current)})
 ${renderCode(this.path(scene, render), this.workflowState(scene).presentation.mode === "structural")}
-${sceneSummaryCode(scene.plan?.relations?.length ? scene.plan.graph : undefined)}`);
+${sceneSummaryCode()}
+${scoring ? spatialEvaluationCode(scoring) : ""}`);
         scene.render = render;
         scene.renderMode = this.workflowState(scene).presentation.mode;
-        scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds);
+        scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds,
+          (scene.summary.spatialEvaluation as { results: SpatialScore[] } | undefined)?.results);
         scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: activeStage ?? "scene", summary: scene.summary };
+        this.recordSpatialInspection(scene);
         scene.currentContentIteration = scene.iteration;
         mkdirSync(this.path(scene, "scripts"), { recursive: true });
         writeFileSync(this.path(scene, `scripts/iteration-${scene.iteration}.py`), code);
@@ -819,7 +882,8 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       return anchor.targetBox.map((value, index) => Math.abs(value - render[index]!));
     })) : 0;
     const revision = this.activeRevision(scene);
-    const reviewed: Review = { ...input, phase: workflowStage?.name, revisionId: revision?.id ?? scene.confirmationRevisionId,
+    const reviewed: Review = { ...input, spatialReport: scene.inspection.spatialReport,
+      phase: workflowStage?.name, revisionId: revision?.id ?? scene.confirmationRevisionId,
       ...(anchors ? { alignmentMaxError } : {}) };
     const quality = (review: Review): number[] => [
       -(Number((review.alignmentMaxError ?? 0) > MAX_ANCHOR_ERROR)),
@@ -907,11 +971,14 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       scene.summary = await this.blender.execute(`
 bpy.ops.wm.open_mainfile(filepath=${py(this.path(scene, "current.blend"))})
 ${renderCode(this.path(scene, render), true)}
-${sceneSummaryCode(scene.plan?.relations?.length ? scene.plan.graph : undefined)}`);
+${sceneSummaryCode()}
+${scene.plan?.relations?.length ? spatialEvaluationCode(this.spatialRequest(scene)) : ""}`);
       scene.render = render;
       scene.renderMode = "structural";
-      scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds);
+      scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds,
+        (scene.summary.spatialEvaluation as { results: SpatialScore[] } | undefined)?.results);
       scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: "composition", summary: scene.summary };
+      this.recordSpatialInspection(scene);
       scene.stage = "review";
     });
   }
@@ -1270,8 +1337,9 @@ result = {"reviewViews": 5}
     const candidate = this.library.candidate(candidateId);
     if (candidate.hash !== expectedHash) throw new Error("Candidate hash changed.");
     const checked = this.library.checkReplays(candidate, replays);
-    const finish = (results: FixtureResult[], version?: string, error?: string) => {
-      const validation = this.library.validate(candidateId, expectedHash, checked, results, version, error);
+    const regressionFixtures = this.library.regressionFixtures(candidate);
+    const finish = (results: FixtureResult[], version?: string, error?: string, regressions: FixtureResult[] = []) => {
+      const validation = this.library.validate(candidateId, expectedHash, checked, results, version, error, regressions);
       scene.skillValidation = { candidateId, validationId: validation.id, passed: validation.passed };
     };
     if (candidate.kind === "guidance") { finish([]); this.save(scene); return scene; }
@@ -1280,7 +1348,8 @@ result = {"reviewViews": 5}
       const template = readFileSync(new URL("../../runtime/blender/validate_skill.py", import.meta.url), "utf8");
       let output: Record<string, unknown>;
       try {
-        output = await this.blender.execute(template.replace("__SKILL_REQUEST__", py(JSON.stringify({ code: candidate.code, fixtures: candidate.fixtures }))));
+        output = await this.blender.execute(template.replace("__SKILL_REQUEST__", py(JSON.stringify({ code: candidate.code, kind: candidate.kind,
+          fixtures: [...candidate.fixtures, ...regressionFixtures] }))));
       } catch (error) {
         finish([], undefined, error instanceof Error ? error.message : String(error));
         throw error;
@@ -1294,7 +1363,9 @@ result = {"reviewViews": 5}
           throw new Error("Blender recovery failed; restart the dedicated bridge and service.");
         }
       }
-      finish(output.fixtures as FixtureResult[], String(output.blenderVersion));
+      const reports = output.fixtures as FixtureResult[];
+      finish(reports.filter(r => candidate.fixtures.some(f => f.name === r.name)), String(output.blenderVersion), undefined,
+        reports.filter(r => regressionFixtures.some(f => f.name === r.name)));
     });
     return scene;
   }
@@ -1368,7 +1439,7 @@ result = {"reviewViews": 5}
   }
 
   snapshot(scene: Scene, origin: string): Record<string, unknown> {
-    const { token, reference: _, references: __, ...publicScene } = scene;
+    const { token, reference: _, references: __, spatialLibrary, ...publicScene } = scene;
     const workflowState = this.workflowState(scene);
     const url = (file: string) => `${origin}/artifacts/${scene.id}/${file}?token=${token}${file.startsWith("previews/") ? `&preview=structural&source=${workflowState.presentation.source}&phase=${workflowState.phase}` : ""}${file.startsWith("artifacts/") && scene.exportVersion ? `&v=${scene.exportVersion}` : ""}`;
     const references = this.referenceImages(scene).map((image, index) => ({ ...image,
@@ -1378,6 +1449,7 @@ result = {"reviewViews": 5}
     return {
       ...publicScene,
       workflowState,
+      spatialLibrary: spatialLibrary ? { builtin: { id: spatialLibrary.builtin.id, hash: spatialLibrary.builtin.hash }, bindings: spatialLibrary.bindings } : undefined,
       affectedRelations: relationsForScope(scene.plan?.graph ?? [], scene.plan?.relations ?? [], this.activeRevision(scene)?.request.scopeNodeIds ?? []),
       threeRT,
       realtimeUrl: scene.exportVersion ? `${origin}/realtime/${scene.id}?token=${token}&version=${encodeURIComponent(scene.exportVersion)}` : null,

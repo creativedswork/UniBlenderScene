@@ -1023,7 +1023,7 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   try {
     const tools = await client.listTools();
     checkSceneTools(tools.tools);
-    assert.equal(tools.tools.length, 23);
+    assert.equal(tools.tools.length, 24);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_render_high_quality")?._meta?.["openai/widgetAccessible"], true);
     assert.ok(tools.tools.some((tool) => tool.name === "scene_preview"));
     const create = tools.tools.find((tool) => tool.name === "scene_create")!;
