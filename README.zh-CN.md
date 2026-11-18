@@ -101,3 +101,5 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 ## 致谢与上游更新
 
 插件包含 [Scenario Blender Skills](skills/scenario-blender-expert/SKILL.md)，原作者为 Scenario Labs 及其贡献者，采用 [MIT 许可证](skills/scenario/LICENSE)。固定的上游版本与更新流程详见[上游跟踪](docs/scenario-skills.md)。
+
+插件还吸收了 [EL4CTEO Blender Skills](https://github.com/EL4CTEO/blender-skills) 的日夜氛围、天气和表面做旧技术，采用其 [MIT 许可证](skills/blender-effects/LICENSE)。固定来源、场景适配与交付限制见[效果集成说明](docs/blender-effects.md)。

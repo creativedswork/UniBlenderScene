@@ -1,6 +1,6 @@
 {
   "name": "uni-blender-scene",
-  "version": "0.3.5-relations.2",
+  "version": "0.3.6-effects.1",
   "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP.",
   "author": { "name": "CreativeDSWork" },
   "repository": "https://github.com/creativedswork/UniBlenderScene",

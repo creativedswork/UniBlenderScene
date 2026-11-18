@@ -145,3 +145,8 @@ The plugin includes [Scenario Blender Skills](skills/scenario-blender-expert/SKI
 credited to Scenario Labs and its contributors under the
 [MIT license](skills/scenario/LICENSE). See [upstream tracking](docs/scenario-skills.md)
 for the pinned revision and update process.
+
+Selected [EL4CTEO Blender Skills](https://github.com/EL4CTEO/blender-skills)
+contribute time-of-day, weather and surface-texturing techniques under their
+[MIT license](skills/blender-effects/LICENSE). See [effects integration](docs/blender-effects.md)
+for the pinned sources, scene adapters and delivery limits.

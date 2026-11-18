@@ -105,7 +105,8 @@ evidence through the service or report that it is not ready.
 4. For a visually detailed scene, read [production knowledge](references/production-knowledge.md)
    and [scene craft](references/scene-craft.md) before planning. Co-load the
    top-level [Scenario Blender expert](../scenario-blender-expert/SKILL.md) and
-   only the relevant sibling Scenario domain Skills. They supply production
+   only the relevant domain Skills from the production map, including environment
+   and surface effects when requested. They supply production
    techniques; this Skill remains the authority for the `scene_*` workflow.
    Freeze a global plan with
    `scene_plan`: state the target, 1-12 observable criteria with unique IDs and
