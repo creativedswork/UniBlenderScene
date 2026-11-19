@@ -94,8 +94,18 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (entry) => { if (entry.type() === "error") console.error(entry.text()); });
-  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
   const frame = page.frameLocator("#viewer");
+  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/?cameras=1`);
+  await frame.locator("#reference-select").selectOption("reference-5");
+  await frame.locator("#reference-open").click();
+  await frame.locator("#reference-match").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    const img = frame.contentDocument?.querySelector("#reference-match") as HTMLImageElement;
+    return img?.naturalWidth === 96 && img.naturalHeight === 64;
+  });
+  await page.screenshot({ path: resolve(root, "viewer-reference-camera.png") });
+  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
   await frame.getByRole("button", { name: "3D", exact: true }).waitFor({ state: "visible" });
   try {
     await page.waitForFunction(() => {
@@ -240,11 +250,11 @@ try {
   const inputBytes = await readFile(resolve(root, "render.png"));
   const imageFile = (name: string) => ({ name, mimeType: "image/png", buffer: inputBytes });
   await frame.locator("#file").setInputFiles([imageFile("front.png"), imageFile("side.png")]);
-  await frame.getByRole("combobox", { name: "Primary view for a new scene" }).selectOption("1");
   await frame.getByRole("button", { name: "Create scene", exact: true }).click();
   await page.waitForFunction(() => document.getElementById("sent")?.dataset.submission?.includes("scene_create"));
   const created = JSON.parse((await page.locator("#sent").getAttribute("data-submission"))!);
-  assert.deepEqual(created.arguments.references.map((image: { file_name: string }) => image.file_name), ["side.png", "front.png"]);
+  assert.deepEqual(created.arguments.references.map((image: { file_name: string; attachmentNumber: number }) =>
+    [image.file_name, image.attachmentNumber]), [["front.png", 1], ["side.png", 2]]);
   await frame.locator("#file").setInputFiles(Array.from({ length: 5 }, (_, index) => imageFile(`extra-${index}.png`)));
   await frame.getByRole("button", { name: "Add views to this scene" }).click();
   await frame.getByText("A scene can have at most 6 reference images in total.", { exact: true }).waitFor();
@@ -255,6 +265,7 @@ try {
   const appended = JSON.parse((await page.locator("#sent").getAttribute("data-submission"))!);
   assert.equal(appended.arguments.sceneId, snapshot.id);
   assert.equal(appended.arguments.references[0].file_name, "back.png");
+  assert.equal(appended.arguments.references[0].attachmentNumber, 1);
   await frame.locator("#file").setInputFiles(Array.from({ length: 7 }, (_, index) => imageFile(`image-${index}.png`)));
   await frame.getByText("Use up to 6 PNG, JPEG or WebP images, each at most 20 MB.", { exact: true }).waitFor();
   assert.equal(await frame.locator("#reference-upload").isVisible(), false);
@@ -324,16 +335,6 @@ try {
     checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "raster lightmaps and planar reflection without progressive sampling", "WASD moves the web camera and selection projection", "ThreeRT WASD camera synchronization with a transport fixture", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
     pageErrors: errors,
   }, null, 2));
-  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/?cameras=1`);
-  await frame.locator("#reference-select").selectOption("reference-5");
-  await frame.locator("#reference-open").click();
-  await frame.locator("#reference-match").waitFor({ state: "visible" });
-  await page.waitForFunction(() => {
-    const frame = document.querySelector("iframe") as HTMLIFrameElement;
-    const img = frame.contentDocument?.querySelector("#reference-match") as HTMLImageElement;
-    return img?.naturalWidth === 96 && img.naturalHeight === 64;
-  });
-  await page.screenshot({ path: resolve(root, "viewer-reference-camera.png") });
   console.log(`Viewer integration passed; screenshots saved under ${root}`);
 } catch (error) {
   console.error("Original viewer failure", error);
