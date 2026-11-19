@@ -321,6 +321,16 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   assert.ok(profile.world.backgroundEnvironmentUri?.startsWith("data:application/octet-stream;base64,"));
   assert.ok(Math.abs(profile.postprocessing.bloom.strength - 0.1) < 1e-6);
   assert.ok(Math.abs(profile.postprocessing.haze.strength - 0.03) < 1e-6);
+  assert.ok(profile.warnings.some((warning: string) => warning.includes("Fog Glow")));
+  assert.ok(profile.warnings.some((warning: string) => warning.includes("unsupported density graph")));
+  assert.equal(profile.vfx.volumes.length, 2);
+  const gradientFog = profile.vfx.volumes.find((volume: { name: string }) => volume.name === "Low colored haze");
+  assert.ok(gradientFog);
+  assert.deepEqual(gradientFog.color.map((channel: number) => Math.round(channel * 10)), [2, 5, 8]);
+  assert.ok(Math.abs(gradientFog.height.top - 0.01) < 1e-6);
+  assert.equal(gradientFog.height.mode, "linear");
+  assert.ok(Math.abs(gradientFog.noiseScale - 0.7) < 1e-6);
+  assert.ok(!gltf.nodes.some((node: { name: string }) => node.name === gradientFog.name));
   assert.deepEqual(profile.previewAppearance, previewAppearance);
   assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
   assert.equal(profile.materials.objects, 1, "Only the procedural swatch needs material baking");
@@ -447,7 +457,31 @@ bpy.context.scene.render.resolution_y=128
     observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible cube geometry", actual: "Cube geometry visible in gray rendering",
       evidence: "Rendered PNG and Blender object summary" }],
     visualScore: 90, regressions: [], repairable: false, nextAction: "Continue stage" });
-  await call("scene_edit", { sceneId: stagedId, code: await readFile("tests/scene.py", "utf8") });
+  const weatherSource = await readFile("skills/blender-weather-fx/scripts/precipitation.py", "utf8");
+  const weatherGraph = weatherSource.slice(weatherSource.indexOf("class _T:"), weatherSource.indexOf("def _material("));
+  await call("scene_edit", { sceneId: stagedId, code: (await readFile("tests/scene.py", "utf8")) + `
+import math
+${weatherGraph}
+emitter = bpy.data.objects.new("Weather fixture", bpy.data.meshes.new("Emitter"))
+scene.collection.objects.link(emitter)
+emitter.location.z = 0.05
+modifier = emitter.modifiers.new("Weather", "NODES")
+modifier.node_group = build_tree("Weather fixture graph", "rain")
+grounds = bpy.data.collections.new("Weather receivers")
+scene.collection.children.link(grounds)
+grounds.objects.link(receiver)
+parameters = {"Count": 180, "Size": (6, 6, 3), "Seed": 41, "Ground": grounds, "Camera": camera,
+              "Particle Size": 0.012, "Streak Length": 0.3, "Material": packed_material}
+for item in modifier.node_group.interface.items_tree:
+    if getattr(item, "in_out", None) != "INPUT" or item.name not in parameters:
+        continue
+    inputs = getattr(getattr(modifier, "properties", None), "inputs", None)
+    if inputs is None:
+        modifier[item.identifier] = parameters[item.name]
+    else:
+        getattr(inputs, item.identifier).value = parameters[item.name]
+scene.frame_end = 24
+` });
   const geometry = await poll(stagedId);
   assert.equal(geometry.workflowState.phase, "geometry");
   assert.deepEqual(geometry.workflowState.presentation, { mode: "structural", purpose: "work", source: "current", iteration: 1, contentIteration: 1 });
@@ -543,7 +577,13 @@ bpy.context.scene.render.resolution_y=128
   await poll(stagedId);await reviewFixture(stagedReview(3));
   await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.2"});
   assert.match((await poll(stagedId,"failed")).error,/frozen materials/);
-  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.objects['Key'].data.energy=1400"});
+  await call("scene_edit", { sceneId: stagedId, code: `
+key = bpy.data.objects["Key"].data
+for frame, energy in ((1, 1400), (8, 5200), (24, 1400)):
+    key.energy = energy
+    key.keyframe_insert("energy", frame=frame)
+bpy.context.scene.frame_set(1)
+` });
   await poll(stagedId);await reviewFixture(stagedReview(4));
   await call("scene_edit",{sceneId:stagedId,code:"bpy.context.scene.camera.location.x += 1"});
   assert.match((await poll(stagedId,"failed")).error,/frozen placement/);
@@ -578,6 +618,9 @@ bpy.context.scene.render.resolution_y=128
   const lightmapDirectory = join(root, ".canova/runs", stagedId, `artifacts/${lightmapped.exportedIteration}`);
   const lightmapProfile = JSON.parse(await readFile(join(lightmapDirectory, "render-profile.json"), "utf8"));
   assert.equal(lightmapProfile.previewAppearance.renderMode, "raster");
+  const rain = lightmapProfile.vfx.precipitation[0];
+  assert.deepEqual([rain.kind, rain.count, rain.seed, ...rain.ground], ["rain", 180, 41, "ShadowReceiver"]);
+  assert.ok(lightmapProfile.vfx.animation.tracks.some((track: { kind: string; name: string }) => track.kind === "light" && track.name === "Key"));
   assert.equal(lightmapProfile.lightmaps.length, 1);
   const lightmap = lightmapProfile.lightmaps[0];
   assert.equal(lightmap.objectName, "ShadowReceiver");

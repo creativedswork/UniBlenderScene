@@ -1,3 +1,6 @@
+import type { VfxProfile } from "../shared/vfx.js";
+import { createWeather } from "./weather.js";
+import { volumeUniforms, volumeShader } from "./volumes.js";
 import { version } from "../../package.json";
 import { App } from "@modelcontextprotocol/ext-apps";
 import * as THREE from "three";
@@ -36,6 +39,8 @@ type Snapshot = {
   } };
 };
 type Profile = {
+  vfx?: VfxProfile;
+  warnings?: string[];
   version: number; previewMode?: string; source?: { kind: string; purpose: string; phase: string | null; iteration: number }; colorManagement: { viewTransform: string; exposure: number; displayLut?: { uri: string; size: number; maxLinear: number } };
   render: { resolutionX: number; resolutionY: number; filmTransparent: boolean };
   world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number; backgroundEnvironmentUri?: string | null };
@@ -70,6 +75,7 @@ let viewer: {
   probe?: THREE.WebGLRenderTarget;
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
   effects?: ReturnType<typeof previewEffects>;
+  weather?: ReturnType<typeof createWeather>;
   position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
   meshesById: Map<string, THREE.Mesh[]>;
 } | undefined;
@@ -296,6 +302,7 @@ function dispose() {
   updateSceneStats();
   el("selection-box").style.display = "none";
   if (!viewer) return;
+  viewer.weather?.dispose();
   clearInterval(viewer.frameTimer);
   viewer.navigation.dispose();
   viewer.resize.disconnect();
@@ -518,6 +525,7 @@ function applyLights(model: THREE.Group, profile: Profile) {
       light.power = power;
     } else { light = new THREE.PointLight(color); light.power = power; }
     // The holder carries Blender's transform; Three's sun/spot defaults offset the light.
+    light.name = definition.name;
     light.position.set(0, 0, 0);
     holder.add(light);
     if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
@@ -561,7 +569,8 @@ async function displayTransform(profile: Profile, textures: THREE.Texture[]): Pr
 function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, profile: Profile) {
   const settings = profile.postprocessing;
   const appearance = profile.previewAppearance, dust = appearance?.dust;
-  if (!settings?.bloom && !settings?.haze && !dust && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
+  const volumes = profile.vfx?.volumes ?? [];
+  if (!settings?.bloom && !settings?.haze && !dust && !volumes.length && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
   const composer = new EffectComposer(renderer, target);
   composer.renderToScreen = false;
@@ -571,7 +580,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   composer.addPass(source);
   let sun: THREE.DirectionalLight | undefined;
   const sunDirection = new THREE.Vector3(0, 1, 0);
-  if (dust) {
+  if (dust || volumes.length) {
     scene.traverse(object => { if (!sun && object instanceof THREE.DirectionalLight) sun = object; });
     if (sun) {
       scene.updateMatrixWorld(true);
@@ -594,7 +603,8 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   }
   let depth: THREE.WebGLRenderTarget | undefined, depthMaterial: THREE.MeshDepthMaterial | undefined;
   let hazePass: ShaderPass | undefined;
-  if (settings?.haze || appearance) {
+  const atmosphere = volumeUniforms(volumes, scene, camera);
+  if (settings?.haze || appearance || volumes.length) {
     const haze = settings?.haze;
     const centers = Array.from({ length: 6 }, (_, i) => {
       const v = dust?.volumes[i]; return v ? new THREE.Vector4(v.center[0], v.center[2], -v.center[1]!, v.density) : new THREE.Vector4();
@@ -606,7 +616,8 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
     depthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
     hazePass = new ShaderPass({
       uniforms: {
-        tDiffuse: { value: null }, depthImage: { value: null },
+        ...atmosphere.uniforms,
+        tDiffuse: { value: null }, depthImage: { value: null }, orthographic: { value: camera instanceof THREE.OrthographicCamera },
         projectionInverse: { value: camera.projectionMatrixInverse.clone() },
         cameraWorld: { value: camera.matrixWorld.clone() }, time: { value: 0 },
         start: { value: haze?.start ?? 0 }, range: { value: Math.max(haze?.depth ?? 1, 0.001) },
@@ -629,7 +640,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         uniform sampler2D tDiffuse,depthImage,sunDepth;
         uniform mat4 projectionInverse,cameraWorld,sunMatrix;
         uniform float start,range,strength,time,exposureGain,saturation,contrast;
-        uniform bool quadratic,hasSunShadow;
+        uniform bool quadratic,hasSunShadow,orthographic;
         uniform vec2 shadowTexel;
         uniform vec3 hazeColor,dustColor,wind,dustRadii[6],whiteBalance,sunDirection,sunColor;
         uniform vec4 dustCenters[6];
@@ -652,15 +663,22 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
           }
           return visible*0.25;
         }
+        ${volumeShader}
         void main(){
           float depth=unpackRGBAToDepth(texture2D(depthImage,vUv));
           vec4 p=projectionInverse*vec4(vUv*2.0-1.0,depth*2.0-1.0,1.0);
           float mist=clamp((length(p.xyz/p.w)-start)/range,0.0,1.0);
           if(quadratic)mist*=mist;
           vec4 color=texture2D(tDiffuse,vUv);
-          vec3 origin=cameraWorld[3].xyz;
-          vec3 direction=normalize(mat3(cameraWorld)*(p.xyz/p.w));
-          float surfaceDistance=length(p.xyz/p.w),optical=0.0;
+          vec3 viewStart=vec3(0);
+          if(orthographic){
+            vec4 nearPoint=projectionInverse*vec4(vUv*2.0-1.0,-1.0,1.0);
+            viewStart=nearPoint.xyz/nearPoint.w;
+          }
+          vec3 viewRay=p.xyz/p.w-viewStart;
+          vec3 origin=(cameraWorld*vec4(viewStart,1.0)).xyz;
+          vec3 direction=normalize(mat3(cameraWorld)*viewRay);
+          float surfaceDistance=length(viewRay),optical=0.0;
           vec3 scatter=vec3(0);
           float entries[6],exits[6];
           for(int cloud=0;cloud<6;cloud++){
@@ -696,6 +714,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
               optical+=tau;
             }
           }
+          color.rgb=applyVolumes(color.rgb,origin,direction,surfaceDistance);
           color.rgb=color.rgb*exp(-optical)+scatter;
           color.rgb=mix(color.rgb,hazeColor,mist*strength)*exposureGain*whiteBalance;
           // A luminance curve preserves hue while separating sunlit and shaded regions.
@@ -706,13 +725,14 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
           gl_FragColor=color;
         }`,
     });
+    Object.assign(hazePass.uniforms, atmosphere.uniforms);
     hazePass.uniforms.depthImage!.value = depth.texture;
     hazePass.material.toneMapped = false;
     composer.addPass(hazePass);
   }
   return {
     animated: Boolean(dust?.volumes.length),
-    shadowedDust: Boolean(dust && sun),
+    shadowedDust: Boolean((dust || volumes.length) && sun),
     depthDirty: true,
     resize(width: number, height: number) {
       composer.setSize(width, height); depth?.setSize(width, height); this.depthDirty = true;
@@ -739,7 +759,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         }
         this.depthDirty = false;
       }
-      if (hazePass) hazePass.uniforms.time!.value = performance.now() / 1000;
+      if (hazePass) {
+        hazePass.uniforms.time!.value = performance.now() / 1000;
+        if (sun) hazePass.uniforms.sunColor!.value.copy(sun.color).multiplyScalar(sun.intensity / (4 * Math.PI));
+      }
+      atmosphere.update();
       source.map = texture; composer.render();
       if (display) {
         (display.material as THREE.ShaderMaterial).uniforms.source!.value = composer.readBuffer.texture;
@@ -796,7 +820,8 @@ async function loadModel(url: string) {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     const scene = new THREE.Scene(); scene.add(gltf.scene);
-    const raster = profile.previewAppearance?.renderMode === "raster";
+    const raster = profile.previewAppearance?.renderMode === "raster" || Boolean(gltf.animations.length ||
+      profile.vfx?.precipitation?.some(effect => effect.count > 0) || profile.vfx?.ripples?.length || profile.vfx?.animation);
     if (raster) { renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true; }
     const meshesById = new Map<string, THREE.Mesh[]>();
     const indexMeshes = (object: THREE.Object3D, inherited?: string, visible = true) => {
@@ -941,6 +966,7 @@ async function loadModel(url: string) {
     }
     const display = await displayTransform(profile, textures);
     const effects = previewEffects(renderer, scene, camera, profile);
+    const weather = createWeather(profile.vfx, scene, gltf.scene, gltf.animations);
     if (raster) renderer.shadowMap.needsUpdate = true;
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
     const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, samples: raster ? 4 : 0 }) : undefined;
@@ -986,6 +1012,14 @@ async function loadModel(url: string) {
         rasterDirty = true;
         if (effects) effects.depthDirty = true;
       }
+      if (viewer.weather) {
+        viewer.weather.update(camera);
+        rasterDirty = true;
+        if (viewer.weather.geometryChanges) {
+          if (effects) effects.depthDirty = true;
+          renderer.shadowMap.needsUpdate = true;
+        }
+      }
       if (tracer && tracer.samples >= 512 && !effects?.animated) return;
       if (!tracer && !rasterDirty && !effects?.animated) return;
       if (tracer && tracer.samples < 512) tracer.renderSample();
@@ -1013,7 +1047,7 @@ async function loadModel(url: string) {
       viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
       gl.flush();
     }, 16);
-    viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, frameTimer,
+    viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, weather, frameTimer,
       position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
     resize.observe(el("stage"));
     renderer.domElement.dataset.renderer = raster ? "raster" : "path-tracing";
@@ -1022,6 +1056,9 @@ async function loadModel(url: string) {
     renderer.domElement.dataset.samples = "0";
     renderer.domElement.dataset.effects = Object.keys(profile.postprocessing ?? {}).join(",");
     if (profile.previewAppearance?.dust) renderer.domElement.dataset.effects += ",dust";
+    if (profile.vfx?.volumes?.length) renderer.domElement.dataset.effects += ",volumes";
+    if (weather) renderer.domElement.dataset.effects += ",weather";
+    renderer.domElement.title = (profile.warnings ?? []).join("\n");
     renderer.domElement.dataset.dustLighting = effects?.shadowedDust ? "sun-shadow" : "ambient";
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;

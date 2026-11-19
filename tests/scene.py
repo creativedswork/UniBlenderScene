@@ -190,7 +190,7 @@ group.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocke
 scene.compositing_node_group = group
 layers = group.nodes.new("CompositorNodeRLayers")
 bloom = group.nodes.new("CompositorNodeGlare")
-bloom.inputs["Type"].default_value = "Bloom"
+bloom.inputs["Type"].default_value = "Fog Glow"
 bloom.inputs["Strength"].default_value = 0.1
 multiply = group.nodes.new("ShaderNodeMath")
 multiply.operation = "MULTIPLY"
@@ -204,3 +204,29 @@ group.links.new(layers.outputs["Mist"], multiply.inputs[0])
 group.links.new(multiply.outputs[0], mix.inputs[0])
 group.links.new(bloom.outputs["Image"], mix.inputs[6])
 group.links.new(mix.outputs[2], output.inputs["Image"])
+
+# A second named volume has its own color and a linked, height-dependent density.
+bpy.ops.mesh.primitive_cube_add(size=2, location=(1, 0, 0.8))
+low = bpy.context.object
+low.name = "Low colored haze"
+material = proxy_material.copy()
+tree = material.node_tree
+scatter = next(node for node in tree.nodes if node.type == "VOLUME_SCATTER")
+scatter.inputs["Color"].default_value = (0.2, 0.5, 0.8, 1)
+scatter.inputs["Anisotropy"].default_value = 0.35
+coordinates = tree.nodes.new("ShaderNodeTexCoord")
+height = tree.nodes.new("ShaderNodeSeparateXYZ")
+fade = tree.nodes.new("ShaderNodeMapRange")
+fade.inputs["To Min"].default_value = 0.08
+fade.inputs["To Max"].default_value = 0.01
+tree.links.new(coordinates.outputs["Generated"], height.inputs[0])
+tree.links.new(height.outputs["Z"], fade.inputs["Value"])
+noise = tree.nodes.new("ShaderNodeTexNoise")
+noise.inputs["Scale"].default_value = 0.7
+tree.links.new(coordinates.outputs["Object"], noise.inputs["Vector"])
+multiply = tree.nodes.new("ShaderNodeMath")
+multiply.operation = "MULTIPLY"
+tree.links.new(noise.outputs["Fac"], multiply.inputs[0])
+tree.links.new(fade.outputs["Result"], multiply.inputs[1])
+tree.links.new(multiply.outputs[0], scatter.inputs["Density"])
+low.data.materials.append(material)

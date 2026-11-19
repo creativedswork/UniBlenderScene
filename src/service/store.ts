@@ -109,6 +109,11 @@ export type Reference = { download_url?: string; file_id?: string; local_path?: 
 type ReferenceCamera = { reference: typeof REFERENCE_ASSETS[number]; cameraName: string };
 type StoredReference = NonNullable<Scene["reference"]> & { assetName: typeof REFERENCE_ASSETS[number] };
 const py = JSON.stringify;
+function exportTemplate() {
+  const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+  const vfx = readFileSync(new URL("../../runtime/blender/vfx.py", import.meta.url), "utf8");
+  return template.replace("__VFX_EXPORT_SOURCE__", () => vfx);
+}
 const cameraRenderFile = (render: string, reference: ReferenceCamera["reference"]) => render.replace(/\.png$/, `-${reference}.png`);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_ANCHOR_ERROR = 0.08;
@@ -1261,7 +1266,7 @@ result = {"reviewViews": 5}
             !vector(v.center, -10000, 10000) || !vector(v.radius, 0.05, 1000) || !Number.isFinite(v.density) || v.density < 0 || v.density > 2)))) {
       throw new Error("Invalid preview appearance: use finite exposure, saturation and up to six bounded dust volumes.");
     }
-    const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+    const template = exportTemplate();
     const pipelineHash = createHash("sha256").update(template)
       .update(readFileSync(new URL("../../runtime/blender/postprocess/bake.py", import.meta.url))).digest("hex");
     const sameLighting = preview || (JSON.stringify(scene.exportLighting ?? []) === JSON.stringify(bakes) &&
@@ -1322,7 +1327,7 @@ result = {"reviewViews": 5}
         mkdirSync(output, { recursive: true });
         // ThreeRT uses the materials-only copy, keeping baked illumination out of physical emitters.
         const bake = await prepareBake(this.blender, this.path(scene, "best.blend"), this.path(scene, "."), [], false);
-        const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+        const template = exportTemplate();
         const code = template.replace("__SOURCE_BLEND__", py(this.path(scene, "best.blend")))
           .replace("__OUTPUT_DIRECTORY__", py(output))
           .replace("__PREPARED_BLEND__", py(this.path(scene, `${bake.directory}/prepared.blend`)))

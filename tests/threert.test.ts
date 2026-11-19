@@ -7,7 +7,7 @@ import { BlenderClient } from "../src/service/blender.js";
 import { SceneStore, type Scene } from "../src/service/store.js";
 import { cameraFromGLB, modelWithoutPunctualLights, renderThreeRT } from "../src/service/threert.js";
 import { buildThreeRTScene, type ThreeRTInput } from "../runtime/threert/scene.js";
-import { FogVolume } from "@threert/scene";
+import { FogVolume, HomogeneousVolume, RainCurtain } from "@threert/scene";
 import { PNG } from "pngjs";
 
 function glb(cameraType = "perspective") {
@@ -113,6 +113,30 @@ test("ThreeRT preserves a parented camera and converts local dust from Z-up to Y
   assert.deepEqual([fog.position.x, fog.position.y, fog.position.z], [2, 4, -3]);
   assert.deepEqual([fog.scale.x, fog.scale.y, fog.scale.z], [10, 14, 12]);
   assert.equal(built.camera.exposure.mode, "manual");
+});
+
+test("native VFX maps exported boxes, phase and rain to ThreeRT objects", () => {
+  const input: ThreeRTInput = { camera: cameraFromGLB(glb()), profile: {
+    ...profile, previewAppearance: undefined, vfx: {
+      volumes: [{ name: "Upper haze", min: [-1, 2, -3], max: [3, 8, 1],
+        density: 0.007, anisotropy: 0.25, color: [0.2, 0.5, 0.8] },
+      { name: "Ground haze", min: [-1, 0, -3], max: [3, 2, 1], density: 0.05, anisotropy: 0.45,
+        color: [0.6, 0.3, 0.15], height: { mode: "exponential", start: 0.2, depth: 0.5 } }],
+      precipitation: [{ name: "Rain", kind: "rain", center: [0, 2, 0], size: [4, 4, 4], velocity: [1, -4, 0],
+        count: 20, period: 2, lives: 2, seed: 1, radius: 0.003, streak: 0.1, sway: 0, near: 0, splash: 0, ground: [],
+        color: [0.5, 0.6, 0.7], emission: [0, 0, 0] }],
+    }, postprocessing: { haze: { color: [0.4, 0.5, 0.6], strength: 0.5, start: 10, depth: 100, falloff: "LINEAR" } },
+  } };
+  const { scene } = buildThreeRTScene(input);
+  const box = scene.children.find(child => child instanceof HomogeneousVolume) as HomogeneousVolume;
+  assert.equal(box.shape, "box");
+  assert.equal(box.anisotropy, 0.25);
+  assert.deepEqual([box.position.x, box.position.y, box.position.z], [1, 5, -1]);
+  const fog = scene.children.find(child => child instanceof FogVolume) as FogVolume;
+  assert.deepEqual(fog.volume.params.Albedo, [0.6, 0.3, 0.15, 0]);
+  assert.equal(fog.anisotropy, 0.45);
+  assert.ok(scene.children.some(child => child instanceof RainCurtain));
+  assert.equal(scene.fog?.startDistance, 10);
 });
 
 test("ThreeRT jobs preserve source/workflow, expose only current successful output, and retain failures", async t => {

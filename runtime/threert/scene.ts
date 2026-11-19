@@ -1,6 +1,7 @@
+import type { VfxProfile } from "../../src/shared/vfx.js";
 import {
   Scene, GLTFModel, PerspectiveCamera, DirectionalLight, PointLight, SpotLight, RectAreaLight,
-  SkyGradient, SkyColor, Color, FogVolume, VolumeFunction,
+  SkyGradient, SkyColor, Color, FogVolume, VolumeFunction, HomogeneousVolume, ExponentialHeightFog, RainCurtain,
 } from "@threert/scene";
 
 export type ThreeRTInput = {
@@ -9,13 +10,16 @@ export type ThreeRTInput = {
   background?: number[];
   camera: { position: number[]; quaternion: number[]; fov: number; aspect: number; near: number; far: number };
   profile: {
+    vfx?: VfxProfile;
     colorManagement: { exposure: number };
     render: { resolutionX: number; resolutionY: number };
     world: { color: number[]; strength: number; environmentUri?: string | null; environmentRotationY?: number };
     lights: { name: string; type: string; color: number[]; energy: number; useShadow: boolean;
       size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
     previewAppearance?: { dust?: { color: number[]; wind?: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
-    postprocessing?: { bloom?: { strength?: number; threshold?: number } };
+    postprocessing?: { bloom?: { strength?: number; threshold?: number }; haze?: {
+      color: number[]; strength: number; start: number; depth: number; falloff: string };
+    };
   };
 };
 
@@ -77,6 +81,44 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
     fog.position.set(volume.center[0]!, volume.center[2]!, -volume.center[1]!);
     fog.scale.set(volume.radius[0]! * 2, volume.radius[2]! * 2, volume.radius[1]! * 2);
     scene.add(fog);
+  }
+  const worldVolume = profile.vfx?.volumes?.find(volume => !volume.min || !volume.max);
+  const mist = profile.postprocessing?.haze;
+  if (worldVolume) {
+    const height = worldVolume.height;
+    const fog = new ExponentialHeightFog(worldVolume.density, height ? 1 / height.depth : 0, color(worldVolume.color));
+    fog.height = height?.start ?? 0;
+    fog.setVolumetric(1, worldVolume.anisotropy);
+    scene.fog = fog;
+  } else if (mist) {
+    const opacity = Math.max(0, Math.min(0.98, mist.strength));
+    const fog = new ExponentialHeightFog(-Math.log1p(-opacity) / Math.max(0.001, mist.depth), 0, color(mist.color));
+    fog.startDistance = mist.start;
+    fog.maxOpacity = opacity;
+    scene.fog = fog;
+  }
+  for (const volume of profile.vfx?.volumes ?? []) {
+    if (!volume.min || !volume.max) continue;
+    const [x, y, z] = volume.max.map((bound, i) => bound - volume.min![i]!) as [number, number, number];
+    const center = volume.min.map((bound, i) => (bound + volume.max![i]!) / 2) as [number, number, number];
+    const h = volume.height;
+    const fog = h || volume.noiseScale ? new FogVolume({
+      radialExtinction: Math.max(volume.density, h?.top ?? 0), heightExtinction: 20,
+      heightFalloff: h ? y / (2 * Math.max(h.depth, 0.001)) : 0, heightOffset: h ? (h.start - center[1]) * 2 / y : 0,
+      albedo: volume.color, phaseG: volume.anisotropy, emissive: volume.emission,
+    }) : new HomogeneousVolume({ shape: "box", extinction: volume.density, albedo: volume.color,
+      anisotropy: volume.anisotropy, emission: volume.emission });
+    fog.name = volume.name;
+    fog.position.set(...center);
+    fog.scale.set(x, y, z);
+    scene.add(fog);
+  }
+  for (const precipitation of profile.vfx?.precipitation ?? []) {
+    if (precipitation.kind !== "rain" || precipitation.count <= 0) continue;
+    scene.rain = 1;
+    scene.add(new RainCurtain({ drops: Math.min(precipitation.count, 16000), box: precipitation.size,
+      speed: Math.abs(precipitation.velocity[1]), wind: [precipitation.velocity[0], precipitation.velocity[2]],
+      width: precipitation.radius * 2, length: precipitation.streak, color: precipitation.color, emissive: precipitation.emission }));
   }
   const camera = new PerspectiveCamera(view.fov, view.aspect, view.near, view.far);
   camera.position.set(view.position[0]!, view.position[1]!, view.position[2]!);

@@ -61,13 +61,13 @@ animated effect, inspect representative frames through scene edits within the
 planned budget; the plugin's still preview does not prove a seamless loop or
 deliver an animation.
 
-Blender shader nodes, volumes, compositor effects, GN instances and their timing
-are not portable GLB behavior. Keep the editable `.blend` and reviewed render.
-For GLB, bake supported surface channels or retain a selected static geometry
-representation only when the delivery requires it, then use `scene_export` and
-verify the bundled viewer. Vertex masks require a consuming runtime shader;
-their presence alone does not enable weather in this viewer. `scene_bake`'s
-lightmap mode is not a general PBR mask/channel baker. Follow
-[UV and baking](../scenario-blender-uv-baking/SKILL.md) and the
-[export guidance](../blender-scene/references/blender-code.md) for the selected
-delivery. Report effects absent or approximated in the viewer.
+Keep the editable `.blend` and reviewed render. The export recognizes supported
+volume density graphs, precipitation controls, compositing and animated
+properties by their node semantics. Three.js and ThreeRT read the resulting
+render profile. Read the rendered preview and profile warnings for backend coverage and approximations.
+
+Bake supported surface channels and retain visible geometry where needed. Use
+[UV and baking](../scenario-blender-uv-baking/SKILL.md) and
+[export guidance](../blender-scene/references/blender-code.md) to choose the
+representation. Read the exported warnings and verify the active backend
+before reporting an effect as delivered.

@@ -28,6 +28,9 @@ def volume_only(obj):
         for node in material.node_tree.nodes) for material in materials)
 
 
+__VFX_EXPORT_SOURCE__
+
+
 def upstream(socket, kind, seen=None):
     seen = set() if seen is None else seen
     if socket is None:
@@ -46,7 +49,7 @@ def upstream(socket, kind, seen=None):
     return None
 
 
-def compositor_profile(scene):
+def compositor_profile(scene, warnings):
     tree = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
     if not tree or not scene.render.use_compositing:
         return {}
@@ -55,10 +58,19 @@ def compositor_profile(scene):
         return {}
     result = {}
     glare = upstream(output.inputs["Image"], "GLARE")
-    if glare and glare.inputs.get("Type") and glare.inputs["Type"].default_value == "Bloom":
+    glare_type = (glare.inputs["Type"].default_value if glare.inputs.get("Type")
+                  else getattr(glare, "glare_type", "")) if glare else ""
+    mode = glare_type.upper().replace(" ", "_")
+    if mode in {"BLOOM", "FOG_GLOW"}:
         result["bloom"] = {key: float(glare.inputs[name].default_value) for key, name in
                            [("strength", "Strength"), ("threshold", "Threshold"), ("radius", "Size")]
                            if glare.inputs.get(name)}
+        if not result["bloom"] and hasattr(glare, "threshold"):
+            result["bloom"]["threshold"] = float(glare.threshold)
+        if mode == "FOG_GLOW":
+            warnings.append("Compositor Fog Glow is approximated with Bloom.")
+    elif glare:
+        warnings.append(f"Compositor Glare mode {glare_type} is unsupported.")
     source = output.inputs["Image"].links[0].from_node if output.inputs["Image"].is_linked else None
     if source and source.bl_idname == "ShaderNodeMix" and source.data_type == "RGBA" and source.inputs[0].is_linked:
         amount = source.inputs[0].links[0].from_node
@@ -263,6 +275,9 @@ try:
     lightmaps = bake_metadata.get("lightmaps", [])
     material_bakes = bake_metadata.get("materials", {"objects": 0, "textures": 0})
     baked_tints = bake_metadata.get("bakedTints", {})
+    warnings = []
+    excluded = set()
+    vfx = {} if structural_preview else vfx_profile(scene, excluded, warnings)
     profile = {
         "version": 1,
         "previewMode": "structural" if structural_preview else "final",
@@ -296,7 +311,8 @@ try:
             "environmentRotationY": -float(mapping.inputs["Rotation"].default_value[2]) if mapping else 0.0,
             "backgroundEnvironmentUri": background_uri,
         },
-        "postprocessing": {} if structural_preview else compositor_profile(scene),
+        "postprocessing": {} if structural_preview else compositor_profile(scene, warnings),
+        "vfx": vfx,
         "previewAppearance": {} if structural_preview else {
             **preview_appearance,
             **({"renderMode": "raster"} if lightmaps or preview_appearance.get("planarReflection") or preview_appearance.get("reflectionProbe") else {}),
@@ -309,7 +325,7 @@ try:
         "lights": [],
         "warnings": [
             "WebGL path tracing approximates Cycles lighting. Use the Blender render for visual review.",
-            "Procedural shaders, volumes, and compositor effects may require baking for glTF.",
+            *warnings,
         ],
     }
     for obj in scene.objects:
@@ -340,7 +356,7 @@ try:
     for obj in scene.objects:
         if obj.type == "CAMERA":
             obj.hide_set(obj != camera and obj.name not in reference_camera_names)
-        elif volume_only(obj):
+        elif volume_only(obj) or obj.name in excluded:
             obj.hide_set(True)
     bpy.ops.export_scene.gltf(
         filepath=os.path.join(directory, "final.glb"),

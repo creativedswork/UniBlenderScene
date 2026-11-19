@@ -133,7 +133,7 @@ def bake_static_lighting(scene):
 
 def bake_procedural_materials(scene, lighting_enabled=True):
     """Bake linked shader inputs on the export copy, keeping lighting live."""
-    channels = ("Base Color", "Roughness", "Metallic", "Normal", "Emission Color")
+    channels = ("Base Color", "Roughness", "Metallic", "Normal", "Emission Color", "Coat Weight", "Coat Roughness")
 
     def needs_bake(socket):
         if not socket or not socket.is_linked:

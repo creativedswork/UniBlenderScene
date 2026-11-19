@@ -121,7 +121,22 @@ export async function renderThreeRT(directory: string, binary: string) {
   const profile = JSON.parse(await readFile(join(directory, "render-profile.json"), "utf8"));
   const glb = await readFile(join(directory, "final.glb"));
   const input: ThreeRTInput = { profile, camera: cameraFromGLB(glb, profile.camera?.name) };
-  const warnings: string[] = [];
+  const warnings: string[] = (Array.isArray(profile.warnings) ? profile.warnings : []).filter((warning: unknown): warning is string =>
+    typeof warning === "string" && !warning.startsWith("WebGL ") && !warning.startsWith("Three.js "));
+  const vfx = input.profile.vfx;
+  if (vfx?.volumes?.some(volume => volume.height || volume.noiseScale)) {
+    warnings.push("ThreeRT 使用原生雾近似 Blender 的逐层密度曲线和噪声。");
+  }
+  if (input.profile.postprocessing?.haze) {
+    const worldFog = vfx?.volumes?.some(volume => !volume.min || !volume.max);
+    warnings.push(worldFog ? "ThreeRT 优先使用世界雾，未叠加 Mist 深度合成。" : "ThreeRT 使用原生指数雾近似 Mist 深度合成。");
+  }
+  if (vfx?.precipitation?.some(effect => effect.kind === "rain")) {
+    warnings.push("ThreeRT 原生雨使用跟随相机的雨幕，Blender 的碰撞和飞溅未应用。");
+  }
+  if (vfx?.precipitation?.some(effect => effect.kind !== "rain") || vfx?.ripples?.length || vfx?.animation) {
+    warnings.push("当前 ThreeRT 预览保留静态材质和灯光，未重建非雨粒子、涟漪或采样动画。");
+  }
   if (typeof profile.colorManagement.viewTransform === "string") {
     warnings.push(`ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 ${profile.colorManagement.viewTransform} 显示 LUT。`);
   }

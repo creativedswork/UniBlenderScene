@@ -30,11 +30,31 @@ before adapting code, especially Geometry Nodes modifier inputs, sky and
 compositor interfaces. Keeping an upstream script does not establish that it
 runs unchanged on an older Blender.
 
-Procedural materials may need surface-channel baking for GLB. Blender volumes,
-compositing, particle instances and animation timing do not automatically become
-viewer features. Deliver the reviewed render and editable Blender file, verify
-the chosen viewer representation and report its differences. Smoke, fire and
-fluid simulation are outside these three imported domains.
+### Export to the preview
+
+The export writes atmosphere, weather and animation data to
+`render-profile.json`. Both preview adapters read the same data format. The
+format uses Y-up world coordinates in metres, linear colors and times in
+seconds. Re-export an existing checkpoint to generate the new fields.
+
+| Blender effect | Three.js | ThreeRT |
+| --- | --- | --- |
+| Fog and light shafts | Marches per-volume density and color with height falloff, approximate noise and local lighting. Samples directional shadows and one spot shadow. | Uses native boxes for constant volumes and native height or local fog for gradients. Local fog approximates the Blender shape and density curve. |
+| Mist, Bloom and Fog Glow | Applies depth haze and Bloom. Fog Glow uses a Bloom approximation. | Uses native exponential fog for Mist and Bloom for highlight glow. A world volume takes precedence over Mist. |
+| Rain, snow, dust, ash and embers from the weather graph | Plays seeded, world-space particles. Rain can hit configured geometry and show splash rings. | Uses a native camera-relative rain curtain. Other particle effects and ground impacts are available in the Blender render. |
+| Wet surfaces, snow, wear and decals | Uses glTF geometry and baked PBR texture channels, including coat weight and roughness. Adds a time-varying coat normal for supported ripple materials. | Uses the same geometry and PBR surface inputs. Ripple animation is available in Three.js and Blender. |
+| Lightning and other animation | Plays glTF clips and sampled light, emission and world strength changes. Time-varying effects use the raster preview. | Uses source PBR and light values at the saved frame for these sampled tracks. |
+
+The density translator supports constant shaders, a height ramp, exponential
+falloff and the weather Skill's noise modulation. The browser places bounded
+volumes in world-aligned boxes and uses a bounded set of volumes, lights and
+particles for interactive rendering. The exporter records unsupported graphs
+and effect limits in the render profile. The Blender file and reviewed render
+retain authored node graphs, grid volumes and simulation data.
+
+Source references for the mappings are the [Blender extractor](../runtime/blender/vfx.py),
+[Three.js volume pass](../src/viewer/volumes.ts), [Three.js weather runtime](../src/viewer/weather.ts)
+and [ThreeRT adapter](../runtime/threert/scene.ts).
 
 ## Provenance and updates
 
