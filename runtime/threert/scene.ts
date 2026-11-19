@@ -85,6 +85,9 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
   scene.add(camera);
   return { scene, camera, options: { name: "Blender scene · ThreeRT", preset: "cinematic" as const,
     width: profile.render.resolutionX, height: profile.render.resolutionY,
-    overrides: { post: { bloom: { intensity: profile.postprocessing?.bloom?.strength ?? 0,
+    // Do not add the cinematic preset's gamut expansion / blue correction to Blender's linear colors.
+    // ThreeRT still uses its native Filmic curve; this does not reproduce the exported AgX display LUT.
+    overrides: { post: { colorGrading: { expandGamut: 0, blueCorrection: 0 },
+      bloom: { intensity: profile.postprocessing?.bloom?.strength ?? 0,
       threshold: profile.postprocessing?.bloom?.threshold ?? 1.2 } } } } };
 }

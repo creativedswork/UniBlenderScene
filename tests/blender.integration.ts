@@ -5,6 +5,7 @@ import { createServer as httpsServer } from "node:https";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { PNG } from "pngjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -195,6 +196,27 @@ try {
   assert.ok(gltf.materials.some((material: { name?: string; pbrMetallicRoughness?: { baseColorTexture?: unknown } }) =>
     material.name?.startsWith("Procedural swatch") && material.pbrMetallicRoughness?.baseColorTexture),
     "Procedural base color must become a GLB texture.");
+  const masked = gltf.materials.find((material: any) => material.name?.startsWith("Procedural swatch"));
+  assert.ok(masked.emissiveTexture, "Linked strength must be baked into an emission-color texture");
+  assert.ok(Math.abs(masked.extensions.KHR_materials_emissive_strength.emissiveStrength - 4) < 0.01,
+    "HDR emission must retain its peak after image normalization");
+  const maskImage = gltf.images[gltf.textures[masked.emissiveTexture.index].source];
+  const maskView = gltf.bufferViews[maskImage.bufferView];
+  const maskOffset = 28 + bytes.readUInt32LE(12) + (maskView.byteOffset ?? 0);
+  const maskPixels = PNG.sync.read(bytes.subarray(maskOffset, maskOffset + maskView.byteLength)).data;
+  let dark = 0, bright = 0;
+  const srgbToLinear = (v: number) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  for (let i = 0; i < maskPixels.length; i += 4) {
+    if (maskPixels[i]! < 5) dark++;
+    if (maskPixels[i]! > 250) {
+      bright++;
+      assert.ok(Math.abs(srgbToLinear(maskPixels[i + 1]! / 255) - 0.4) < 0.01,
+        "Emission PNG must encode linear green as sRGB, not darken it by a second decode");
+      assert.ok(Math.abs(srgbToLinear(maskPixels[i + 2]! / 255) - 0.1) < 0.01,
+        "Emission PNG must retain its linear blue ratio");
+    }
+  }
+  assert.ok(dark > 1000 && bright > 1000, "The exported mask must have both unlit and emitting regions");
   const portableNormal = gltf.materials.find((material: any) => material.name === "Warm floor" && material.normalTexture);
   assert.ok(portableNormal, "The unbaked receiver retains its portable normal map");
   const normalImage = gltf.images[gltf.textures[portableNormal.normalTexture.index].source];
@@ -202,6 +224,17 @@ try {
   const normalBytes = bytes.subarray(28 + bytes.readUInt32LE(12) + (normalView.byteOffset ?? 0));
   assert.equal(normalImage.mimeType, "image/png");
   assert.equal(normalBytes.readUInt32BE(16), 64, "A tiled normal map must not become a 1024px procedural bake");
+  const packedMaterial = gltf.materials.find((material: any) => material.name === "Portable packed PBR");
+  assert.ok(packedMaterial?.pbrMetallicRoughness?.metallicRoughnessTexture);
+  const packedTexture = gltf.textures[packedMaterial.pbrMetallicRoughness.metallicRoughnessTexture.index];
+  const packedImage = gltf.images[packedTexture.source];
+  const packedView = gltf.bufferViews[packedImage.bufferView];
+  const packedBytes = bytes.subarray(28 + bytes.readUInt32LE(12) + (packedView.byteOffset ?? 0));
+  assert.equal(packedImage.mimeType, "image/png");
+  assert.equal(packedBytes.readUInt32BE(16), 64, "Packed PBR data must retain its source resolution");
+  assert.equal(gltf.nodes.find((node: any) => node.name === "PackedPBRSwatch").mesh,
+    gltf.nodes.find((node: any) => node.name === "PackedPBRInstance").mesh,
+    "Portable packed PBR instances must keep shared mesh data");
   const glbChunk = await call("scene_asset_chunk", { sceneId: id, name: "final.glb", offset: 0 });
   assert.equal(glbChunk.isError, undefined);
   assert.deepEqual(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64"), bytes.subarray(0, 256 * 1024));
@@ -219,7 +252,8 @@ try {
   assert.ok(Math.abs(profile.postprocessing.haze.strength - 0.03) < 1e-6);
   assert.deepEqual(profile.previewAppearance, previewAppearance);
   assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
-  assert.ok(profile.materials.objects >= 1 && profile.materials.textures >= 1);
+  assert.equal(profile.materials.objects, 1, "Only the procedural swatch needs material baking");
+  assert.ok(profile.materials.textures >= 1);
   const forbidden = await fetch(`${origin}/artifacts/${id}/run.json?token=invalid`); assert.equal(forbidden.status, 403);
   const unauthorizedGLB = await fetch(glb.url.replace(/token=[^&]+/, "token=invalid")); assert.equal(unauthorizedGLB.status, 403);
   await writeFile(join(root, "scene.json"), JSON.stringify(exported, null, 2));

@@ -33,6 +33,7 @@ const relationNode = z.object({
   scorer: z.object({ id: z.string().min(1), hash: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
   minScore: z.number().min(0).max(1).optional(), parameters: z.record(z.string(), z.number()).optional(),
 });
+// Homogeneous array schemas let Codex discover tools that accept fixed-length vectors.
 const imageBox = z.array(z.number()).length(4).transform(value => value as ImageBox);
 const referenceEvidence = z.array(z.object({ reference: z.enum(REFERENCE_ASSETS), observation: z.string().min(1).max(4000) })).max(6);
 const referenceFile = z.object({

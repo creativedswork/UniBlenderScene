@@ -70,3 +70,36 @@ after changing orientation to confirm the result.
 Place the asset against the floor using its evaluated bounding box, then compare
 its scale and rear, front, or side view with the reference. Preserve the source
 texture and material connections when exporting to GLB.
+
+## Export color checks
+
+Use these checks when the exported viewer has unexpected color, brightness or
+emission relative to the reviewed Blender render. Inspect the model actually
+loaded by the failing backend; a native adapter may prepare a separate copy.
+
+1. Keep the reviewed source unchanged while checking conversion. Record its
+   iteration and export version, the backend and engine version, and the input
+   model/profile. Confirm the running service uses the code being tested.
+2. Trace texture roles through shader connections. Color and emissive PNGs use
+   sRGB; normal, roughness, metallic and packed data maps remain Non-Color.
+   A linear float emission bake needs sRGB encoding exactly once when written
+   to a color PNG. Check a known sample after decoding and preserve HDR energy
+   with a normalized texture and a separate strength. Do not gamma-encode data
+   maps or an already encoded image again.
+3. Check linked emission strength as well as emission color. The portable
+   result must retain their product, black regions outside the mask, and peak
+   intensity; a constant fallback can make an entire object emit. Check other
+   prominent shader features for exporter support. Bake unsupported response
+   only on an export copy and disclose any loss of view-dependent shading.
+4. Compare linear light RGB, power and full world transforms, then exposure,
+   display transform/LUT and backend postprocessing. Matching input RGB does
+   not prove matching displayed color. Disable unrequested grading in the
+   adapter and identify unsupported display transforms rather than silently
+   compensating with the authored lights. Normalize unsupported image formats
+   on the backend copy while retaining source precision.
+5. Re-export after a conversion fix and inspect the active backend's saved-camera
+   image and orbit/reset views. Compare the emitting area, surrounding light,
+   shadow readability and prominent materials. Retain before/after images and
+   a report linking the output version to the checks. Regression tests prove
+   the covered conversion behavior; actual viewer inspection establishes the
+   observed appearance. Report unresolved engine differences separately.

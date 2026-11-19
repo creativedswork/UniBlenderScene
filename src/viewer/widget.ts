@@ -1,3 +1,4 @@
+import { version } from "../../package.json";
 import { App } from "@modelcontextprotocol/ext-apps";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -50,7 +51,7 @@ type Profile = {
   lights: { name: string; type: string; color: number[]; energy: number; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const app = new App({ name: "UniBlenderScene viewer", version: "0.3.3" }, {});
+const app = new App({ name: "UniBlenderScene viewer", version }, {});
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
 let preferredBackend: "web" | "threert" | undefined;
 let threeRTImageKey = "", threeRTRequestPending = false;

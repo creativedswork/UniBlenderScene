@@ -138,9 +138,21 @@ def bake_procedural_materials(scene, lighting_enabled=True):
     def needs_bake(socket):
         if not socket or not socket.is_linked:
             return False
-        source = socket.links[0].from_node
+        link = socket.links[0]
+        source = link.from_node
         if source.type == "NORMAL_MAP" and socket.name == "Normal":
             return needs_bake(source.inputs.get("Color"))
+        # Blender's glTF exporter reads packed roughness and metallic from
+        # the green and blue channels of an RGB Separate Color node.
+        packed_channel = {"Roughness": "Green", "Metallic": "Blue"}.get(socket.name)
+        if source.type == "SEPARATE_COLOR" and source.mode == "RGB" and link.from_socket.name == packed_channel:
+            color = source.inputs["Color"]
+            if color.is_linked:
+                image_link = color.links[0]
+                texture = image_link.from_node
+                if (texture.type == "TEX_IMAGE" and image_link.from_socket.name == "Color" and
+                        texture.image and texture.image.colorspace_settings.is_data):
+                    return needs_bake(color)
         if source.type != "TEX_IMAGE":
             return True
         vector = source.inputs.get("Vector")
@@ -156,7 +168,8 @@ def bake_procedural_materials(scene, lighting_enabled=True):
         if obj.type != "MESH" or obj.hide_get() or obj.hide_render or (lighting_enabled and obj.get("codex_bake_lighting") and obj.get("codex_bake_mode", "appearance") != "lightmap"):
             continue
         if any(material and material.use_nodes and any(
-            node.type == "BSDF_PRINCIPLED" and any(needs_bake(node.inputs.get(name)) for name in channels)
+            node.type == "BSDF_PRINCIPLED" and (node.inputs["Emission Strength"].is_linked or
+                any(needs_bake(node.inputs.get(name)) for name in channels))
             for node in material.node_tree.nodes)
             for material in (slot.material for slot in obj.material_slots)):
             candidates.append(obj)
@@ -174,6 +187,28 @@ def bake_procedural_materials(scene, lighting_enabled=True):
             for slot in obj.material_slots:
                 if slot.material:
                     slot.material = slot.material.copy()
+                    tree = slot.material.node_tree
+                    if tree:
+                        for shader in list(tree.nodes):
+                            if shader.type != "BSDF_PRINCIPLED":
+                                continue
+                            strength = shader.inputs.get("Emission Strength")
+                            if not strength or not strength.is_linked:
+                                continue
+                            # glTF has a constant emissiveStrength, not a strength texture.
+                            # Bake color * strength together, including black outside the mask.
+                            color = shader.inputs["Emission Color"]
+                            product = tree.nodes.new("ShaderNodeVectorMath")
+                            product.operation = "SCALE"
+                            if color.is_linked:
+                                tree.links.new(color.links[0].from_socket, product.inputs[0])
+                            else:
+                                product.inputs[0].default_value = color.default_value[:3]
+                            tree.links.new(strength.links[0].from_socket, product.inputs[3])
+                            tree.links.new(product.outputs[0], color)
+                            for link in list(strength.links):
+                                tree.links.remove(link)
+                            strength.default_value = 1
             if not obj.data.uv_layers:
                 bpy.ops.object.select_all(action="DESELECT")
                 obj.select_set(True)
@@ -224,6 +259,27 @@ def bake_procedural_materials(scene, lighting_enabled=True):
                 obj.select_set(True)
                 bpy.context.view_layer.objects.active = obj
                 bpy.ops.object.bake(type="NORMAL" if channel == "Normal" else "EMIT", use_clear=True, margin=8)
+                peak = 1.0
+                if channel == "Emission Color":
+                    pixels = array("f", [0]) * (resolution * resolution * 4)
+                    image.pixels.foreach_get(pixels)
+                    peak = max(1.0, max(value for i, value in enumerate(pixels) if i % 4 != 3 and math.isfinite(value)))
+                    for i in range(len(pixels)):
+                        if i % 4 != 3:
+                            value = max(0.0, pixels[i]) / peak
+                            pixels[i] = 12.92 * value if value <= 0.0031308 else 1.055 * value ** (1.0 / 2.4) - 0.055
+                    # A packed float image otherwise writes linear samples into an sRGB PNG.
+                    # Use an encoded byte image, as for static appearance/lightmap bakes.
+                    encoded = bpy.data.images.new(f"{obj.name} emission sRGB", width=resolution, height=resolution, alpha=False)
+                    encoded.colorspace_settings.name = "sRGB"
+                    encoded.pixels.foreach_set(pixels)
+                    for slot in obj.material_slots:
+                        if slot.material and slot.material.use_nodes:
+                            for target in slot.material.node_tree.nodes:
+                                if target.type == "TEX_IMAGE" and target.image == image:
+                                    target.image = encoded
+                    bpy.data.images.remove(image)
+                    image = encoded
                 for tree, socket, target, surface, sources, emission in records:
                     if emission:
                         tree.nodes.remove(emission)
@@ -237,6 +293,8 @@ def bake_procedural_materials(scene, lighting_enabled=True):
                         tree.links.new(normal.outputs["Normal"], socket)
                     else:
                         tree.links.new(target.outputs["Color"], socket)
+                    if channel == "Emission Color":
+                        socket.node.inputs["Emission Strength"].default_value *= peak
                     target.image.pack()
                 report["textures"] += 1
     finally:

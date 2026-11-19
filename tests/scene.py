@@ -69,7 +69,47 @@ ramp.color_ramp.elements[0].color = (0.12, 0.05, 0.03, 1)
 ramp.color_ramp.elements[1].color = (0.35, 0.18, 0.08, 1)
 swatch_material.node_tree.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
 swatch_material.node_tree.links.new(ramp.outputs["Color"], swatch_shader.inputs["Base Color"])
+# A linked emission-strength mask must not turn the entire mesh into a light.
+swatch_shader.inputs["Emission Color"].default_value = (1, 0.4, 0.1, 1)
+uv = swatch_material.node_tree.nodes.new("ShaderNodeTexCoord")
+separate_uv = swatch_material.node_tree.nodes.new("ShaderNodeSeparateXYZ")
+mask = swatch_material.node_tree.nodes.new("ShaderNodeMath")
+mask.operation = "GREATER_THAN"
+mask.inputs[1].default_value = 0.5
+power = swatch_material.node_tree.nodes.new("ShaderNodeMath")
+power.operation = "MULTIPLY"
+power.inputs[1].default_value = 4
+swatch_material.node_tree.links.new(uv.outputs["UV"], separate_uv.inputs[0])
+swatch_material.node_tree.links.new(separate_uv.outputs["X"], mask.inputs[0])
+swatch_material.node_tree.links.new(mask.outputs[0], power.inputs[0])
+swatch_material.node_tree.links.new(power.outputs[0], swatch_shader.inputs["Emission Strength"])
 swatch.data.materials.append(swatch_material)
+
+packed_image = bpy.data.images.new("Portable packed roughness metallic", width=64, height=64)
+packed_image.colorspace_settings.name = "Non-Color"
+packed_image.generated_color = (1, 0.6, 0.2, 1)
+packed_image.pack()
+packed_material = bpy.data.materials.new("Portable packed PBR")
+packed_material.use_nodes = True
+packed_tree = packed_material.node_tree
+packed_shader = packed_tree.nodes.get("Principled BSDF")
+packed_shader.inputs["Base Color"].default_value = (0.2, 0.3, 0.4, 1)
+packed_texture = packed_tree.nodes.new("ShaderNodeTexImage")
+packed_texture.image = packed_image
+packed_channels = packed_tree.nodes.new("ShaderNodeSeparateColor")
+packed_channels.mode = "RGB"
+packed_tree.links.new(packed_texture.outputs["Color"], packed_channels.inputs["Color"])
+packed_tree.links.new(packed_channels.outputs["Green"], packed_shader.inputs["Roughness"])
+packed_tree.links.new(packed_channels.outputs["Blue"], packed_shader.inputs["Metallic"])
+bpy.ops.mesh.primitive_cube_add(size=0.3, location=(1.8, -0.5, 0.15))
+packed_swatch = bpy.context.object
+packed_swatch.name = "PackedPBRSwatch"
+packed_swatch.data.materials.append(packed_material)
+packed_instance = packed_swatch.copy()
+packed_instance.data = packed_swatch.data
+packed_instance.name = "PackedPBRInstance"
+packed_instance.location = (2.1, 0.4, 0.15)
+bpy.context.scene.collection.objects.link(packed_instance)
 
 bpy.ops.object.camera_add(location=(6, -7, 5))
 camera = bpy.context.object

@@ -222,11 +222,15 @@ evidence through the service or report that it is not ready.
    regions, and prominent materials; orbit to check depth, window/wall placement,
    and occlusion against auxiliary views. Do not substitute a GLB-only page: it
    omits the exported render profile, lighting and atmosphere settings.
-   In a CLI without MCP Apps, use the inspected render and report that
-   interactive viewing needs an MCP Apps host. Do not claim viewer
-   verification from an export alone. Report remaining gaps; an export or viewer
-   failure is a delivery issue, not a reason to spend a scene edit attempt on a
-   pre-export criterion.
+   Record the checkpoint iteration, export version, active backend and engine
+   version with the screenshot. Verify Three.js and ThreeRT separately when
+   delivering both. If color or emission differs, follow the
+   [export color checks](references/blender-code.md#export-color-checks) before
+   changing reviewed source lights. Keep the source checkpoint during diagnosis
+   and report crop or display-transform limits that affect the comparison.
+   In a CLI without MCP Apps, use the inspected render and explain that
+   interactive viewing requires an MCP Apps host. Track export and viewer
+   failures as delivery issues outside the scene edit budget.
    In `awaiting_review`, show the neutral gray main image and five review views.
    `scene_get` selects the checkpoint evidence, which may differ from the latest
    working iteration; follow `workflowState.presentation.iteration`.
