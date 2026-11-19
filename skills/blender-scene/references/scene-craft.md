@@ -24,6 +24,16 @@ Scenario helpers are optional source material and its MCP tools are not used.
   each `scene_get` render and `scene_review` to record what changed and which
   criterion still fails.
 
+## Align multiple views in one scene
+
+Keep the upload order and map each image to its named Blender camera. Use two
+or more recognizable landmarks across overlapping views to check relative
+camera direction, height and occlusion. Fit the lens and framing per image.
+Render the same geometry from each camera and compare its paired image at the
+same crop. Use the primary view for the default camera and its image-space
+anchors. When images imply conflicting geometry, identify the conflicting
+landmark or occlusion and keep one consistent layout.
+
 ## Match the lighting in the render
 
 - Set the camera and composition before lighting. Identify visible sources such

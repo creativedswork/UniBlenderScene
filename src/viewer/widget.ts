@@ -22,6 +22,7 @@ type GraphFile = { iteration: number; nodes: GraphNode[] };
 type Snapshot = {
   id: string; prompt: string; stage: string; iteration: number; renderUrl: string | null; bestRenderUrl: string | null;
   reference: { url: string; name?: string; label?: string } | null; references?: ReferenceView[]; best?: { iteration: number };
+  referenceCameras?: { reference: string; cameraName: string; default: boolean; renderUrl: string | null }[];
   job?: { id: string; status: string; kind: string }; exportedIteration?: number; previewedIteration?: number; error?: string;
   exportVersion?: string;
   realtimeUrl?: string | null;
@@ -57,7 +58,7 @@ let preferredBackend: "web" | "threert" | undefined;
 let threeRTImageKey = "", threeRTRequestPending = false;
 let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
 let liveConnecting = false, liveWanted = false, liveStatus = "";
-let referenceListKey = "", reviewImagesKey = "";
+let referenceListKey = "", reviewImagesKey = "", referenceRequest = 0;
 let graphNodes: GraphNode[] = [], selectedNodeId = "";
 const expanded = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -449,19 +450,28 @@ function referenceViews(scene: Snapshot): ReferenceView[] {
 
 async function showReference() {
   if (!snapshot) return;
-  const sceneId = snapshot.id;
+  const request = ++referenceRequest;
+  const matchImage = el<HTMLImageElement>("reference-match");
+  matchImage.hidden = true;
   const selected = el<HTMLSelectElement>("reference-select").value;
   const view = referenceViews(snapshot).find((image) => image.assetName === selected);
   if (!view) return;
   try {
     const url = await assetURL(view.assetName, view.url);
-    if (snapshot?.id !== sceneId || el<HTMLSelectElement>("reference-select").value !== selected) return;
+    if (request !== referenceRequest) return;
     const caption = `${view.role === "primary" ? "Primary" : "Auxiliary"}: ${view.label ?? view.name ?? view.assetName}`;
     for (const id of ["reference", "reference-full"]) {
       const image = el<HTMLImageElement>(id); image.src = url; image.alt = caption;
     }
     el("reference").style.display = "block";
     el("reference-caption").textContent = caption;
+    const match = snapshot?.referenceCameras?.find(camera => camera.reference === selected);
+    if (!match?.renderUrl || !el<HTMLDialogElement>("reference-dialog").open) return;
+    const name = match.default ? "render" : new URL(match.renderUrl).pathname.split("/").at(-1)!;
+    const rendered = await assetURL(name, match.renderUrl);
+    if (request !== referenceRequest) return;
+    matchImage.src = rendered;
+    matchImage.hidden = false;
   } catch (error) { console.error("Reference image failed:", error); message("Reference view could not be loaded."); }
 }
 
@@ -471,7 +481,10 @@ el("graph-collapse").onclick = () => {
   el("graph-collapse").textContent = collapsed ? "Expand" : "Collapse";
   el("graph-collapse").setAttribute("aria-expanded", String(!collapsed));
 };
-el("reference-open").onclick = () => el<HTMLDialogElement>("reference-dialog").showModal();
+el("reference-open").onclick = () => {
+  el<HTMLDialogElement>("reference-dialog").showModal();
+  void showReference();
+};
 el("reference-close").onclick = () => el<HTMLDialogElement>("reference-dialog").close();
 
 function normalized(name: string) { return name.replace(/\s/g, "_").replace(/[\[\].:/]/g, ""); }
@@ -1097,13 +1110,13 @@ function receive(data: unknown) {
     el("empty").style.display = "grid";
   }
   const views = referenceViews(next);
-  const key = `${next.id}:${JSON.stringify(views)}`;
+  const key = `${next.id}:${JSON.stringify([views, next.referenceCameras])}`;
   el("references").hidden = !views.length;
   if (key !== referenceListKey) {
     referenceListKey = key;
     const select = el<HTMLSelectElement>("reference-select"), selected = select.value;
     select.replaceChildren(...views.map((view, index) => new Option(
-      `${index === 0 ? "Primary" : `Auxiliary ${index}`}: ${view.label ?? view.name ?? view.assetName}`, view.assetName)));
+      `${index === 0 ? "Primary" : `View ${index + 1}`}: ${view.label ?? view.name ?? view.assetName}`, view.assetName)));
     if (views.some((view) => view.assetName === selected)) select.value = selected;
     void showReference();
   }
@@ -1199,7 +1212,6 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
     }
     files = selected;
     el("selected-count").textContent = `${files.length} reference image${files.length === 1 ? "" : "s"} selected`;
-    el<HTMLSelectElement>("primary-view").replaceChildren(...files.map((file, index) => new Option(file.name, String(index))));
     el("reference-upload").hidden = false;
     el("append-images").hidden = !snapshot || !["completed", "best_effort"].includes(snapshot.stage);
   };
@@ -1209,29 +1221,27 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
     const current = snapshot;
     if (append && (!current || !["completed", "best_effort"].includes(current.stage))) return;
     if (append && referenceViews(current!).length + files.length > 6) { message("A scene can have at most 6 reference images in total."); return; }
-    const primary = Number(el<HTMLSelectElement>("primary-view").value);
-    const ordered = append ? files : [files[primary]!, ...files.filter((_, index) => index !== primary)];
     uploading = true;
     for (const id of ["upload", "create-images", "append-images", "cancel-images"]) el<HTMLButtonElement>(id).disabled = true;
     try {
       const references = [];
-      for (const [index, file] of ordered.entries()) {
-        message(`Uploading reference image ${index + 1} of ${ordered.length}`);
+      for (const [index, file] of files.entries()) {
+        message(`Uploading reference image ${index + 1} of ${files.length}`);
         const { fileId } = await host!.uploadFile(file);
         const { downloadUrl } = await host!.getFileDownloadUrl({ fileId });
-        references.push({ download_url: downloadUrl, file_id: fileId, mime_type: file.type, file_name: file.name });
+        references.push({ download_url: downloadUrl, file_id: fileId, mime_type: file.type, file_name: file.name, attachmentNumber: index + 1 });
       }
       const output = await app.callServerTool({
         name: append ? "scene_continue" : "scene_create", arguments: {
           ...(append ? { sceneId: current!.id } : {}),
-          prompt: append ? "Refine the same scene using these additional views to correct spatial layout." : "Create a Blender scene from these views. The first image sets the camera and composition; auxiliary views calibrate spatial layout.",
+          prompt: append ? "Refine the same scene using these additional views to correct spatial layout." : "Create a Blender scene from these views. Use one camera per supplied view of the same scene. The first image sets the default camera and composition.",
           references,
         },
       });
       if (output.isError) throw new Error("Reference input failed.");
       receive(output.structuredContent);
       clearSelection();
-      await app.sendMessage({ role: "user", content: [{ type: "text", text: `Poll scene_get with images=none for Blender scene ${(output.structuredContent as unknown as Snapshot).id} until reference downloads finish, then inspect every labeled view with scene_get. ${append ? "Refine the existing scene" : "Plan, build and review the scene"} using the primary view for composition and all auxiliary views for spatial layout; export and show the bundled viewer.` }] });
+      await app.sendMessage({ role: "user", content: [{ type: "text", text: `Poll scene_get with images=none for Blender scene ${(output.structuredContent as unknown as Snapshot).id} until reference downloads finish, then inspect every labeled view with scene_get. ${append ? "Refine the existing scene" : "Plan, build and review the scene"} using the stored reference order. If scene_get lists referenceCameras, fit those cameras in one scene and compare each matched render against its reference and shared landmarks. Export and show the bundled viewer.` }] });
       message("Reference images sent to the conversation");
     } catch { message("Reference images could not be submitted. Retry or attach them in the conversation."); }
     finally {

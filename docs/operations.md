@@ -208,6 +208,19 @@ host has loaded the tools.
 
 ## Open the interactive preview
 
+For new scenes with multiple references, pass the images in upload order. If
+original attachment numbers are available, pass them as `attachmentNumber` for
+every image in each upload batch. The service uses those numbers to recover
+the order. `scene_get.referenceCameras` pairs every reference with a named
+Blender camera. Camera 1 is active by default. Build and compare those
+cameras in one scene so shared landmarks and occlusion agree.
+
+`scene_get` with `images: "camera"` and a `referenceName` returns a single
+matched render. The reference dialog also shows it alongside the input when
+available. The editable Blender file and GLB retain the reference cameras.
+Earlier scenes keep their stored reference order and existing camera setup.
+
+
 Poll progress with `scene_get` and `images: "none"`. Only call `scene_view`
 when its snapshot has a non-null `renderUrl`, in a client that supports MCP Apps.
 Three.js structural review requires WebGL 2. Creation, edits and polling return data without opening a viewer. The `scene_view`

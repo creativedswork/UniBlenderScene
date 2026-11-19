@@ -40,6 +40,7 @@ const referenceFile = z.object({
   download_url: z.string().url().optional(), file_id: z.string().min(1).optional(),
   local_path: z.string().min(1).optional().describe("Absolute path of an attached image on the local service host; requires LOCAL_REFERENCE_ROOTS. Use instead of download_url."),
   mime_type: z.string().optional(), file_name: z.string().optional(),
+  attachmentNumber: z.number().int().min(1).max(6).optional().describe("Original 1-based upload position in this batch. Supply for every image when known."),
   label: z.string().min(1).max(200).optional(),
 }).refine((image) => Boolean(image.local_path) !== Boolean(image.download_url) && (Boolean(image.local_path) || Boolean(image.file_id)),
   "Pass local_path, or download_url with file_id.");
@@ -66,7 +67,8 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
   const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json", "best.blend",
     "review-main.png", "review-front.png", "review-side.png", "review-top.png", "review-perspective.png", "threert.png"] as const;
-  const assetName = z.union([z.enum(assetNames), z.string().regex(/^lightmap-\d+\.png$/)]);
+  const assetName = z.union([z.enum(assetNames), z.string().regex(/^lightmap-\d+\.png$/),
+    z.string().regex(/^(?:iteration-\d+|revision-[a-f0-9-]+-composition)-reference-[2-6]\.png$/)]);
   const assetChunk = async (sceneId: string, name: string, offset: number): Promise<CallToolResult> => {
     const scene = store.get(sceneId);
     const file = name === "render" || name === "best.png" ? store.renderFile(scene) :
@@ -90,7 +92,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   };
   server.registerTool("scene_create", {
     title: "Create Blender scene",
-    description: "Create an empty task-owned scene with up to 6 host-provided reference images of the same scene. Preserve attachment order unless the user explicitly designates another primary view/camera/composition before creation. First is the primary camera/composition; a request to match another image's final effect does not promote or reorder that image. Others calibrate spatial layout and requested appearance. Optional labels identify views. Legacy reference accepts one image; pass only one input form. Image-based requests require their images. Async: poll scene_get with images=none until done, then inspect references once with scene_get images=references and freeze a plan.",
+    description: "Create an empty task-owned scene with up to 6 host-provided reference images of the same scene. Pass images in attachment order. When original indices are available, pass attachmentNumber for every image. The first image sets the primary reference and default camera. For multiple images, scene_get supplies one camera name per image. A request to match an angle or appearance in another image applies to its own camera and does not reorder the attachments. Optional labels identify views. Legacy reference accepts one image; pass only one input form. Image-based requests require their images. Async: poll scene_get with images=none until done, then inspect references once with scene_get images=references and freeze a plan.",
     inputSchema: {
       prompt: z.string().min(1).max(20000),
       reference: referenceFile.optional(),
@@ -140,7 +142,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   }, ({ sceneId, graph }) => guarded(() => result(store.updateGraph(sceneId, graph))));
   server.registerTool("scene_edit", {
     title: "Edit and render Blender scene",
-    description: "Execute host-written bpy Python in the task scene, save and render PNG. Checkpoints before editing and restores on failure. Async: poll scene_get with images=none, then inspect the finished render once with scene_get images=render. A review is required before another edit. Code runs with the Blender process's OS permissions.",
+    description: "Execute host-written bpy Python in the task scene, save and render PNG. Checkpoints before editing and restores on failure. Async: poll scene_get with images=none, then inspect the finished render once with scene_get images=render. Build and fit every name in referenceCameras on the first multi-reference edit. The first is the active camera. A review is required before another edit. Code runs with the Blender process's OS permissions.",
     inputSchema: { ...idSchema, code: z.string().min(1).max(120000) }, annotations: { ...write, openWorldHint: true },
   }, (args) => guarded(() => result(store.edit(args.sceneId, args.code))));
   server.registerTool("scene_optimize", {
@@ -154,14 +156,15 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   }, ({ sceneId, ...options }) => guarded(() => result(store.optimize(sceneId, options))));
   server.registerTool("scene_get", {
     title: "Inspect scene and rendered evidence",
-    description: "Read authoritative workflowState (phase, status, approved flag and presentation source/iteration/purpose). Geometry/composition always use gray structural evidence; work drafts are not approval checkpoints or final delivery. Set images=render for the state-selected render, references for inputs, none for metadata, or all for both (legacy default). referenceName selects one reference alone or with images=references without changing its primary/auxiliary role; objectName returns object data alone or with images=none. Poll scene_get with images=none during jobs. Inspect each new render once; repeated images accumulate in conversation history.",
+    description: "Read authoritative workflowState (phase, status, approved flag and presentation source/iteration/purpose). Geometry/composition always use gray structural evidence; work drafts are not approval checkpoints or final delivery. Set images=render for the state-selected render, references for inputs, none for metadata, or all for both (legacy default). Use images=camera with referenceName to inspect one matched camera render. referenceName selects one reference alone or with images=references; objectName returns object data alone or with images=none. Poll scene_get with images=none during jobs. Inspect each new render once; repeated images accumulate in conversation history.",
     inputSchema: {
       ...idSchema, objectName: z.string().min(1).max(256).optional(), referenceName: z.enum(REFERENCE_ASSETS).optional(),
-      images: z.enum(["none", "render", "references", "all"]).optional().describe("Image content to return; omitted preserves legacy all-images behavior. Prefer render after an edit, references at planning, or none for state."),
+      images: z.enum(["none", "render", "references", "camera", "all"]).optional().describe("Image content to return; omitted preserves legacy all-images behavior. Prefer render after an edit, references at planning, or none for state."),
     }, annotations: read, _meta: { "openai/widgetAccessible": true },
   }, ({ sceneId, objectName, referenceName, images }) => guarded(async () => {
     if (objectName && (referenceName || images && images !== "none")) throw new Error("Inspect an object alone or with images=none.");
-    if (referenceName && images && images !== "references") throw new Error("Select a reference alone or with images=references.");
+    if (referenceName && images && images !== "references" && images !== "camera") throw new Error("Select a reference with images=references or images=camera.");
+    if (images === "camera" && !referenceName) throw new Error("Select referenceName for the matched camera render.");
     const scene = store.get(sceneId);
     const output = result(scene);
     if (objectName) {
@@ -173,10 +176,19 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
     const references = store.referenceImages(scene);
     if (referenceName && !references.some((image) => image.assetName === referenceName)) throw new Error("Reference image is unavailable.");
     const selection = images ?? "all";
+    if (selection === "camera") {
+      const match = store.referenceCameraFiles(scene).find(view => view.reference === referenceName);
+      if (!match) throw new Error("Matched camera render is not ready for the current checkpoint.");
+      output.content.push(
+        { type: "text", text: `Matched camera render for ${match.reference}` },
+        { type: "image", mimeType: "image/png", data: (await readFile(store.path(scene, match.file))).toString("base64") },
+      );
+      return output;
+    }
     if (selection === "all" || selection === "references") for (const [index, reference] of references.entries()) {
       if (referenceName && reference.assetName !== referenceName) continue;
       output.content.push(
-        { type: "text", text: `${index === 0 ? "Primary view (camera and composition)" : `Auxiliary view (spatial layout or requested appearance; primary camera/composition remains ${references[0]!.assetName})`} — ${reference.assetName}: ${reference.label ?? reference.name}` },
+        { type: "text", text: `${index === 0 ? "Primary view (camera and composition)" : `Additional view (paired camera, spatial layout or requested appearance; primary reference remains ${references[0]!.assetName})`} — ${reference.assetName}: ${reference.label ?? reference.name}` },
         { type: "image", mimeType: reference.mime, data: (await readFile(store.path(scene, reference.assetName))).toString("base64") },
       );
     }
@@ -354,7 +366,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
     messages: [{
       role: "user", content: { type: "text", text: `Create or refine a Blender scene for: ${request}
 Read workflowState in every response: phase is the production stage, status is the operation state, and presentation fixes mode, purpose, source and iteration. Geometry/composition produce gray work images. Before these pass review, scene_preview can generate current-iteration five-view evidence and a gray GLB without changing state or approval; label it as a work draft, not confirmation or final delivery. Never substitute old views for a current revision.
-Use scene_create with every supplied image in references (up to 6). The first is the primary camera/composition; auxiliary images show the same scene and calibrate depth, occlusion and placement. Preserve attachment order unless the user explicitly designates a different primary view/camera/composition before creation. A request such as 'make the final result match image 3' does not make image 3 primary: keep image 1 for camera/composition and record the auxiliary alignment goal separately in the plan. For an existing scene, scene_get.reference and references[].role are authoritative; selecting referenceName or mentioning an image later never changes its role. Keep original attachment-number/file-ID/asset-name mappings. Primary-view anchors remain bound to the stored primary; review observations for auxiliary appearance criteria may use their own referenceView. Poll scene_get with images=none, then inspect every reference once with scene_get images=references; use referenceName to revisit a specific view only when needed. For an existing delivered scene, scene_continue can append auxiliary references. Discover 3D API Providers in connected tools and available Skills, including CLI APIs, for every standalone object; follow the scene Skill's asset workflow and obtain authorization before paid generation. Blender fallback requires evidence from both inventories in discovery.tools and discovery.skills; missing access or pending prerequisites is not provider absence.
+Use scene_create with every supplied image in references (up to 6). The first is the primary camera/composition; auxiliary images show the same scene and calibrate depth, occlusion and placement. Keep original attachment order and pass attachmentNumber for each image when known. Image 1 stays primary and supplies the default composition. For a new multi-reference scene build one named Blender camera per reference using scene_get.referenceCameras. A fifth-image overhead request constrains the fifth camera. Fit all cameras against shared world-space landmarks, object placement and occlusion in one scene. Preserve original attachment numbers for existing scenes. When reviewing, retrieve each matched camera image once with scene_get images=camera and referenceName. Record shared-landmark evidence and inconsistencies per reference. Primary-view anchors stay bound to image 1; each other camera is compared against its paired image. Poll scene_get with images=none, then inspect every reference once with scene_get images=references; use referenceName to revisit a specific view only when needed. For an existing delivered scene, scene_continue can append auxiliary references. Discover 3D API Providers in connected tools and available Skills, including CLI APIs, for every standalone object; follow the scene Skill's asset workflow and obtain authorization before paid generation. Blender fallback requires evidence from both inventories in discovery.tools and discovery.skills; missing access or pending prerequisites is not provider absence.
 Read the bundled Blender production guidance in the scene Skill. Reconcile every supplied view into one layout before planning. Freeze 1-12 global criteria and 1-8 bounded steps with scene_plan, including spatial relationships established by auxiliary views. Every plan needs a Scene Graph and asset requirements. For new multi-object plans, include independent relations with stable IDs, participant roles and criterionIds (or [] when none apply). Read the scene Skill spatial relations reference for world-axis measurements and visual checks; keep object hierarchy in parentId. For full reconstruction, use ordered workflow stages: geometry, composition, materials, lighting, final. Composition approval is mandatory and cannot be disabled. Classify every non-group node in assets. Perform scene_plan_review against all references before generation or editing. Then resolve independent object assets concurrently under the scene Skill's asset workflow, respecting Provider dependencies, concurrency limits, required choices and authorization. Providers requiring one asset per session or immediate waiting need isolated user-authorized asset workers; otherwise use their supported serial workflow. Only the coordinator records pending verified task IDs and completed local GLBs with scene_asset_strategy. Resolve every standalone object through Provider discovery and generation, or record that no applicable Provider exists, before serial Blender assembly. The first edit must build every major subject, camera, ground, and basic lighting. If a reference is attached, plan 2-8 normalized image-space boxes in the primary view and measure them during composition and final review. Check auxiliary-view depth and occlusion using object transforms and the orbitable scene.
 Write one bounded bpy change through scene_edit, preserving unrelated objects. After each edit inspect inspection.summary.relationChecks and visually verify active relations. Include relationReviews for every relation bound to a current-stage criterion; final covers all relations. Failed or unmeasurable numeric checks cannot pass, and failed relations require corrections and failed linked criteria. Recheck affectedRelations during scoped revisions without expanding the authorized edit scope. Set scene_node_id on directly mapped Blender objects. Update graph mappings and statuses through scene_graph. Set an active camera, lighting, materials, and render settings.
 Poll scene_get with images=none until done; inspect the new render once with scene_get images=render and every current-stage criterion before submitting scene_review. Bind the runtime inspection.id as inspectionId. Submit referenceEvidence for every input view and sceneEvidence for each staged criterion. Use a separate read-only verification pass with at most three ranked repairs. A procedural proxy is not automatically high fidelity.

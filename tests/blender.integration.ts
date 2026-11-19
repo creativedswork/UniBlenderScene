@@ -121,6 +121,77 @@ try {
   const tools = await client.listTools(); assert.equal(tools.tools.length, 24);
   const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
+  const cameraInputs = await Promise.all([1, 2, 3, 4, 5].map(async attachmentNumber => {
+    const local_path = join(root, `camera-input-${attachmentNumber}.png`);
+    await writeFile(local_path, PNG.sync.write(new PNG({ width: 96, height: attachmentNumber === 5 ? 64 : 96 })));
+    return { local_path, file_id: `attached-${attachmentNumber}`, attachmentNumber };
+  }));
+  const multiCamera = await call("scene_create", {
+    prompt: "生成如图场景，俯瞰视角与第五张图一致",
+    references: [cameraInputs[4], ...cameraInputs.slice(0, 4)],
+  });
+  assert.equal(multiCamera.isError, undefined, JSON.stringify(multiCamera.content));
+  const cameraScene = await poll(multiCamera.structuredContent!.id as string);
+  const cameraId = cameraScene.id;
+  const cameraNames = cameraInputs.map((_, index) => `Reference Camera ${index + 1}`);
+  assert.deepEqual(cameraScene.references.map((ref: { fileId: string }) => ref.fileId), cameraInputs.map(ref => ref.file_id));
+  assert.equal(cameraScene.reference.fileId, "attached-1");
+  assert.deepEqual(cameraScene.referenceCameras.map((view: { cameraName: string }) => view.cameraName), cameraNames);
+  assert.equal(cameraScene.referenceCameras[4].reference, "reference-5");
+  assert.deepEqual(cameraScene.referenceCameras.map((view: { default: boolean }) => view.default), [true, false, false, false, false]);
+  await planFixture({ sceneId: cameraId, summary: "Fit five cameras to the same cube", steps: ["Build a shared cube and fit five views"],
+    criteria: [{ id: "cube", description: "The same landmark is visible across views", severity: "blocker" }],
+    workflow: { stages: ["geometry", "composition", "final"].map(name => ({ name, criterionIds: ["cube"], budget: 2 })) },
+    referenceAnchors: [{ id: "left", description: "Left edge", targetBox: [0.2, 0.3, 0.3, 0.7] },
+      { id: "right", description: "Right edge", targetBox: [0.65, 0.3, 0.8, 0.7] }] });
+  await call("scene_edit", { sceneId: cameraId, code: "pass" });
+  assert.match((await poll(cameraId, "failed")).job.error, /Create a camera for each reference/);
+  const cameraEdit = await call("scene_edit", { sceneId: cameraId, code: `
+from mathutils import Vector
+scene = bpy.context.scene
+scene.render.resolution_x = scene.render.resolution_y = 96
+scene.cycles.samples = 2
+bpy.ops.mesh.primitive_cube_add()
+cube = bpy.context.object
+cube.name = "RedCube"
+cube["scene_node_id"] = "cube"
+cube.scale = (1.5, 0.75, 0.5)
+for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)), 1):
+    data = bpy.data.cameras.new(f"Reference Camera {index}")
+    camera = bpy.data.objects.new(data.name, data)
+    scene.collection.objects.link(camera)
+    camera.location = position
+    camera.rotation_euler = (-Vector(position)).to_track_quat("-Z", "Y").to_euler()
+    scene.camera = camera
+` });
+  assert.equal(cameraEdit.isError, undefined, JSON.stringify(cameraEdit.content));
+  const paired = await poll(cameraId);
+  assert.equal(paired.summary.camera, "Reference Camera 1");
+  assert.equal(paired.summary.objects.filter((object: { type: string }) => object.type === "MESH").length, 1);
+  assert.equal(paired.referenceCameras.length, 5);
+  assert.equal(paired.referenceCameras.filter((view: { renderUrl?: string }) => view.renderUrl).length, 5);
+  const topRender = await call("scene_get", { sceneId: cameraId, images: "camera", referenceName: "reference-5" });
+  assert.equal(topRender.isError, undefined, JSON.stringify(topRender.content));
+  const topImage = topRender.content.find(item => item.type === "image")!;
+  assert.equal(topRender.content.filter(item => item.type === "image").length, 1);
+  const topBytes = Buffer.from(topImage.data as string, "base64");
+  const topPNG = PNG.sync.read(topBytes);
+  assert.deepEqual([topPNG.width, topPNG.height], [96, 64]);
+  const topPath = new URL(paired.referenceCameras[4].renderUrl);
+  const cameraChunk = await call("scene_asset_chunk", { sceneId: cameraId, name: topPath.pathname.split("/").at(-1) });
+  assert.equal(cameraChunk.isError, undefined);
+  assert.deepEqual(Buffer.from(cameraChunk.structuredContent!.data as string, "base64"), topBytes);
+  assert.equal((topRender.structuredContent!.reference as { fileId: string }).fileId, "attached-1");
+  assert.equal((await fetch(paired.referenceCameras[4].renderUrl)).status, 200);
+  await writeFile(join(root, "reference-camera-scene.json"), JSON.stringify(paired));
+  await call("scene_preview", { sceneId: cameraId });
+  const cameraPreview = await poll(cameraId);
+  const cameraGLB = Buffer.from(await (await fetch(cameraPreview.artifacts.find((item: { name: string }) => item.name === "final.glb").url)).arrayBuffer());
+  const cameraJSON = JSON.parse(cameraGLB.toString("utf8", 20, 20 + cameraGLB.readUInt32LE(12)));
+  assert.deepEqual(cameraJSON.nodes.filter((node: { camera?: number }) => node.camera !== undefined)
+    .map((node: { name: string }) => node.name).sort(), [...cameraNames].sort());
+  assert.equal(cameraPreview.compositionApproved ?? false, false);
+
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
   const id = created.structuredContent!.id as string; await poll(id);
   await planFixture({
@@ -661,7 +732,7 @@ bpy.context.scene.render.resolution_y = 64
     status: "passed", tools: tools.tools.length, sceneId: id, relationSceneId: relationId, spatialScorerId: sharedSpatial.id,
     reviewPreviewVerified: true, boundedRevisionCases, guardPerformance, experienceLibrary,
     blenderVersion: rendered.summary.blenderVersion, renderBytes: referenceBytes.length, glbBytes: bytes.length,
-    checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "continued scene reference input", "failed-edit checkpoint recovery"],
+    checks: ["HTTP MCP initialization/tools/resource", "bearer authorization", "create/plan/edit/render/review/export/view", "provider GLB provenance and import gate (local fixture, no paid API)", "geometry/material/lighting/approved-camera scope rollback", "stable Scene Graph GLB mapping", "five Blender composition views and explicit approval", "lightweight job polling", "named-object inspection", "stale review rejection", "artifact access boundary", "HTTPS single and multi-view host-file transfer", "all reference images in scene_get", "auxiliary asset chunks and access tokens", "five ordered references and paired cameras in one Blender scene", "continued scene reference input", "failed-edit checkpoint recovery"],
   };
   await writeFile(join(root, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, evidenceDirectory: root }, null, 2));

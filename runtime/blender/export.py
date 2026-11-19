@@ -12,6 +12,7 @@ from mathutils import Matrix, Vector
 source = __SOURCE_BLEND__
 directory = __OUTPUT_DIRECTORY__
 structural_preview = __STRUCTURAL_PREVIEW__
+reference_camera_names = __REFERENCE_CAMERA_NAMES__
 prepared = __PREPARED_BLEND__
 bake_metadata = json.loads(__BAKE_METADATA_JSON__)
 preview_appearance = __PREVIEW_APPEARANCE__
@@ -256,7 +257,7 @@ try:
         bpy.context.evaluated_depsgraph_get(), x=scene.render.resolution_x,
         y=scene.render.resolution_y, scale_x=scene.render.pixel_aspect_x,
         scale_y=scene.render.pixel_aspect_y) if camera else None
-    if camera:
+    if camera and not reference_camera_names:
         camera.name = "__CodexBlenderActiveCamera"
     baked_objects = bake_metadata.get("bakedObjects", [])
     lightmaps = bake_metadata.get("lightmaps", [])
@@ -338,7 +339,7 @@ try:
         json.dump(profile, file, indent=2)
     for obj in scene.objects:
         if obj.type == "CAMERA":
-            obj.hide_set(obj != camera)
+            obj.hide_set(obj != camera and obj.name not in reference_camera_names)
         elif volume_only(obj):
             obj.hide_set(True)
     bpy.ops.export_scene.gltf(

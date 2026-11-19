@@ -11,6 +11,7 @@ const root = resolve(evidence);
 const snapshot = JSON.parse(await readFile(resolve(root, "scene.json"), "utf8"));
 const reviewSnapshot = JSON.parse(await readFile(resolve(root, "composition.json"), "utf8"));
 const workSnapshot = JSON.parse(await readFile(resolve(root, "geometry.json"), "utf8"));
+const cameraSnapshot = JSON.parse(await readFile(resolve(root, "reference-camera-scene.json"), "utf8"));
 const lightmapSnapshot = JSON.parse(await readFile(resolve(root, "lightmap-scene.json"), "utf8"));
 const files = new Map<string, string>();
 const include = (url: string | null) => {
@@ -28,6 +29,9 @@ include(workSnapshot.renderUrl); include(workSnapshot.bestRenderUrl);
 workSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
 include(lightmapSnapshot.renderUrl); include(lightmapSnapshot.bestRenderUrl);
 lightmapSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
+include(cameraSnapshot.renderUrl);
+cameraSnapshot.references.forEach((image: { url: string }) => include(image.url));
+cameraSnapshot.referenceCameras.forEach((view: { renderUrl: string }) => include(view.renderUrl));
 const host = await build({ entryPoints: ["tests/viewer-host.ts"], bundle: true, platform: "browser", format: "esm", write: false });
 const widget = await readFile("dist/widget.html");
 const nativeClient = await build({ stdin: { contents: `import { connectThreeRT } from './src/viewer/threert-live.ts';
@@ -65,13 +69,14 @@ const server = createServer(async (request, response) => {
       }).end(widget.toString().replace("<head>", `<head><script>window.openai={uploadFile:async(file)=>({fileId:file.name}),getFileDownloadUrl:async({fileId})=>({downloadUrl:'https://files.oaiusercontent.com/'+encodeURIComponent(fileId)})};</script>`));
     } else if (path === "/scene") {
       const query = new URL(request.url!, "http://localhost").searchParams;
-      const selected = query.has("lightmap") ? lightmapSnapshot : query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
+      const selected = query.has("cameras") ? cameraSnapshot : query.has("lightmap") ? lightmapSnapshot : query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       const rewrite = (url: string | null) => url ? `${origin}${new URL(url).pathname}` : null;
       response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
         ...selected, renderUrl: rewrite(selected.renderUrl), bestRenderUrl: rewrite(selected.bestRenderUrl),
         reference: selected.reference ? { ...selected.reference, url: rewrite(selected.reference.url) } : null,
         references: selected.references?.map((image: { url: string }) => ({ ...image, url: rewrite(image.url) })),
+        referenceCameras: selected.referenceCameras?.map((view: { renderUrl: string | null }) => ({ ...view, renderUrl: rewrite(view.renderUrl) })),
         artifacts: selected.artifacts.map((item: { name: string; url: string }) => ({ ...item, url: rewrite(item.url) })),
       }));
     } else if (files.has(path)) {
@@ -319,6 +324,16 @@ try {
     checks: ["MCP AppBridge iframe handshake", "left Scene Graph and full-size responsive preview", "world-space 12-edge selection box and XYZ arrows", "tree/viewport selection sync and parent group selection", "clear/Escape/empty-space deselection", "selection overlay follows orbit and render mode", "five real structural review images", "read-only composition review", "asset tool transfer with inaccessible direct URLs", "decoded render image", "path tracing with Blender display LUT and 32 samples", "raster lightmaps and planar reflection without progressive sampling", "WASD moves the web camera and selection projection", "ThreeRT WASD camera synchronization with a transport fixture", "orbit drag", "camera reset", "render/3D switching", "GLB preview statistics without text inputs", "fullscreen request", "GLB and Blender downloads", "reference gallery and enlarged auxiliary image", "multi-file upload with primary view selection", "append reference views", "six-image input limit"],
     pageErrors: errors,
   }, null, 2));
+  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/?cameras=1`);
+  await frame.locator("#reference-select").selectOption("reference-5");
+  await frame.locator("#reference-open").click();
+  await frame.locator("#reference-match").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    const img = frame.contentDocument?.querySelector("#reference-match") as HTMLImageElement;
+    return img?.naturalWidth === 96 && img.naturalHeight === 64;
+  });
+  await page.screenshot({ path: resolve(root, "viewer-reference-camera.png") });
   console.log(`Viewer integration passed; screenshots saved under ${root}`);
 } catch (error) {
   console.error("Original viewer failure", error);

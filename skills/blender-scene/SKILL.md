@@ -59,20 +59,14 @@ phase, purpose and source iteration. Never substitute old views or a colored
 working render when current gray evidence is unavailable; generate the required
 evidence through the service or report that it is not ready.
 
-1. For a new scene, call `scene_create` with the user's request and every supplied
-   host file object in `references` (1-6 images of the same scene). Keep attachment
-   order unless the user explicitly designates a different primary view, camera
-   or composition before creation. The first image determines the target camera
-   and composition. A request such as "make the final result match image 3" is
-   an alignment goal, not a primary-view designation: keep image 1 primary and
-   record the requested appearance or detail alignment separately in the plan.
-   If its scope would require changing the primary composition, clarify that
-   scope before changing it. Auxiliary views calibrate depth, occlusion, object
-   placement and explicitly requested appearance. Add short `label` values
-   when viewpoints are known; leave unknown viewpoints unspecified. The legacy
-   `reference` field accepts one image; use only one input form. Never invent
-   file IDs or download URLs. Resolve missing attachments before creating an
-   image-based scene. In a local harness such as Codex or Claude Code, pass an
+1. For a new scene, call `scene_create` with every supplied image in upload
+   order (up to six). Pass each original 1-based `attachmentNumber` when the host
+   exposes it. The first image stays primary and supplies the default
+   composition. Apply a request such as “俯瞰视角与第五张图一致” to the camera
+   paired with image 5. Keep the original upload order, image IDs and asset names.
+   Add short labels for known viewpoints. Use `reference` only for one image and
+   resolve missing attachments before starting an image-based scene.
+   In a local harness such as Codex or Claude Code, pass an
    attached image's absolute path as
    `local_path` instead of a download object; omit `file_id`. The service must
    allow its directory through `LOCAL_REFERENCE_ROOTS`. If needed, copy only the
@@ -95,9 +89,12 @@ evidence through the service or report that it is not ready.
    For an existing scene, `scene_get.reference` and the `primary` role in
    `scene_get.references` determine the camera/composition source, regardless of
    which image was mentioned or inspected most recently. Record the primary
-   asset and each requested auxiliary use in the frozen plan. Composition anchors
-   stay in the primary view; material, lighting or detail criteria can cite a
-   different stored reference in their descriptions and review `referenceView`.
+   asset and the role of every view in the frozen plan. For each entry in
+   `scene_get.referenceCameras`, plan its pose and framing around shared
+   world-space landmarks. Keep one layout for all cameras. Compare relative
+   direction, height, overlap and occlusion. Record specific view conflicts
+   while preserving the shared layout. Keep primary-view anchors in image 1
+   and bind other observations to their actual `referenceView`.
    Reuse reference observations while the images remain in active context; after
    compaction or a new conversation, reload the views required for the next check. Reconcile all views into one spatial
    layout before modeling: identify shared objects, wall/window planes, depth
@@ -125,7 +122,11 @@ evidence through the service or report that it is not ready.
    `scene_plan`: state the target, 1-12 observable criteria with unique IDs and
    severities, bounded implementation steps, and a visual threshold from 0 to
    100. The first new-scene edit must create a complete recognizable blockout
-   with every major subject, camera, ground, and basic lighting. Later edits
+   with every major subject, ground and basic lighting. Create every named
+   `referenceCameras` object in the same Blender scene during that edit. Fit
+   each to its paired image and keep camera 1 active. For a scene without a
+   camera list, set an active camera as usual. Preserve camera names through
+   production. Later edits
    refine bounded parts without deleting the complete composition. For a
    primary reference, also freeze 2-8 major visual anchors as normalized
    `[left, top, right, bottom]` boxes in `referenceAnchors`. Include the main
@@ -209,6 +210,11 @@ evidence through the service or report that it is not ready.
    also need a reason, concrete correction and rerender acceptance check.
    Provide at most three ranked `repairs`. Measure reference anchors in
    composition and final reviews.
+   In a multi-reference scene, read each available matched render once using
+   `scene_get` with `images: "camera"` and its `referenceName`. In composition
+   and final reviews, record per-image evidence that compares the matched
+   render and the shared landmarks. Identify visible mismatches or conflicting
+   references before accepting the scene.
 8. Follow the returned stage. In `edit`, make the requested correction and repeat
    the render/review loop. In `completed` or `best_effort`, optionally run
    `scene_bake` for static surface lightmaps (see [Blender code guidance](references/blender-code.md))

@@ -5,7 +5,7 @@ const bridge = new AppBridge(null, { name: "Integration host", version: "1.0.0" 
   serverTools: {}, message: { text: {} }, openLinks: {},
 }, { hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] } });
 const query = new URLSearchParams(location.search);
-const snapshot = await (await fetch(query.has("lightmap") ? "/scene?lightmap=1" : query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
+const snapshot = await (await fetch(query.has("cameras") ? "/scene?cameras=1" : query.has("lightmap") ? "/scene?lightmap=1" : query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
 const inaccessible = (url: string | null) => url ? `http://127.0.0.1:1${new URL(url).pathname}` : null;
 const widgetSnapshot = {
   ...snapshot,

@@ -440,3 +440,51 @@ bpy.context.scene.render.filepath = ${JSON.stringify(path)}
 bpy.ops.render.render(write_still=True)
 `;
 }
+
+export function referenceCamerasCode(names: string[]): string {
+  if (!names.length) return "";
+  return `
+_reference_scene = bpy.context.scene
+_reference_cameras = [_reference_scene.objects.get(name) for name in ${JSON.stringify(names)}]
+_missing_cameras = [name for name, camera in zip(${JSON.stringify(names)}, _reference_cameras)
+                    if camera is None or camera.type != "CAMERA"]
+if _missing_cameras:
+    raise RuntimeError("Create a camera for each reference: " + ", ".join(_missing_cameras))
+_reference_scene.camera = _reference_cameras[0]
+`;
+}
+
+export function referenceRendersCode(shots: { cameraName: string; image: string; output: string }[]): string {
+  if (!shots.length) return "";
+  return `
+_reference_scene = bpy.context.scene
+_reference_render = _reference_scene.render
+_original_camera = _reference_scene.camera
+_original_frame = (_reference_render.resolution_x, _reference_render.resolution_y,
+                   _reference_render.resolution_percentage, _reference_render.pixel_aspect_x,
+                   _reference_render.pixel_aspect_y, _reference_render.filepath)
+_original_samples = _reference_scene.cycles.samples
+try:
+    _reference_render.resolution_percentage = 100
+    _reference_render.pixel_aspect_x = _reference_render.pixel_aspect_y = 1
+    _reference_scene.cycles.samples = min(_original_samples, 8)
+    for _shot in ${JSON.stringify(shots)}:
+        _image = bpy.data.images.load(_shot["image"], check_existing=False)
+        try:
+            _width, _height = _image.size
+        finally:
+            bpy.data.images.remove(_image)
+        _scale = min(1, 512 / max(_width, _height))
+        _reference_render.resolution_x = max(4, round(_width * _scale))
+        _reference_render.resolution_y = max(4, round(_height * _scale))
+        _reference_scene.camera = _reference_scene.objects[_shot["cameraName"]]
+        _reference_render.filepath = _shot["output"]
+        bpy.ops.render.render(write_still=True)
+finally:
+    _reference_scene.camera = _original_camera
+    (_reference_render.resolution_x, _reference_render.resolution_y,
+     _reference_render.resolution_percentage, _reference_render.pixel_aspect_x,
+     _reference_render.pixel_aspect_y, _reference_render.filepath) = _original_frame
+    _reference_scene.cycles.samples = _original_samples
+`;
+}
