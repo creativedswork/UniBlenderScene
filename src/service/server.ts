@@ -11,6 +11,9 @@ import { z } from "zod";
 import { REFERENCE_ASSETS, SceneStore, type ImageBox, type Scene } from "./store.js";
 import { proposalSchema, replaySchema, retrospectiveSchema } from "./experience.js";
 
+const referenceInstructions = "Before the first user-facing update, keep image 1 as the primary reference and default camera. " +
+  "A request such as ‘俯瞰视角和第五张图一致’ only applies to Camera 5. Keep all attachments in their original order and keep Camera 1 as the default. " +
+  "Use the user's scene request verbatim in scene_create.prompt and record inferred camera adjustments in scene_plan.";
 const WIDGET_URI = "ui://uni-blender-scene/viewer.html";
 const version: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 const idSchema = { sceneId: z.string().regex(/^scene_[a-f0-9-]+$/) };
@@ -51,7 +54,7 @@ const widgetMeta = {
 };
 
 export function createMcpServer(store: SceneStore, origin: string): McpServer {
-  const server = new McpServer({ name: "UniBlenderScene", version });
+  const server = new McpServer({ name: "UniBlenderScene", version }, { instructions: referenceInstructions });
   const result = (scene: Scene): CallToolResult => {
     const snapshot = store.snapshot(scene, origin);
     return { content: [{ type: "text", text: JSON.stringify(snapshot) }], structuredContent: snapshot };
@@ -94,7 +97,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
     title: "Create Blender scene",
     description: "Create an empty task-owned scene with up to 6 host-provided reference images of the same scene. Pass images in attachment order. When original indices are available, pass attachmentNumber for every image. The first image sets the primary reference and default camera. For multiple images, scene_get supplies one camera name per image. A request to match an angle or appearance in another image applies to its own camera and does not reorder the attachments. Optional labels identify views. Legacy reference accepts one image; pass only one input form. Image-based requests require their images. Async: poll scene_get with images=none until done, then inspect references once with scene_get images=references and freeze a plan.",
     inputSchema: {
-      prompt: z.string().min(1).max(20000),
+      prompt: z.string().min(1).max(20000).describe("Copy the user’s scene request verbatim. Put observations and inferred camera adjustments in scene_plan."),
       reference: referenceFile.optional(),
       references: z.array(referenceFile).min(1).max(6).optional(),
     },
@@ -365,6 +368,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   }, ({ request }) => ({
     messages: [{
       role: "user", content: { type: "text", text: `Create or refine a Blender scene for: ${request}
+${referenceInstructions}
 Read workflowState in every response: phase is the production stage, status is the operation state, and presentation fixes mode, purpose, source and iteration. Geometry/composition produce gray work images. Before these pass review, scene_preview can generate current-iteration five-view evidence and a gray GLB without changing state or approval; label it as a work draft, not confirmation or final delivery. Never substitute old views for a current revision.
 Use scene_create with every supplied image in references (up to 6). The first is the primary camera/composition; auxiliary images show the same scene and calibrate depth, occlusion and placement. Keep original attachment order and pass attachmentNumber for each image when known. Image 1 stays primary and supplies the default composition. For a new multi-reference scene build one named Blender camera per reference using scene_get.referenceCameras. A fifth-image overhead request constrains the fifth camera. Fit all cameras against shared world-space landmarks, object placement and occlusion in one scene. Preserve original attachment numbers for existing scenes. When reviewing, retrieve each matched camera image once with scene_get images=camera and referenceName. Record shared-landmark evidence and inconsistencies per reference. Primary-view anchors stay bound to image 1; each other camera is compared against its paired image. Poll scene_get with images=none, then inspect every reference once with scene_get images=references; use referenceName to revisit a specific view only when needed. For an existing delivered scene, scene_continue can append auxiliary references. Discover 3D API Providers in connected tools and available Skills, including CLI APIs, for every standalone object; follow the scene Skill's asset workflow and obtain authorization before paid generation. Blender fallback requires evidence from both inventories in discovery.tools and discovery.skills; missing access or pending prerequisites is not provider absence.
 Read the bundled Blender production guidance in the scene Skill. Reconcile every supplied view into one layout before planning. Freeze 1-12 global criteria and 1-8 bounded steps with scene_plan, including spatial relationships established by auxiliary views. Every plan needs a Scene Graph and asset requirements. For new multi-object plans, include independent relations with stable IDs, participant roles and criterionIds (or [] when none apply). Read the scene Skill spatial relations reference for world-axis measurements and visual checks; keep object hierarchy in parentId. For full reconstruction, use ordered workflow stages: geometry, composition, materials, lighting, final. Composition approval is mandatory and cannot be disabled. Classify every non-group node in assets. Perform scene_plan_review against all references before generation or editing. Then resolve independent object assets concurrently under the scene Skill's asset workflow, respecting Provider dependencies, concurrency limits, required choices and authorization. Providers requiring one asset per session or immediate waiting need isolated user-authorized asset workers; otherwise use their supported serial workflow. Only the coordinator records pending verified task IDs and completed local GLBs with scene_asset_strategy. Resolve every standalone object through Provider discovery and generation, or record that no applicable Provider exists, before serial Blender assembly. The first edit must build every major subject, camera, ground, and basic lighting. If a reference is attached, plan 2-8 normalized image-space boxes in the primary view and measure them during composition and final review. Check auxiliary-view depth and occlusion using object transforms and the orbitable scene.

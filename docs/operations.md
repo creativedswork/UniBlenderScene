@@ -394,8 +394,11 @@ service before resuming. Run each deployment for a single trusted operator.
 
 The optional templates in [`harnesses/codex/agents/`](../harnesses/codex/agents/) can be copied into
 a Codex project's `.codex/agents/`; plugin installation does not register them.
-[`AGENTS.md`](../AGENTS.md) applies only when this repository is the working
-directory. The packaged Skills provide the reusable plugin instructions.
+Add the [scene project instructions](../harnesses/codex/scene-project/AGENTS.md)
+to the scene project's `AGENTS.md` so Codex sees the reference rules before its
+first update. Merge the rules into an existing file if the project has one.
+The repository's [contributor instructions](../AGENTS.md) apply to development
+in this checkout.
 
 ## Verify and package
 

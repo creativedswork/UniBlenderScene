@@ -1130,6 +1130,39 @@ test("scene_get selects images without replaying six references during render re
   } finally { await client.close(); await server.close(); }
 });
 
+test("reference guidance is available at MCP initialization and scene_create preserves the user's request", async (t) => {
+  const { store } = setup();
+  t.mock.method(globalThis, "fetch", async () => new Response(Buffer.from("89504e470d0a1a0a01020304", "hex")));
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "reference-intake-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  await client.connect(b);
+  try {
+    const instructions = client.getInstructions() ?? "";
+    assert.match(instructions, /Before the first user-facing update, keep image 1 as the primary reference and default camera/);
+    assert.match(instructions, /俯瞰视角和第五张图一致[^.]+only applies to Camera 5/);
+    const { tools } = await client.listTools();
+    const schema = tools.find(tool => tool.name === "scene_create")!.inputSchema;
+    assert.match((schema.properties?.prompt as { description: string }).description, /verbatim/);
+    const prompt = "构建如图所示的场景，并且俯瞰视角和第五张图一致";
+    const references = [1, 2, 3, 4, 5].map(attachmentNumber => ({
+      download_url: `https://files.oaiusercontent.com/camera-${attachmentNumber}.png`,
+      file_id: `image-${attachmentNumber}`, attachmentNumber,
+    }));
+    const created = await client.callTool({ name: "scene_create", arguments: {
+      prompt, references: [references[4], ...references.slice(0, 4)],
+    } });
+    assert.equal(created.isError, undefined);
+    await store.settled();
+    const scene = store.get((created.structuredContent as { id: string }).id);
+    assert.equal(scene.prompt, prompt);
+    assert.equal(scene.reference?.fileId, "image-1");
+    const cameras = (store.snapshot(scene, "https://example.com").referenceCameras as { default: boolean }[]);
+    assert.deepEqual(cameras.map(camera => camera.default), [true, false, false, false, false]);
+  } finally { await client.close(); await server.close(); }
+});
+
 test("auxiliary appearance alignment and image selection preserve the first reference as primary", async (t) => {
   const png = Buffer.from("89504e470d0a1a0a01020304", "hex");
   t.mock.method(globalThis, "fetch", async (input: URL | string) =>

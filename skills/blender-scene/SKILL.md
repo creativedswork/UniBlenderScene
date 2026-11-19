@@ -1,9 +1,16 @@
 ---
 name: blender-scene
-description: Build or refine Blender scenes from text or reference images, review renders, and deliver an interactive 3D preview. Use for scene creation or refinement; use blender-setup for installation.
+description: Build or refine Blender scenes and review renders. Image 1 is primary and the default camera. An angle from image N applies to camera N, including in the first reply. Use blender-setup for installation.
 ---
 
 # Blender scene workflow
+
+Apply the reference rule before the first user-facing update. For example,
+“俯瞰视角和第五张图一致” means Camera 5 should match the overhead view. Describe
+Camera 1 as the default and avoid assigning a new primary view or main output.
+Pass the user's request verbatim as `scene_create.prompt`. Keep inferred
+scene details and camera adjustments in `scene_plan`. Confirm the stored
+roles with `scene_get.reference` and `referenceCameras` after creation.
 
 Use the host model for planning, Python generation, and visual review. The MCP
 service owns scenes, checkpoints, convergence decisions, rendering, and export.
