@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Precipitation, VfxProfile } from "../shared/vfx.js";
+import { setPreviewLightEnergy } from "./lighting.js";
 
 const namesMatch = (a: string, b: string) => THREE.PropertyBinding.sanitizeNodeName(a) === THREE.PropertyBinding.sanitizeNodeName(b);
 const modulo = THREE.MathUtils.euclideanModulo;
@@ -136,8 +137,7 @@ export function createWeather(profile: VfxProfile | undefined, scene: THREE.Scen
       apply = ([energy, r, g, b]) => {
         if (!light) return;
         light.color.setRGB(r!, g!, b!);
-        if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight || light instanceof THREE.RectAreaLight) light.power = energy!;
-        else light.intensity = energy!;
+        setPreviewLightEnergy(light, energy!);
       };
     } else {
       const materials = materialsFor(model, track.name, track.material);

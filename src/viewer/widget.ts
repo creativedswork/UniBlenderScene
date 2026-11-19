@@ -16,7 +16,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 import { connectThreeRT } from "./threert-live.js";
 import { keyboardNavigation } from "./navigation.js";
-import { addPlanarReflection, applyLightmaps, captureEnvironment, limitRasterLights, type Lightmap } from "./lighting.js";
+import { addPlanarReflection, applyLightmaps, captureEnvironment, limitPreviewShadows, limitRasterLights, setPreviewLightEnergy, type Lightmap } from "./lighting.js";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
 type GraphNode = { id: string; label: string; kind: string; parentId: string | null; description: string;
@@ -511,19 +511,17 @@ function applyLights(model: THREE.Group, profile: Profile) {
     }
     marker.parent.add(holder); marker.parent.remove(marker);
     const color = new THREE.Color().setRGB(...definition.color.slice(0, 3) as [number, number, number], THREE.LinearSRGBColorSpace);
-    // Path tracing uses Blender's source energy; raster lumen scaling overexposes it.
     const power = Math.max(0, definition.energy ?? definition.webPower / (683 * 0.012));
     let light: THREE.DirectionalLight | THREE.PointLight | THREE.SpotLight | THREE.RectAreaLight;
-    if (definition.type === "SUN") light = new THREE.DirectionalLight(color, power);
+    if (definition.type === "SUN") light = new THREE.DirectionalLight(color);
     else if (definition.type === "SPOT") {
       light = new THREE.SpotLight(color, 1, 0, Math.max(0.01, Math.min(Math.PI / 2, definition.spotSize / 2)), definition.spotBlend);
-      light.power = power;
     } else if (definition.type === "AREA") {
       light = new THREE.RectAreaLight(color, 1, Math.max(0.01, definition.size),
         ["RECTANGLE", "ELLIPSE"].includes(definition.shape) ? Math.max(0.01, definition.sizeY) : Math.max(0.01, definition.size));
       (light as THREE.RectAreaLight & { isCircular?: boolean }).isCircular = ["DISK", "ELLIPSE"].includes(definition.shape);
-      light.power = power;
-    } else { light = new THREE.PointLight(color); light.power = power; }
+    } else light = new THREE.PointLight(color);
+    setPreviewLightEnergy(light, power);
     // The holder carries Blender's transform; Three's sun/spot defaults offset the light.
     light.name = definition.name;
     light.position.set(0, 0, 0);
@@ -592,7 +590,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
       sun.target.position.copy(sun.target.parent!.worldToLocal(center.clone()));
       Object.assign(sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: 0.1, far: radius * 4 });
       sun.shadow.camera.updateProjectionMatrix(); sun.shadow.mapSize.set(2048, 2048);
-      sun.castShadow = true; sun.shadow.needsUpdate = true;
+      if (sun.castShadow) sun.shadow.needsUpdate = true;
       scene.updateMatrixWorld(true);
     }
   }
@@ -732,7 +730,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   }
   return {
     animated: Boolean(dust?.volumes.length),
-    shadowedDust: Boolean((dust || volumes.length) && sun),
+    shadowedDust: Boolean((dust || volumes.length) && sun?.castShadow),
     depthDirty: true,
     resize(width: number, height: number) {
       composer.setSize(width, height); depth?.setSize(width, height); this.depthDirty = true;
@@ -942,14 +940,15 @@ async function loadModel(url: string) {
     controls.enableDamping = true; controls.update();
     const navigation = keyboardNavigation(camera, controls, renderer.domElement, () => mode === "3d" && controls.enabled);
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
+    const planarReflection = raster ? profile.previewAppearance?.planarReflection : undefined;
+    const shadowMaps = limitPreviewShadows(scene, camera, renderer.capabilities.maxTextures, Boolean(planarReflection));
     const probe = raster && profile.previewAppearance?.reflectionProbe ?
       captureEnvironment(renderer, scene, profile.previewAppearance.reflectionProbe, camera.far) : undefined;
     if (probe) {
       scene.environment = probe.texture; scene.environmentIntensity = 1;
       limitRasterLights(scene, camera);
     }
-    const reflection = raster && profile.previewAppearance?.planarReflection ?
-      addPlanarReflection(scene, gltf.scene, profile.previewAppearance.planarReflection) : undefined;
+    const reflection = planarReflection ? addPlanarReflection(scene, gltf.scene, planarReflection) : undefined;
     const tracer = raster ? undefined : new WebGLPathTracer(renderer);
     if (tracer) {
       tracer.bounces = 8;
@@ -1054,6 +1053,7 @@ async function loadModel(url: string) {
     renderer.domElement.dataset.bounces = String(tracer?.bounces ?? 0);
     renderer.domElement.dataset.displayTransform = display ? "blender-lut" : "three-tone-mapping";
     renderer.domElement.dataset.samples = "0";
+    renderer.domElement.dataset.shadowMaps = String(shadowMaps);
     renderer.domElement.dataset.effects = Object.keys(profile.postprocessing ?? {}).join(",");
     if (profile.previewAppearance?.dust) renderer.domElement.dataset.effects += ",dust";
     if (profile.vfx?.volumes?.length) renderer.domElement.dataset.effects += ",volumes";
