@@ -392,11 +392,17 @@ export function startServer() {
   if (!local && !apiKey) throw new Error("Set MCP_API_KEY before binding outside localhost.");
   if (!local && !origin.startsWith("https://")) throw new Error("Remote services require an HTTPS PUBLIC_BASE_URL.");
   const store = new SceneStore(process.env.RUNS_ROOT ?? ".canova/runs");
+  let stopping = false;
+  const activeMcp = new Set<Promise<void>>();
   const http = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", origin);
       // Require explicit host/origin matches even on localhost to prevent DNS rebinding and cross-origin writes.
       const acceptedHosts = [new URL(origin).host, `127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
+      if (stopping) {
+        response.writeHead(503).end("UniBlenderScene is stopping.");
+        return;
+      }
       if (!acceptedHosts.includes(request.headers.host ?? "")) {
         response.writeHead(421).end("Unrecognized host."); return;
       }
@@ -425,7 +431,7 @@ export function startServer() {
             let closed = false;
             response.once("close", () => { closed = true; });
             try {
-              while (!closed) {
+              while (!closed && !stopping) {
                 const frame = await store.live.frame(scene.id, target.version, session);
                 if (closed) break;
                 // Length, sequence and timestamp precede each PNG in the continuous response.
@@ -483,12 +489,20 @@ export function startServer() {
       if (!request.headers["content-type"]?.includes("application/json")) {
         response.writeHead(415).end("Use application/json."); return;
       }
+      const expectedVersion = request.headers["x-uni-blender-scene-version"];
+      if (expectedVersion && expectedVersion !== version) {
+        response.writeHead(409).end(`Service version ${version} differs from plugin version ${expectedVersion}. Reconnect Codex.`);
+        return;
+      }
       const body = await jsonBody(request);
+      if (stopping) { response.writeHead(503).end("UniBlenderScene is stopping."); return; }
       const server = createMcpServer(store, origin);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.once("close", () => { void server.close(); });
-      await server.connect(transport);
-      await transport.handleRequest(request, response, body);
+      const handling = server.connect(transport).then(() => transport.handleRequest(request, response, body));
+      activeMcp.add(handling);
+      try { await handling; }
+      finally { activeMcp.delete(handling); }
     } catch (error) {
       if (!response.headersSent) {
         response.writeHead(400, { "Content-Type": "application/json" })
@@ -498,7 +512,13 @@ export function startServer() {
   });
   http.requestTimeout = 60000;
   http.listen(port, host, () => console.log(`UniBlenderScene MCP listening at ${origin}/mcp`));
-  return { http, store };
+  async function shutdown() {
+    stopping = true;
+    await new Promise<void>(done => http.close(() => done()));
+    await Promise.allSettled(activeMcp);
+    await store.settled();
+  }
+  return { http, store, shutdown };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) startServer();

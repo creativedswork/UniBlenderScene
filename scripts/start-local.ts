@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { checkSceneTools } from "./check-mcp-tools.js";
+import { listeners } from "./local-listeners.js";
 
 const plugin = fileURLToPath(new URL("../", import.meta.url));
 const runs = resolve(process.env.RUNS_ROOT ?? join(plugin, ".canova/runs"));
@@ -14,16 +15,6 @@ const port = Number(process.env.PORT ?? 4312), bridgePort = Number(process.env.B
 const origin = `http://127.0.0.1:${port}`;
 const started: { pid: number; file: string }[] = [];
 const pause = () => new Promise((done) => setTimeout(done, 200));
-
-function listeners(port: number): number[] {
-  try {
-    return execFileSync("lsof", ["-nP", "-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-      .trim().split(/\s+/).filter(Boolean).map(Number);
-  } catch (error) {
-    if ((error as { status?: number }).status === 1) return [];
-    throw error;
-  }
-}
 
 async function ensureProcess(name: string, command: string, args: string[], listenPort: number) {
   const pidFile = join(logs, `${name}.pid`), logFile = join(logs, `${name}.log`);

@@ -7,8 +7,8 @@ Respond in the user's language.
 
 ## 1. Locate the plugin and check dependencies
 
-Reuse an existing UniBlenderScene checkout when available. Otherwise, clone it
-into a suitable local directory:
+For desktop Codex, extract the release ZIP into a local directory. For a
+source installation, reuse an existing UniBlenderScene checkout or clone it:
 
 ```bash
 git clone https://github.com/creativedswork/UniBlenderScene.git
@@ -32,21 +32,24 @@ the missing dependency and the exact next step.
 | Agent host | Check `codex --version` or `claude --version` for the current host and confirm the user is signed in. |
 | `lsof` and `ps` | `command -v lsof` and `command -v ps`; install missing commands with the system package manager. |
 
-## 2. Build and start the local service
+## 2. Prepare the local service
+
+For desktop Codex, prefer the release ZIP with its built viewer and runtime
+dependencies. Codex starts the service and dedicated Blender bridge when
+connecting to MCP. See [Codex setup](operations.md#codex) for existing scene
+directories and optional Blender paths.
+
+For a source checkout, install and build from the plugin root.
 
 ```bash
 npm ci
 npm run build
-node --import tsx scripts/start-local.ts
 ```
 
-The launcher starts an installed Blender and the MCP service; it does not install
-dependencies. For a non-default Blender location, use
-`BLENDER_BIN="/absolute/path/to/blender" node --import tsx scripts/start-local.ts`.
-Wait for `Ready: http://127.0.0.1:4312/mcp (...)`. The processes remain running
-after the launcher exits. On later runs, reuse the launcher; it reuses its own
-running processes. See [launcher behavior and logs](operations.md#start-the-local-processes-together)
-if startup fails. Do not attach to the user's working Blender process.
+For a Claude-only session or another host using the local HTTP URL, start the
+service with `node --import tsx scripts/start-local.ts` and wait for the
+`Ready` message. See [launcher behavior and logs](operations.md#start-the-local-processes-together)
+for manual startup and configuration.
 
 ## 3. Connect the current host
 
@@ -58,10 +61,9 @@ mkdir -p ../UniBlenderScenes
 ```
 
 - **Codex:** from the plugin root, run `codex plugin marketplace add "$PWD"`.
-  Install **UniBlenderScene** from the **UniBlenderScene** source in the Plugins
-  Directory. Complete the UI step if tools permit; otherwise ask the user to
-  install it. Open the separate scene directory as a project and start a new
-  chat to load the plugin.
+  Install it with `codex plugin add uni-blender-scene@uni-blender-scene`.
+  Open the separate scene directory as a project and start a new local chat
+  to load the plugin and check its tools.
 - **Claude Code:** from the scene project, launch
   `claude --plugin-dir /absolute/path/to/UniBlenderScene`, using the actual plugin
   root. Check `/mcp` for the connection and available `scene_*` tools. For

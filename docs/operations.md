@@ -7,22 +7,38 @@ The [README](../README.md) covers the plugin and its scene workflow.
 
 ### Codex
 
-The repository contains `plugin.json`, `mcp.json`, and a marketplace definition
-at `.agents/plugins/marketplace.json`. Add this repository as a plugin source:
-
-```bash
-codex plugin marketplace add creativedswork/UniBlenderScene --ref main
-```
-
-If you already cloned the repository, you can add its absolute path instead:
+Extract the release ZIP and add the extracted directory as a plugin source.
+The ZIP includes the built viewer and Node dependencies for macOS and Linux
+on arm64 and x64. Install Node.js 22+ and Blender 4.5+ on the machine running Codex.
+For a source checkout, run `npm ci` and `npm run build` before adding it as a
+local marketplace.
 
 ```bash
 codex plugin marketplace add /absolute/path/to/UniBlenderScene
+codex plugin add uni-blender-scene@uni-blender-scene
 ```
 
-Install **UniBlenderScene** from the **UniBlenderScene** source in the Plugins
-Directory. The bundled `mcp.json` points to `http://127.0.0.1:4312/mcp`; install
-does not start the service. A private repository requires GitHub access.
+Open a local Codex chat. Codex launches the plugin's stdio entry when it
+connects to MCP, and the entry starts or reuses one local HTTP service and its
+dedicated Blender bridge. Connected clients share the task queue. Closing a
+chat leaves submitted jobs running. After ten minutes without requests or
+queued Blender work, the service exits and stops its bridge. The next Codex
+tool call can start them again.
+
+The launcher keeps scene data in `~/.canova/runs` by default. Set `RUNS_ROOT`
+in `~/.canova/.env` to use an existing absolute run directory. That file also
+supports `BLENDER_BIN`, `LOCAL_REFERENCE_ROOTS`, `THREERT_BIN`, `PORT` (default
+4312) and `BLENDER_MCP_PORT` (default 9877). The launcher uses loopback port
+4311 to serialize startup. It keeps logs and a versioned runtime copy under
+`RUNS_ROOT/.service/` so a Codex update can remove the old plugin files while
+the old service finishes its work.
+
+When upgrading from a manually started release, first let its jobs finish and
+stop the old MCP service and dedicated bridge. Then reconnect Codex with the
+original `RUNS_ROOT`. Later plugin-managed upgrades wait for work accepted
+by the older service to finish before the new version opens the same scene
+directory. If Codex times out while waiting, reconnect after the old service
+stops.
 
 ### Claude Code
 
@@ -52,9 +68,9 @@ the scene project:
 
 Invoke `/uni-blender-scene:blender-setup` for setup or
 `/uni-blender-scene:blender-scene` to create a scene. The native manifest uses
-`harnesses/claude-code/mcp.json` with Claude's `http` transport; root `mcp.json`
-uses the portable `streamable-http` transport. Both connect to the same service
-and load the shared root `skills/`. No model is pinned in the plugin.
+`harnesses/claude-code/mcp.json` with Claude's `http` transport. It can reach
+the same running service as Codex. Start the service manually for a
+Claude-only workflow. Both clients load the shared root `skills/`.
 See the official [Claude plugin manifest reference](https://code.claude.com/docs/en/plugins-reference)
 and [portable plugin packaging](https://developers.openai.com/plugins/build/plugins).
 
@@ -331,8 +347,8 @@ their count. Updating the plugin does not remove images already in a conversatio
 
 ## Connect a remote service
 
-A remote plugin connection needs a reachable HTTPS service; the bundled local
-`127.0.0.1` endpoint is only for a client on the same machine. Run Node and a
+A remote plugin connection needs a reachable HTTPS service. The desktop
+launcher runs its backend on loopback for clients on the same machine. Run Node and a
 dedicated Blender process with a shared persistent run directory behind an HTTPS
 reverse proxy. Set `HOST=0.0.0.0`, `MCP_API_KEY`, and
 `PUBLIC_BASE_URL=https://YOUR_SERVICE_ORIGIN`; forward `Host` and
@@ -342,7 +358,8 @@ reverse proxy. Set `HOST=0.0.0.0`, `MCP_API_KEY`, and
 npm run configure -- https://YOUR_SERVICE_ORIGIN
 ```
 
-This updates both root `mcp.json` and `harnesses/claude-code/mcp.json`.
+This switches root `mcp.json` to the remote HTTP transport and updates
+`harnesses/claude-code/mcp.json` to the same endpoint.
 Keep the key in connection settings, outside manifests. The service supports
 fixed bearer-key authentication for private connections. It does not implement
 OAuth or public-directory submission, which needs a supported authentication
@@ -360,8 +377,7 @@ permissions, so use a dedicated account or container when hosting it.
 Scene metadata and reviewed checkpoints survive service restarts. An interrupted
 edit restores the pre-edit checkpoint when recovery succeeds. If a timed-out
 Blender operation continues or recovery fails, restart the dedicated bridge and
-service before resuming. This release has no multi-tenant isolation, job
-cancellation, or process supervisor.
+service before resuming. Run each deployment for a single trusted operator.
 
 The optional templates in [`harnesses/codex/agents/`](../harnesses/codex/agents/) can be copied into
 a Codex project's `.codex/agents/`; plugin installation does not register them.
@@ -394,6 +410,6 @@ To build a distributable archive:
 npm run pack:plugin
 ```
 
-The ZIP is written to `../UniBlenderScene.zip`. It excludes `.git`,
-`node_modules`, `.env`, and `.canova`. See the [validation results](validation.md)
-for checks performed on this release.
+The ZIP is written to `../UniBlenderScene.zip`. It includes the built viewer and
+production Node dependencies. The packaging step excludes `.git`, local
+environment files, and `.canova`.

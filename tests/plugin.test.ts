@@ -7,7 +7,7 @@ import test from "node:test";
 
 const json = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 
-test("Codex and Claude share identity, Skills and endpoint; configure updates both transports", async () => {
+test("Codex launches the local package and configure switches both hosts to HTTP", async () => {
   const portable = await json("plugin.json");
   const claude = await json(".claude-plugin/plugin.json");
   const pkg = await json("package.json");
@@ -28,12 +28,17 @@ test("Codex and Claude share identity, Skills and endpoint; configure updates bo
       (await json(join(root, nativePath))).mcpServers[portable.name],
     ];
     const before = await connections();
-    assert.deepEqual(before.map((server) => server.type), ["streamable-http", "http"]);
-    assert.equal(before[0].url, before[1].url);
+    assert.deepEqual(before.map((server) => server.type), ["stdio", "http"]);
+    assert.equal(before[0].command, "node");
+    assert.equal(before[0].args.at(-1), "${PLUGIN_ROOT}/scripts/codex-mcp.ts");
+    assert.equal(before[1].url, "http://127.0.0.1:4312/mcp");
     const script = resolve("scripts/configure.ts");
     execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), script, "https://blender.example.test"], { cwd: root });
     const after = await connections();
-    assert.deepEqual(after, before.map((server) => ({ ...server, url: "https://blender.example.test/mcp" })));
+    assert.deepEqual(after, [
+      { type: "streamable-http", url: "https://blender.example.test/mcp" },
+      { type: "http", url: "https://blender.example.test/mcp" },
+    ]);
     const invalid = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), script, "http://remote.example.test"], { cwd: root });
     assert.notEqual(invalid.status, 0);
     assert.deepEqual(await connections(), after, "Invalid URLs must not alter either harness connection");

@@ -9,13 +9,15 @@ Read `docs/quick-start.md` for first-time setup and `docs/operations.md` for
 commands and client-specific installation.
 Check Node.js 22 or later and a dedicated Blender 4.5 or later installation.
 
-Run installation, build and service startup commands from the plugin root;
-keep the scene conversation in its separate project. Install dependencies with
-`npm ci`, build the viewer with `npm run build`, and
-copy `.env.example` to `.env` when custom settings are needed. Start the dedicated
-Blender bridge before the Node service. Verify `/health`; this checks HTTP service
-availability, not Blender connectivity. The first `scene_create` job tests the
-Blender connection.
+On desktop Codex, install the release ZIP as a local marketplace source and
+start a local chat. The stdio entry starts or reuses the dedicated Blender
+bridge and service. Preserve an existing `RUNS_ROOT` by setting it in
+`~/.canova/.env` before reconnecting. Follow the migration instructions in
+`docs/operations.md` if a manually started service owns the port.
+
+For a source checkout, run `npm ci` and `npm run build` from the plugin root.
+For a manual HTTP deployment, use the launcher below. Verify `/health` for
+HTTP availability and a completed `scene_create` job for Blender connectivity.
 
 For local startup after installation and build, run
 `node --import tsx scripts/start-local.ts` from the plugin root. It starts or
@@ -38,8 +40,9 @@ For ChatGPT web, the service needs a reachable HTTPS endpoint and a host-support
 authentication flow. Set `PUBLIC_BASE_URL` to the deployed origin and run
 `npm run configure -- https://YOUR_SERVICE_ORIGIN` to update both MCP configurations.
 
-For missing tools, first use the host's tool discovery when available. For a local
-service, run the launcher above from the service checkout with the existing
+For missing tools, first use the host's tool discovery when available. For a
+Codex-managed service, check the logs in `RUNS_ROOT/.service/` and reconnect
+Codex. For a manually managed service, run the launcher above with the existing
 `RUNS_ROOT`. Missing `scene_plan`, `scene_review` and `scene_export` while other
 tools remain visible can result from tuple array schemas; the launcher reports
 the affected tool and field. Correct the reported service problem before
