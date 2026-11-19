@@ -60,10 +60,15 @@ working render when current gray evidence is unavailable; generate the required
 evidence through the service or report that it is not ready.
 
 1. For a new scene, call `scene_create` with the user's request and every supplied
-   host file object in `references` (1-6 images of the same scene). Respect the
-   user's primary-view choice; otherwise use attachment order. Put the primary
-   view first: it determines the target camera and composition. Auxiliary views
-   calibrate depth, occlusion, and object placement. Add short `label` values
+   host file object in `references` (1-6 images of the same scene). Keep attachment
+   order unless the user explicitly designates a different primary view, camera
+   or composition before creation. The first image determines the target camera
+   and composition. A request such as "make the final result match image 3" is
+   an alignment goal, not a primary-view designation: keep image 1 primary and
+   record the requested appearance or detail alignment separately in the plan.
+   If its scope would require changing the primary composition, clarify that
+   scope before changing it. Auxiliary views calibrate depth, occlusion, object
+   placement and explicitly requested appearance. Add short `label` values
    when viewpoints are known; leave unknown viewpoints unspecified. The legacy
    `reference` field accepts one image; use only one input form. Never invent
    file IDs or download URLs. Resolve missing attachments before creating an
@@ -85,6 +90,14 @@ evidence through the service or report that it is not ready.
    restart the dedicated bridge and service before doing further work.
 3. Inspect every labeled reference once before planning; use `referenceName`
    to revisit a particular view only when its visual evidence is needed again.
+   Bind original attachment numbers to file IDs and the returned reference asset
+   names; selecting one image does not renumber the inputs or make it primary.
+   For an existing scene, `scene_get.reference` and the `primary` role in
+   `scene_get.references` determine the camera/composition source, regardless of
+   which image was mentioned or inspected most recently. Record the primary
+   asset and each requested auxiliary use in the frozen plan. Composition anchors
+   stay in the primary view; material, lighting or detail criteria can cite a
+   different stored reference in their descriptions and review `referenceView`.
    Reuse reference observations while the images remain in active context; after
    compaction or a new conversation, reload the views required for the next check. Reconcile all views into one spatial
    layout before modeling: identify shared objects, wall/window planes, depth

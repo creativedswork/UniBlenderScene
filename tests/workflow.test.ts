@@ -1130,6 +1130,42 @@ test("scene_get selects images without replaying six references during render re
   } finally { await client.close(); await server.close(); }
 });
 
+test("auxiliary appearance alignment and image selection preserve the first reference as primary", async (t) => {
+  const png = Buffer.from("89504e470d0a1a0a01020304", "hex");
+  t.mock.method(globalThis, "fetch", async (input: URL | string) =>
+    new Response(Buffer.concat([png, Buffer.from(String(input))])));
+  const { store, blender } = setup();
+  const scene = store.create("第一张是主图，最后效果要和第三张图对齐", undefined,
+    ["front", "side", "appearance"].map((name) => ({
+      download_url: `https://files.oaiusercontent.com/${name}.png`, file_id: name,
+    })));
+  await store.settled();
+  assert.equal(scene.job?.status, "done");
+  const before = JSON.stringify(scene);
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "appearance-reference-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const selected = await client.callTool({ name: "scene_get", arguments: {
+      sceneId: scene.id, referenceName: "reference-3", images: "references",
+    } }) as CallToolResult;
+    assert.equal(selected.isError, undefined);
+    const images = selected.content.filter((item) => item.type === "image");
+    assert.equal(images.length, 1);
+    assert.deepEqual(Buffer.from(images[0]!.data, "base64"), readFileSync(store.path(scene, "reference-3")));
+    const state = selected.structuredContent!;
+    assert.equal((state.reference as { fileId: string }).fileId, "front");
+    assert.deepEqual((state.references as { assetName: string; role: string }[]).map((r) => [r.assetName, r.role]), [
+      ["reference", "primary"], ["reference-2", "auxiliary"], ["reference-3", "auxiliary"],
+    ]);
+    assert.equal(JSON.stringify(scene), before);
+    const restarted = new SceneStore(store.root, blender);
+    assert.equal(restarted.get(scene.id).reference?.fileId, "front");
+    assert.equal(restarted.referenceImages(restarted.get(scene.id))[2]?.fileId, "appearance");
+  } finally { await client.close(); await server.close(); }
+});
+
 test("multi-view references keep primary order, persist, and append atomically", async (t) => {
   const png = Buffer.from("89504e470d0a1a0a01020304", "hex");
   t.mock.method(globalThis, "fetch", async (input: URL | string) =>
@@ -1186,7 +1222,7 @@ test("multi-view references keep primary order, persist, and append atomically",
   assert.equal(scene.best, best);
   assert.equal(store.referenceImages(scene).length, 2);
   assert.equal(store.allowedFiles(scene).includes("reference-3"), false);
-  store.continue(scene.id, "Correct depth", [image("back")]); await store.settled();
+  store.continue(scene.id, "Match the final effect to image 3", [image("back")]); await store.settled();
   assert.equal(scene.stage, "planning");
   assert.equal(scene.startIteration, 2);
   assert.equal(scene.reference?.fileId, "front");
