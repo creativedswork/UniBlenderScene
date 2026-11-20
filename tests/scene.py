@@ -38,6 +38,10 @@ bpy.ops.mesh.primitive_plane_add(size=8, location=(0, 0, 0.002))
 receiver = bpy.context.object
 receiver.name = "ShadowReceiver"
 receiver.data.materials.append(floor_material)
+# Bake a material input on the same mesh after its lightmap UVs have been added.
+receiver_color = floor_material.node_tree.nodes.new("ShaderNodeRGB")
+receiver_color.outputs["Color"].default_value = floor_shader.inputs["Base Color"].default_value[:]
+floor_material.node_tree.links.new(receiver_color.outputs["Color"], floor_shader.inputs["Base Color"])
 
 # A portable tiled normal map must retain its original resolution and UVs.
 normal_image = bpy.data.images.new("Portable tiled normal", width=64, height=64)

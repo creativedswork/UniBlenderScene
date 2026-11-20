@@ -43,8 +43,9 @@ from a single reference. The previews show the same scene after export.
   </tr>
 </table>
 
-The ThreeRT image uses simplified tree geometry. Fog, shadows and reflections
-vary between renderers.
+The Three.js preview uses baked diffuse lighting on selected building surfaces.
+The ThreeRT image uses simplified tree geometry and is cropped to match the Blender framing.
+Fog, shadows and reflections vary between renderers.
 
 ## What's in the plugin
 
@@ -115,6 +116,10 @@ Use the preview selector to switch to **Three.js · 网页交互** for quick
 navigation and layout checks. Select **Render** to compare with the Blender
 image. Appearance can differ between preview modes; use the Blender render
 when reviewing the final look.
+
+ThreeRT approximates Blender's HDR environment lighting with a gradient sky.
+The native client displays the baked sky panorama when the export includes one.
+See the [upstream HDRI request](https://github.com/meshy-dev/ThreeRT/issues/178).
 
 For static scenes, ask the agent to optimize the browser preview for smoother
 navigation. If ThreeRT is unavailable, you can explore the scene with Three.js.

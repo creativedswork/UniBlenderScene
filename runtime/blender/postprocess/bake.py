@@ -35,7 +35,8 @@ def bake_static_lighting(scene):
                                                   preserve_all_data_layers=True, depsgraph=depsgraph)
         obj.modifiers.clear()
         source_uv = obj.data.uv_layers.active
-        if mode == "lightmap" and source_uv is None:
+        source_uv_name = source_uv.name if source_uv else None
+        if mode == "lightmap" and source_uv_name is None:
             raise ValueError("Lightmap baking requires source material UVs: " + obj.name)
         if mode == "lightmap" and len(obj.data.uv_layers) >= 4:
             raise ValueError("Lightmap baking needs a free UV channel below 4: " + obj.name)
@@ -100,7 +101,8 @@ def bake_static_lighting(scene):
             lightmaps.append({"objectName": obj.name, "uri": uri,
                               "uvChannel": obj.data.uv_layers.find(uv_name), "scale": peak,
                               "samples": scene.cycles.samples, "resolution": resolution})
-            obj.data.uv_layers.active = source_uv
+            # Adding a UV layer can invalidate Blender's RNA reference to the original layer.
+            obj.data.uv_layers.active = obj.data.uv_layers[source_uv_name]
             bpy.data.images.remove(image)
             continue
         results.append((obj, materials, image, uv_name, peak))
