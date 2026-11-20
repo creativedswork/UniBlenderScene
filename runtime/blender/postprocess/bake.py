@@ -176,6 +176,30 @@ def bake_procedural_materials(scene, lighting_enabled=True):
     if not candidates:
         return report
 
+    # These material nodes evaluate from the receiving surface. Other geometry
+    # need not be in the Cycles scene for their emission or tangent-space bake.
+    local_nodes = {"OUTPUT_MATERIAL", "BSDF_PRINCIPLED", "TEX_IMAGE", "TEX_COORD", "UVMAP", "TEX_NOISE",
+                   "MATH", "VECT_MATH", "VALTORGB", "BUMP", "NORMAL_MAP", "MAP_RANGE", "MAPPING",
+                   "RGB", "VALUE", "SEPXYZ", "SEPARATE_COLOR", "COMBXYZ"}
+    local_modifiers = {"BEVEL", "WEIGHTED_NORMAL", "TRIANGULATE", "SUBSURF", "SOLIDIFY", "EDGE_SPLIT"}
+    geometry = [obj for obj in scene.objects if not obj.hide_render and obj.type in {"MESH", "CURVE", "SURFACE", "FONT", "VOLUME", "CURVES", "POINTCLOUD"}]
+    isolated = False
+
+    def surface_local(obj):
+        return all(modifier.type in local_modifiers for modifier in obj.modifiers) and all(
+            node.type in local_nodes and (node.type != "TEX_COORD" or node.object is None)
+            for slot in obj.material_slots if slot.material and slot.material.use_nodes for node in slot.material.node_tree.nodes)
+
+    def shareable_mesh(obj):
+        return not obj.modifiers and not obj.data.shape_keys and all(slot.link == "DATA" for slot in obj.material_slots) and all(
+            link.from_node.type != "TEX_COORD" or link.from_socket.name in {"UV", "Object", "Generated"}
+            for slot in obj.material_slots if slot.material and slot.material.use_nodes for link in slot.material.node_tree.links)
+
+    # Group before any receiver swaps its data. Objects with independent material
+    # slots or camera-dependent coordinates still bake separately.
+    shared_keys = {obj.name: obj.data for obj in candidates if obj.data.users > 1 and surface_local(obj) and shareable_mesh(obj)}
+    shared_meshes = {}
+    reused = {}
     original_engine, original_samples, original_device = scene.render.engine, scene.cycles.samples, scene.cycles.device
     try:
         scene.render.engine = "CYCLES"
@@ -183,6 +207,23 @@ def bake_procedural_materials(scene, lighting_enabled=True):
         scene.cycles.samples = 1
         scene.render.bake.margin = 8
         for obj in candidates:
+            shared_source = shared_keys.get(obj.name)
+            if shared_source in shared_meshes:
+                obj.data = shared_meshes[shared_source]
+                reused[shared_source.name] = reused.get(shared_source.name, 0) + 1
+                continue
+            if surface_local(obj):
+                if not isolated:
+                    for other in geometry:
+                        other.hide_render = other != obj
+                else:
+                    isolated.hide_render = True
+                    obj.hide_render = False
+                isolated = obj
+            elif isolated:
+                for other in geometry:
+                    other.hide_render = False
+                isolated = False
             obj.data = obj.data.copy()
             for slot in obj.material_slots:
                 if slot.material:
@@ -297,8 +338,15 @@ def bake_procedural_materials(scene, lighting_enabled=True):
                         socket.node.inputs["Emission Strength"].default_value *= peak
                     target.image.pack()
                 report["textures"] += 1
+            if shared_source is not None:
+                shared_meshes[shared_source] = obj.data
     finally:
+        if isolated:
+            for obj in geometry:
+                obj.hide_render = False
         scene.render.engine, scene.cycles.samples, scene.cycles.device = original_engine, original_samples, original_device
+    if reused:
+        report["sharedMeshes"] = [{"name": name, "reusedObjects": count} for name, count in reused.items()]
     return report
 
 

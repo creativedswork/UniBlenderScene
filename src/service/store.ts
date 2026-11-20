@@ -81,6 +81,7 @@ export type Scene = {
   references?: StoredReference[];
   orderedReferenceCameras?: true; bestReferenceRender?: string;
   render?: string; exportedIteration?: number; previewedIteration?: number; job?: Job; error?: string;
+  exportAlignment?: ReturnType<typeof writeGraphExport>;
   workflowIndex?: number; reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
   graphReview?: GraphReview; assetStrategies?: AssetStrategy[];
   spatialLibrary?: SpatialLibrary;
@@ -1293,12 +1294,13 @@ result = {"reviewViews": 5}
         .replace("__STRUCTURAL_PREVIEW__", preview ? "True" : "False")
         .replace("__REFERENCE_CAMERA_NAMES__", py(this.referenceCameras(scene).map(view => view.cameraName)));
       await this.blender.execute(code);
-      writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
+      const alignment = writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
         blend, render: preview ? "review-main.png" : "best.png", kind: target.source, purpose: target.purpose, phase: state.phase,
         revisionId: target.revisionId, contentIteration: target.contentIteration,
       }, this.path(scene, "."), scene.plan?.relations ?? []);
       scene[marker] = iteration;
       if (!preview) {
+        scene.exportAlignment = alignment;
         scene.exportLighting = bakes; scene.exportAppearance = appearance; scene.exportVersion = randomUUID(); scene.exportPipelineHash = pipelineHash;
         this.captureExperience(scene);
       }
@@ -1498,6 +1500,7 @@ result = {"reviewViews": 5}
     const { binary: _binary, ...threeRT } = { binary: undefined, ...threeRTCapability() };
     return {
       ...publicScene,
+      exportAlignment: scene.exportVersion && scene.exportedIteration === scene.best?.iteration ? scene.exportAlignment : undefined,
       workflowState,
       spatialLibrary: spatialLibrary ? { builtin: { id: spatialLibrary.builtin.id, hash: spatialLibrary.builtin.hash }, bindings: spatialLibrary.bindings } : undefined,
       affectedRelations: relationsForScope(scene.plan?.graph ?? [], scene.plan?.relations ?? [], this.activeRevision(scene)?.request.scopeNodeIds ?? []),

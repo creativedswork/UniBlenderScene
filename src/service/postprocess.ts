@@ -10,7 +10,7 @@ export type BakeResult = {
   lightingBakes: LightingBake[]; directory: string; cacheHit: boolean;
   bakedObjects: string[]; bakedTints: Record<string, number[]>;
   lightmaps: { objectName: string; uri: string; uvChannel: number; scale: number; samples: number; resolution: number }[];
-  materials: { objects: number; textures: number };
+  materials: { objects: number; textures: number; sharedMeshes?: { name: string; reusedObjects: number }[] };
 };
 
 export function lightingBakeRequests(requests: LightingBake[]): LightingBake[] {

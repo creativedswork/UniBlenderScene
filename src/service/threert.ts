@@ -137,6 +137,8 @@ export async function renderThreeRT(directory: string, binary: string) {
   if (vfx?.precipitation?.some(effect => effect.kind !== "rain") || vfx?.ripples?.length || vfx?.animation) {
     warnings.push("当前 ThreeRT 预览保留静态材质和灯光，未重建非雨粒子、涟漪或采样动画。");
   }
+  warnings.push(...(input.profile.effects?.issues ?? []).filter(issue => !issue.target || issue.target === "threeRT")
+    .map(issue => `${issue.object} · ${issue.effect}: ${issue.reason}`));
   if (typeof profile.colorManagement.viewTransform === "string") {
     warnings.push(`ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 ${profile.colorManagement.viewTransform} 显示 LUT。`);
   }

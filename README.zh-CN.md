@@ -14,28 +14,30 @@
 | Claude Code | 加载插件，在终端中查看渲染图并获取 `.blend` / GLB 文件 |
 | 其他 Agent 运行环境 | 连接 MCP 服务并加载场景工作流指引；预览能力取决于客户端 |
 
-## 效果展示：蓝调时刻的冬日木屋
+## 效果展示 · 夕阳下的林间住宅
 
-根据一张参考图在 Blender 中重建场景。灰模构图确认后，再添加纹理、冷色室外灯光、温暖的窗光和烟囱烟雾。下方依次为参考图、Blender 渲染图和 ThreeRT 渲染图。
+根据一张参考图，在 Blender 中重建玻璃住宅、水池和四周的松林。下方对照原始参考、Blender 成片和导出后的两种预览。
 
 <table>
   <tr>
-    <th width="33%">参考图</th>
-    <th width="33%">Blender 渲染</th>
-    <th width="33%">ThreeRT 渲染</th>
+    <th width="50%">参考图</th>
+    <th width="50%">Blender</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="docs/winter-cabin-reference.webp" alt="暮色中的覆雪原木木屋，窗户透出暖光，周围环绕冷杉" width="360" /></td>
-    <td align="center" valign="top"><img src="docs/winter-cabin-blender.webp" alt="Blender 重建的木屋，包含覆雪屋顶、亮起的窗户和蜿蜒石径" width="360" /></td>
-    <td align="center" valign="top"><img src="docs/winter-cabin-threert.webp" alt="导出的木屋场景在 ThreeRT 原生引擎中的渲染效果" width="360" /></td>
+    <td align="center" valign="top"><img src="docs/forest-house-reference.webp" alt="夕阳下的现代住宅和水池，四周环绕松林" width="480" /></td>
+    <td align="center" valign="top"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的穿林光束、室内暖光和池水倒影" width="480" /></td>
+  </tr>
+  <tr>
+    <th>Three.js</th>
+    <th>ThreeRT</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/forest-house-threejs.webp" alt="导出后在 Three.js 中预览林间住宅、光束和水池" width="480" /></td>
+    <td align="center" valign="top"><img src="docs/forest-house-threert.webp" alt="ThreeRT 渲染的林间住宅和光束，树木使用简化几何" width="480" /></td>
   </tr>
 </table>
 
-这个风格化重建案例采用本地 Blender 建模，部分植被和石径细节有所简化。两个渲染器在天空亮度、窗光颜色和烟雾表现上存在差异。
-
-![在 Three.js 预览中选择 Scene Graph 的覆雪屋顶节点，旋转视角时边界框和 XYZ 坐标轴保持对应](docs/winter-cabin-scene-graph.gif)
-
-选择 Scene Graph（场景图谱）中的节点，即可聚焦对应物体并显示边界框和 XYZ 坐标轴。旋转视角时，Three.js 预览中的选中标记会随物体更新。
+ThreeRT 图使用了简化后的树木几何。不同渲染器的雾、阴影和倒影表现有所差异。
 
 ## 插件包含什么
 

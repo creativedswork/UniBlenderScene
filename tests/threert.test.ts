@@ -7,7 +7,7 @@ import { BlenderClient } from "../src/service/blender.js";
 import { SceneStore, type Scene } from "../src/service/store.js";
 import { cameraFromGLB, modelWithoutPunctualLights, renderThreeRT } from "../src/service/threert.js";
 import { buildThreeRTScene, type ThreeRTInput } from "../runtime/threert/scene.js";
-import { FogVolume, HomogeneousVolume, RainCurtain } from "@threert/scene";
+import { DirectionalLight, FogVolume, HomogeneousVolume, RainCurtain, VolumeMesh } from "@threert/scene";
 import { PNG } from "pngjs";
 
 function glb(cameraType = "perspective") {
@@ -80,6 +80,29 @@ test("thin atmosphere retains physical extinction through ThreeRT's fog coverage
     assert.equal(fog.animated, true, "The native viewport must update the drifting medium");
     assert.deepEqual(fog.volume.params.Wind, [0.12, 0.025, -0.04, 0], "Convert Blender Z-up wind to native Y-up");
   }
+});
+
+test("native sunlight and volume shaders use the exported sun and shaft axis", () => {
+  const input: ThreeRTInput = { camera: cameraFromGLB(glb()), profile: structuredClone(profile) };
+  input.profile.lights = [{ name: "Sun", type: "SUN", energy: 5, color: [1, 0.8, 0.4], useShadow: true,
+    size: 0, sizeY: 0, shape: "", spotSize: 0, spotBlend: 0, worldMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }];
+  input.profile.effects = { version: 1, sun: { name: "Sun", direction: [0, 0, 1], angularRadius: Math.PI / 360,
+    radiance: [1, 0.8, 0.4], inBackground: true }, fog: [], issues: [], shafts: [
+    { name: "shaft", start: [1, 2, 6], end: [1, 2, 4], radii: [0.2, 0.4], density: 0.02,
+      albedo: [1, 1, 1], emission: [0.3, 0.2, 0.1], anisotropy: 0.7 },
+  ] };
+  const { scene } = buildThreeRTScene(input);
+  const sun = scene.children.find(child => child.name === "Sun");
+  assert.ok(sun instanceof DirectionalLight);
+  assert.equal(sun.angularDiameter, 1);
+  const disk = scene.children.find(child => child.name === "Solar disk");
+  assert.ok(disk);
+  assert.deepEqual(disk.position.toArray(), [10, 2, 100005]);
+  const shaft = scene.children.find(child => child.name === "shaft");
+  assert.ok(shaft instanceof VolumeMesh);
+  assert.deepEqual(shaft.volume.params.Start, [1, 2, 6, 0.2]);
+  assert.deepEqual(shaft.volume.params.End, [1, 2, 4, 0.4]);
+  assert.ok(shaft.majorant >= 0.02);
 });
 
 test("ThreeRT preserves a parented camera and converts local dust from Z-up to Y-up", () => {

@@ -217,7 +217,7 @@ def weather_animation(scene):
         return {"times": [(f - start) / fps for f in frames], "time": (current + subframe - start) / fps, "tracks": tracks}
 
 
-def vfx_profile(scene, excluded, warnings):
+def vfx_profile(scene, excluded, warnings, handled_volumes):
     result = {"volumes": [], "precipitation": [], "ripples": []}
     if scene.world and scene.world.use_nodes:
         output = active_output(scene.world.node_tree, "OUTPUT_WORLD")
@@ -239,7 +239,8 @@ def vfx_profile(scene, excluded, warnings):
                 output = active_output(next(iter(materials)).node_tree, "OUTPUT_MATERIAL")
                 result["volumes"].append(volume_profile(output.inputs["Volume"], obj.name, obj))
             except ValueError as error:
-                warnings.append(f"Volume {obj.name}: {error}.")
+                if obj.name not in handled_volumes:
+                    warnings.append(f"Volume {obj.name}: {error}.")
         for modifier in obj.modifiers:
             if modifier.type == "NODES" and modifier.show_render:
                 weather = precipitation_profile(obj, modifier)
