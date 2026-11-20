@@ -1,7 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { addPlanarReflection, applyLightmaps, limitPreviewShadows, limitRasterLights, setPreviewLightEnergy } from "../src/viewer/lighting.js";
+import { addPlanarReflection, applyLightmaps, limitPreviewShadows, limitRasterLights, setPreviewLightEnergy, sharpenThinGlass } from "../src/viewer/lighting.js";
+
+test("raster clear thin glass samples full-resolution transmission without replacing existing material hooks", () => {
+  const glass = new THREE.MeshPhysicalMaterial({ transmission: 0.98, roughness: 0.026 });
+  const frosted = new THREE.MeshPhysicalMaterial({ transmission: 1, roughness: 0.35 });
+  const water = new THREE.MeshPhysicalMaterial({ transmission: 1, roughness: 0.015, roughnessMap: new THREE.Texture() });
+  const thick = new THREE.MeshPhysicalMaterial({ transmission: 1, roughness: 0.02, thickness: 0.4 });
+  const root = new THREE.Group();
+  const geometry = new THREE.PlaneGeometry();
+  for (const material of [glass, glass, frosted, water, thick]) root.add(new THREE.Mesh(geometry, material));
+  const chunk = "#include <transmission_pars_fragment>";
+  glass.onBeforeCompile = shader => { shader.fragmentShader += "\n// Existing material hook"; };
+  glass.customProgramCacheKey = () => "existing";
+  sharpenThinGlass(root);
+  const sampleShader = { fragmentShader: chunk } as Parameters<THREE.Material["onBeforeCompile"]>[0];
+  glass.onBeforeCompile(sampleShader, {} as THREE.WebGLRenderer);
+  assert.equal(glass.customProgramCacheKey(), "existing:thin-glass");
+  assert.match(sampleShader.fragmentShader, /textureLod\( transmissionSamplerMap, fragCoord.xy, 0.0 \)/);
+  assert.ok(sampleShader.fragmentShader.includes("// Existing material hook"));
+  for (const material of [frosted, water, thick]) {
+    const unchangedShader = { fragmentShader: chunk } as typeof sampleShader;
+    material.onBeforeCompile(unchangedShader, {} as THREE.WebGLRenderer);
+    assert.equal(unchangedShader.fragmentShader, chunk);
+  }
+});
 
 test("static lightmaps preserve PBR inputs, source UVs and shared materials", async () => {
   const geometry = new THREE.PlaneGeometry(4, 4);

@@ -43,6 +43,7 @@ from a single reference. The previews show the same scene after export.
   </tr>
 </table>
 
+The Three.js preview uses baked diffuse lighting on selected building surfaces.
 The ThreeRT image uses simplified tree geometry and is cropped to match the Blender framing.
 Fog, shadows and reflections vary between renderers.
 

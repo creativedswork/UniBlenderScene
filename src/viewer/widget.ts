@@ -16,7 +16,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 import { connectThreeRT } from "./threert-live.js";
 import { keyboardNavigation } from "./navigation.js";
-import { addPlanarReflection, applyLightmaps, captureEnvironment, limitPreviewShadows, limitRasterLights, setPreviewLightEnergy, type Lightmap } from "./lighting.js";
+import { addPlanarReflection, applyLightmaps, captureEnvironment, limitPreviewShadows, limitRasterLights, setPreviewLightEnergy, sharpenThinGlass, type Lightmap } from "./lighting.js";
 import { solarVolumeShader, fogUniforms, shaftUniforms } from "./solar-volumes.js";
 import { maxViewerAssetBytes, type ExportEffects } from "../render-effects.js";
 
@@ -899,7 +899,10 @@ async function loadModel(url: string) {
     });
     applyLights(gltf.scene, profile);
     const textures: THREE.Texture[] = [];
-    if (raster) textures.push(...await applyLightmaps(gltf.scene, profile.lightmaps ?? [], name => assetURL(name, url)));
+    if (raster) {
+      textures.push(...await applyLightmaps(gltf.scene, profile.lightmaps ?? [], name => assetURL(name, url)));
+      sharpenThinGlass(gltf.scene);
+    }
     const world = profile.world;
     let environment: THREE.Texture;
     if (world.environmentUri) {

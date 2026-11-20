@@ -289,9 +289,10 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
     }
   }
   assert.ok(dark > 1000 && bright > 1000, "The exported mask must have both unlit and emitting regions");
-  const portableNormal = gltf.materials.find((material: any) => material.name === "Warm floor" && material.normalTexture);
+  const unbakedReceiver = gltf.nodes.find((node: any) => node.name === "ShadowReceiver");
+  const portableNormal = gltf.materials[gltf.meshes[unbakedReceiver.mesh].primitives[0].material].normalTexture;
   assert.ok(portableNormal, "The unbaked receiver retains its portable normal map");
-  const normalImage = gltf.images[gltf.textures[portableNormal.normalTexture.index].source];
+  const normalImage = gltf.images[gltf.textures[portableNormal.index].source];
   const normalView = gltf.bufferViews[normalImage.bufferView];
   const normalBytes = bytes.subarray(28 + bytes.readUInt32LE(12) + (normalView.byteOffset ?? 0));
   assert.equal(normalImage.mimeType, "image/png");
@@ -362,7 +363,7 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   assert.ok(exported.exportAlignment.issues.some((issue: { object: string; effect: string; status: string }) =>
     issue.object === "Studio" && issue.effect === "world volume" && issue.status === "missing"));
   assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
-  assert.equal(profile.materials.objects, 1, "Only the procedural swatch needs material baking");
+  assert.equal(profile.materials.objects, 2, "The swatch and shadow receiver need material baking");
   assert.ok(profile.materials.textures >= 1);
   assert.equal(profile.materials.sharedMeshes[0].reusedObjects, 1);
   assert.equal(gltf.nodes.find((node: any) => node.name === "ProceduralSwatch").mesh,
@@ -689,6 +690,9 @@ bpy.context.scene.frame_set(1)
   assert.ok(receiverPrimitive.attributes.TEXCOORD_0 !== undefined);
   assert.ok(receiverPrimitive.attributes.TEXCOORD_1 !== undefined);
   const receiverMaterial = lightmapGltf.materials[receiverPrimitive.material];
+  const receiverBaseColor = receiverMaterial.pbrMetallicRoughness.baseColorTexture;
+  assert.ok(receiverBaseColor, "The lightmapped receiver must also bake its procedural base color");
+  assert.equal(receiverBaseColor.texCoord ?? 0, 0);
   assert.ok(receiverMaterial.normalTexture, "Lightmap export preserves the source normal texture");
   assert.equal(receiverMaterial.normalTexture.texCoord ?? 0, 0);
   assert.equal(receiverMaterial.emissiveTexture, undefined, "Baked illumination must not become a physical emitter");

@@ -113,6 +113,33 @@ export async function applyLightmaps(root: THREE.Object3D, maps: Lightmap[], ass
   return textures;
 }
 
+export function sharpenThinGlass(root: THREE.Object3D) {
+  const materials = new Set<THREE.Material>();
+  root.traverse(object => {
+    if (object instanceof THREE.Mesh) {
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
+    }
+  });
+  const transmission = THREE.ShaderChunk.transmission_pars_fragment.replace(
+    "return textureBicubic( transmissionSamplerMap, fragCoord.xy, lod );",
+    "return textureLod( transmissionSamplerMap, fragCoord.xy, 0.0 );"
+  );
+  for (const material of materials) {
+    if (!(material instanceof THREE.MeshPhysicalMaterial) || material.transmission <= 0 ||
+      material.thickness > 0 || material.thicknessMap || material.normalMap || material.roughnessMap ||
+      material.roughness >= 0.0525) continue;
+    // Below Three's specular roughness floor, sample the base-level transmission buffer for a clear thin pane.
+    const previous = material.onBeforeCompile.bind(material);
+    const cacheKey = material.customProgramCacheKey();
+    material.onBeforeCompile = (shader, renderer) => {
+      previous(shader, renderer);
+      shader.fragmentShader = shader.fragmentShader.replace("#include <transmission_pars_fragment>", transmission);
+    };
+    material.customProgramCacheKey = () => `${cacheKey}:thin-glass`;
+    material.needsUpdate = true;
+  }
+}
+
 /** One horizontal receiver: a second raster pass supplies view-dependent reflections. */
 export function addPlanarReflection(scene: THREE.Scene, root: THREE.Object3D, name: string) {
   const receivers: THREE.Mesh[] = [];
