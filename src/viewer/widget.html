@@ -11,6 +11,10 @@
       #references{position:absolute;right:12px;bottom:12px;width:154px;padding:8px;border:1px solid light-dark(#d4d2c9,#535852);border-radius:10px;background:light-dark(#f6f5f1e8,#222e)}#references[hidden],#reference-upload[hidden]{display:none}#references label{font-size:11px}select{font:inherit;font-size:12px;width:100%;margin:5px 0 8px;padding:5px;background:light-dark(#fff,#303333);color:inherit;border:1px solid light-dark(#d4d2c9,#535852);border-radius:5px}#reference-open{padding:0;width:100%;height:88px;display:block;overflow:hidden}#reference{position:static;width:100%;height:100%;border:0;border-radius:0;display:block;object-fit:contain}dialog{max-width:90vw;border:1px solid #777;border-radius:12px;color:inherit;background:light-dark(#f6f5f1,#222)}dialog::backdrop{background:#0009}#reference-full{display:block;max-width:80vw;max-height:70vh;object-fit:contain}.reference-pair{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}.reference-pair:has(#reference-match:not([hidden])) img{max-width:40vw;max-height:70vh;object-fit:contain}#reference-match[hidden]{display:none}#reference-caption{font-size:13px}#reference-upload{margin:0 16px 14px;padding:12px;border:1px solid light-dark(#d4d2c9,#535852);border-radius:8px}#reference-upload p,#reference-upload label{font-size:12px}.image-actions{display:flex;gap:8px;flex-wrap:wrap}
     #selection-box{position:absolute;inset:0;pointer-events:none;display:none;z-index:2}#selection-gizmo{display:block;width:100%;height:100%;overflow:hidden}#selection-gizmo text{font:600 12px system-ui;paint-order:stroke;stroke:#17191b;stroke-width:3px;stroke-linejoin:round}#selection-label{position:absolute;background:#47341c;color:#fff4df;border-radius:4px;padding:3px 7px;font-size:12px;white-space:nowrap}#graph-panel{flex:0 0 clamp(200px,23vw,280px);min-width:0;border-right:1px solid light-dark(#deddd6,#303333);padding:12px;overflow:auto}#graph-panel h2{display:flex;flex-wrap:wrap;align-items:center;gap:6px}#graph-panel[hidden],#review-panel[hidden],#graph-panel.collapsed #graph-list,#graph-panel.collapsed #graph-detail{display:none}#graph-panel h2,#review-panel h2{font-size:13px;margin:0 0 7px}#graph-collapse,#selection-clear{padding:2px 7px}#graph-list{display:grid;gap:2px}#graph-list button{display:block;text-align:left;border:0;border-radius:4px;padding:5px;font-size:12px}#graph-list button[aria-selected=true]{background:light-dark(#cce8dc,#20543e)}.graph-row{display:flex;align-items:center;gap:4px;min-width:0}#graph-list .graph-toggle{width:22px;flex:none}#graph-list button[role=treeitem]{flex:1;min-width:0;overflow-wrap:anywhere}#graph-detail{font-size:12px;margin:8px 0 0}#review-panel{flex-shrink:0;max-height:40%;overflow:auto;padding:10px 16px;border-top:1px solid light-dark(#deddd6,#303333)}#review-images{display:flex;gap:6px;overflow:auto}#review-images img{width:150px;height:100px;object-fit:contain;background:#222}@media(max-width:600px){#graph-panel{flex-basis:150px;padding:10px 6px}#review-images img{width:105px;height:80px}}@media(max-width:460px){#graph-panel{flex-basis:125px}}
   </style>
+  <style>
+    [data-browser-preview] :is(#render-backend,#fullscreen,#upload){display:none}
+    #browser-preview-url{display:block;width:min(620px,75vw);margin:8px 0 12px}
+  </style>
 </head>
 <body>
   <header>
@@ -21,6 +25,7 @@
     </select>
     <button id="mode-render" aria-pressed="true">Render</button>
     <button id="mode-3d" aria-pressed="false" disabled>3D</button>
+    <button id="open-browser" hidden>在浏览器中打开</button>
     <button id="reset" aria-label="Reset camera" title="Reset camera" disabled>↺</button>
     <button id="fullscreen" aria-label="Expand viewer" title="Expand viewer">⛶</button>
   </header>
@@ -86,6 +91,11 @@
       <img id="reference-full" alt="Selected reference view">
       <img id="reference-match" alt="Matched camera render" hidden>
     </div>
+  </dialog>
+  <dialog id="browser-preview-dialog">
+    <label for="browser-preview-url">复制预览链接，在浏览器中打开</label>
+    <input id="browser-preview-url" readonly>
+    <button id="browser-preview-close">关闭</button>
   </dialog>
   <div id="message" role="status"></div>
   </section>

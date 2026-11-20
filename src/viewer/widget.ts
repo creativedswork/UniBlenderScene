@@ -32,6 +32,7 @@ type Snapshot = {
   exportVersion?: string;
   exportAlignment?: { status: "supported" | "approximate" | "degraded"; issues: ExportEffects["issues"] };
   realtimeUrl?: string | null;
+  browserUrl?: string;
   threeRT?: { available: boolean; reason?: string; liveAvailable?: boolean; liveReason?: string };
   threeRTRender?: { status: string; iteration: number; exportVersion: string; error?: string; warnings?: string[] };
   artifacts: { name: string; url: string }[];
@@ -62,8 +63,9 @@ type Profile = {
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const app = new App({ name: "UniBlenderScene viewer", version }, {});
+const browserStateUrl = document.body.hasAttribute("data-browser-preview") ? `${location.pathname}/state${location.search}` : "";
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
-let preferredBackend: "web" | "threert" | undefined;
+let preferredBackend: "web" | "threert" | undefined = browserStateUrl ? "web" : undefined;
 let threeRTImageKey = "", threeRTRequestPending = false;
 let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
 let liveConnecting = false, liveWanted = false, liveStatus = "";
@@ -108,6 +110,12 @@ async function requestAssetChunk(sceneId: string, name: string, offset: number):
 function assetURL(name: string, version: string): Promise<string> {
   const sceneId = snapshot?.id;
   if (!sceneId) return Promise.reject(new Error("Scene is unavailable."));
+  if (browserStateUrl) {
+    const url = name === "render" ? snapshot!.renderUrl : name === "best.png" ? snapshot!.bestRenderUrl :
+      artifact(name) ?? snapshot!.references?.find(view => view.assetName === name)?.url ??
+      snapshot!.referenceCameras?.find(view => view.renderUrl && new URL(view.renderUrl).pathname.split("/").at(-1) === name)?.renderUrl;
+    return url ? Promise.resolve(url) : Promise.reject(new Error(`Could not read ${name}.`));
+  }
   const key = `${sceneId}:${name}:${version}`;
   const cached = assetURLs.get(key);
   if (cached) return cached;
@@ -1191,7 +1199,7 @@ function receive(data: unknown) {
     link.hidden = !url;
     if (url) {
       link.href = url; link.download = name!;
-      link.onclick = (event) => {
+      link.onclick = browserStateUrl ? null : (event) => {
         event.preventDefault();
         void assetURL(name!, url).then((blobURL) => {
           const download = document.createElement("a");
@@ -1202,6 +1210,7 @@ function receive(data: unknown) {
   }
   if (next.error) message(next.job?.kind === "threert" ? next.threeRTRender?.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" : "The scene operation failed. Ask in the conversation to inspect it and retry.");
   const glb = artifact("final.glb");
+  el("open-browser").hidden = !next.browserUrl || !glb || !artifact("render-profile.json") || !artifact("scene-graph.json");
   if (glb && glb !== loadedURL && glb !== loadingURL) void loadModel(glb);
   setMode(mode);
   if (!busy && !preferredBackend && !threeRTLiveUnavailableReason()) {
@@ -1209,17 +1218,33 @@ function receive(data: unknown) {
     showPreview();
   }
   clearTimeout(timer);
-  if (busy || (!next.error && !["completed", "best_effort"].includes(next.stage))) {
-    timer = setTimeout(() => { void refreshScene(next.id); }, 2000);
+  const following = busy || (!next.error && !["completed", "best_effort"].includes(next.stage));
+  if (following || browserStateUrl) {
+    timer = setTimeout(() => { void refreshScene(next.id); }, following ? 2000 : 30000);
   }
 }
 
-async function refreshScene(sceneId: string) {
+async function refreshScene(sceneId?: string) {
   try {
+    if (browserStateUrl) {
+      const response = await fetch(browserStateUrl);
+      if (!response.ok) throw new Error("Scene preview unavailable.");
+      receive(await response.json());
+      return;
+    }
     const output = await app.callServerTool({ name: "scene_get", arguments: { sceneId, images: "none" } });
     if (output.isError) throw new Error("Scene refresh failed.");
     if (snapshot?.id === sceneId) receive(output.structuredContent);
-  } catch { message("Scene progress could not be refreshed. Check the conversation."); }
+  } catch {
+    if (!browserStateUrl) { message("Scene progress could not be refreshed. Check the conversation."); return; }
+    if (snapshot) {
+      message("场景更新失败。请从 Codex 重新打开预览。");
+      timer = setTimeout(() => { void refreshScene(); }, 30000);
+    } else {
+      el("status").textContent = "预览暂不可用";
+      el("empty").textContent = "请从 Codex 重新打开场景预览。";
+    }
+  }
 }
 
 app.ontoolresult = async (output) => {
@@ -1234,6 +1259,19 @@ app.onhostcontextchanged = (context) => {
 };
 el("mode-render").onclick = () => setMode("render");
 el("mode-3d").onclick = showPreview;
+el("open-browser").onclick = async () => {
+  const url = snapshot?.browserUrl;
+  if (!url) return;
+  try {
+    if (!(await app.openLink({ url })).isError) return;
+  } catch { /* Offer the link when the host cannot open it. */ }
+  const dialog = el<HTMLDialogElement>("browser-preview-dialog");
+  const input = el<HTMLInputElement>("browser-preview-url");
+  input.value = url;
+  dialog.showModal();
+  input.select();
+};
+el("browser-preview-close").onclick = () => el<HTMLDialogElement>("browser-preview-dialog").close();
 el<HTMLSelectElement>("render-backend").onchange = () => {
   preferredBackend = el<HTMLSelectElement>("render-backend").value === "threert" ? "threert" : "web";
   showPreview();
@@ -1319,7 +1357,8 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
   el("append-images").onclick = () => { void submitImages(true); };
 }
 window.addEventListener("pagehide", () => { clearTimeout(timer); dispose(); });
-void app.connect().then(() => {
+if (browserStateUrl) void refreshScene();
+else void app.connect().then(() => {
   const theme = app.getHostContext()?.theme;
   if (theme) document.documentElement.style.colorScheme = theme;
 }).catch(() => {

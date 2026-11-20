@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { startServer } from "../src/service/server.js";
 
 const evidence = process.argv[2];
 if (!evidence) throw new Error("Pass the evidenceDirectory printed by npm run test:blender.");
@@ -89,7 +93,47 @@ const browser = await chromium.launch({
   ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
   args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
 });
+let previewService: ReturnType<typeof startServer> | undefined;
 try {
+  const reservation = createServer().listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const previewPort = (reservation.address() as { port: number }).port;
+  await new Promise<void>(done => reservation.close(() => done()));
+  const previewOrigin = `http://127.0.0.1:${previewPort}`;
+  Object.assign(process.env, { HOST: "127.0.0.1", PORT: String(previewPort),
+    PUBLIC_BASE_URL: previewOrigin, RUNS_ROOT: resolve(root, ".canova/runs"), MCP_API_KEY: "" });
+  previewService = startServer();
+  await once(previewService.http, "listening");
+  const client = new Client({ name: "browser-preview-test", version: "1.0.0" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${previewOrigin}/mcp`)));
+    const result = await client.callTool({ name: "scene_view", arguments: { sceneId: lightmapSnapshot.id } });
+    assert.equal(result.isError, undefined);
+    const browserUrl = (result.structuredContent as { browserUrl?: string } | undefined)?.browserUrl;
+    assert.equal(typeof browserUrl, "string");
+    lightmapSnapshot.browserUrl = browserUrl;
+  } finally { await client.close(); }
+  const previewUrl = new URL(lightmapSnapshot.browserUrl);
+  const stateUrl = new URL(previewUrl);
+  stateUrl.pathname += "/state";
+  assert.equal((await fetch(new URL(previewUrl.pathname, previewOrigin))).status, 403);
+  assert.equal((await fetch(new URL(stateUrl.pathname, previewOrigin))).status, 403);
+  assert.equal((await fetch(stateUrl, { method: "POST" })).status, 404);
+  const liveState = await (await fetch(stateUrl)).json();
+  assert.equal(liveState.workflowState.presentation.iteration, lightmapSnapshot.workflowState.presentation.iteration);
+  assert.equal(liveState.references[0]?.localPath, undefined);
+  const direct = await browser.newPage();
+  try {
+    await direct.goto(previewUrl.href);
+    await direct.waitForFunction(() => document.querySelector("#mode-3d")?.getAttribute("aria-pressed") === "true");
+    assert.equal(await direct.locator("#canvas canvas").count(), 1);
+    assert.equal(await direct.locator("#open-browser").isVisible(), false);
+    assert.equal(await direct.locator("#upload").isVisible(), false);
+    await direct.getByRole("treeitem", { name: "Red cube · object" }).click();
+    await direct.locator("#selection-box").waitFor({ state: "visible" });
+    await direct.screenshot({ path: resolve(root, "viewer-chrome.png") });
+  } finally { await direct.close(); }
+
   const page = await browser.newPage({ viewport: { width: 960, height: 780 } });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -312,7 +356,13 @@ try {
   await page.locator("#viewer").screenshot({path:resolve(root,"viewer-composition.png")});
   await frame.locator("#review-panel").screenshot({path:resolve(root,"viewer-composition-panel.png")});
   assert.equal(await frame.locator("#review-panel button, #review-panel input").count(), 0);
-  await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?lightmap=1`);
+  await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?lightmap=1&blockBrowser=1`);
+  await frame.getByRole("button", { name: "在浏览器中打开" }).click();
+  await frame.locator("#browser-preview-dialog").waitFor({ state: "visible" });
+  assert.equal(await frame.locator("#browser-preview-url").inputValue(), previewUrl.href);
+  assert.equal(await page.locator("#sent").getAttribute("data-browser-url"), previewUrl.href);
+  await frame.getByRole("button", { name: "关闭", exact: true }).click();
+  await frame.locator("#browser-preview-dialog").waitFor({ state: "hidden" });
   await page.waitForFunction(() => {
     const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("#canvas canvas");
     return canvas?.getAttribute("data-renderer") === "raster" &&
@@ -351,5 +401,6 @@ try {
   throw error;
 } finally {
   await browser.close();
+  await previewService?.shutdown();
   await new Promise<void>((done) => server.close(() => done()));
 }

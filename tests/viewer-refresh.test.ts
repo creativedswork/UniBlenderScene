@@ -36,7 +36,7 @@ function setup(latest = scene("completed", 7), failRender = false) {
     refreshes++;
     return { structuredContent: latest };
   } };
-  const context = createContext({ app, el, console: { error() {} },
+  const context = createContext({ app, el, browserStateUrl: "", console: { error() {} },
     document: { createElement: () => ({}) },
     assetURL: (name: string) => failRender || name === "render" ? Promise.reject(new Error("Expired asset")) : Promise.resolve("blob:current-render"),
     referenceViews: () => [], renderGraph() {}, showReference() {}, setMode() {}, dispose() {}, updateThreeRT() {},

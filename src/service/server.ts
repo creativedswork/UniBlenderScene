@@ -16,6 +16,7 @@ const referenceInstructions = "Before the first user-facing update, keep image 1
   "A request such as ‘俯瞰视角和第五张图一致’ only applies to Camera 5. Keep all attachments in their original order and keep Camera 1 as the default. " +
   "Use the user's scene request verbatim in scene_create.prompt and record inferred camera adjustments in scene_plan.";
 const WIDGET_URI = "ui://uni-blender-scene/viewer.html";
+const WIDGET_FILE = new URL("../../dist/widget.html", import.meta.url);
 const version: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 const idSchema = { sceneId: z.string().regex(/^scene_[a-f0-9-]+$/) };
 const criterion = z.object({
@@ -54,10 +55,11 @@ const widgetMeta = {
   "openai/widgetAccessible": true,
 };
 
-export function createMcpServer(store: SceneStore, origin: string): McpServer {
+export function createMcpServer(store: SceneStore, origin: string, browserPreview = false): McpServer {
   const server = new McpServer({ name: "UniBlenderScene", version }, { instructions: referenceInstructions });
   const result = (scene: Scene): CallToolResult => {
     const snapshot = store.snapshot(scene, origin);
+    if (browserPreview) snapshot.browserUrl = `${origin}/viewer/${scene.id}?token=${encodeURIComponent(scene.token)}`;
     return { content: [{ type: "text", text: JSON.stringify(snapshot) }], structuredContent: snapshot };
   };
   const libraryResult = (value: object): CallToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }],
@@ -375,7 +377,7 @@ export function createMcpServer(store: SceneStore, origin: string): McpServer {
   }, async () => ({
     contents: [{
       uri: WIDGET_URI, mimeType: "text/html;profile=mcp-app",
-      text: await readFile(new URL("../../dist/widget.html", import.meta.url), "utf8"),
+      text: await readFile(WIDGET_FILE, "utf8"),
       _meta: {
         ui: {
           csp: { connectDomains: [origin, "blob:"], resourceDomains: [origin, "blob:"] },
@@ -414,6 +416,19 @@ function matchesSecret(actual: string, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function browserSnapshot(store: SceneStore, scene: Scene, origin: string) {
+  const snapshot = store.snapshot(scene, origin);
+  const { workflowState, renderUrl, bestRenderUrl, referenceCameras, artifacts, exportAlignment, reviewViews } = snapshot;
+  const { id, stage, iteration, previewedIteration, exportedIteration, exportVersion, remainingGaps, workflowIndex } = scene;
+  const references = (snapshot.references as { assetName: string; name: string; label?: string; url: string }[])
+    .map(({ assetName, name, label, url }) => ({ assetName, name, label, url }));
+  const job = scene.job && { id: scene.job.id, kind: scene.job.kind, status: scene.job.status };
+  const plan = scene.plan && { graph: scene.plan.graph, workflow: scene.plan.workflow };
+  return { id, stage, iteration, previewedIteration, exportedIteration, exportVersion, remainingGaps, workflowIndex,
+    workflowState, renderUrl, bestRenderUrl, references, reference: references[0] ?? null, referenceCameras, artifacts,
+    exportAlignment, reviewViews, plan, job, error: scene.error ? "Scene operation failed." : undefined };
+}
+
 async function jsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -431,6 +446,7 @@ export function startServer() {
   const apiKey = process.env.MCP_API_KEY ?? "";
   const local = ["127.0.0.1", "localhost", "::1"].includes(host);
   const origin = new URL(process.env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${port}`).origin;
+  const browserPreview = local && ["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname);
   if (!local && !apiKey) throw new Error("Set MCP_API_KEY before binding outside localhost.");
   if (!local && !origin.startsWith("https://")) throw new Error("Remote services require an HTTPS PUBLIC_BASE_URL.");
   const store = new SceneStore(process.env.RUNS_ROOT ?? ".canova/runs");
@@ -450,6 +466,23 @@ export function startServer() {
       }
       if (url.pathname === "/health" && request.method === "GET") {
         response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ status: "ok", service: "UniBlenderScene", version })); return;
+      }
+      const viewer = /^\/viewer\/(scene_[a-f0-9-]+)(\/state)?$/.exec(url.pathname);
+      if (browserPreview && viewer && request.method === "GET") {
+        const scene = store.scenes.get(viewer[1]!);
+        if (!scene || !matchesSecret(url.searchParams.get("token") ?? "", scene.token)) {
+          response.writeHead(403).end("Preview access denied."); return;
+        }
+        const headers = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" };
+        if (viewer[2]) {
+          response.writeHead(200, { ...headers, "Content-Type": "application/json" })
+            .end(JSON.stringify(browserSnapshot(store, scene, origin)));
+        } else {
+          const html = (await readFile(WIDGET_FILE, "utf8")).replace("<body>", "<body data-browser-preview>");
+          response.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'" }).end(html);
+        }
+        return;
       }
       if (url.pathname.startsWith("/realtime/")) {
         const [, , id, action] = url.pathname.split("/");
@@ -538,7 +571,7 @@ export function startServer() {
       }
       const body = await jsonBody(request);
       if (stopping) { response.writeHead(503).end("UniBlenderScene is stopping."); return; }
-      const server = createMcpServer(store, origin);
+      const server = createMcpServer(store, origin, browserPreview);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.once("close", () => { void server.close(); });
       const handling = server.connect(transport).then(() => transport.handleRequest(request, response, body));
