@@ -88,7 +88,10 @@ try {
   const page = await browser.newPage({ viewport: { width: 960, height: 780 } });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (entry) => { if (entry.type() === "error") console.error(entry.text()); });
+  page.on("console", (entry) => {
+    if (entry.type() === "error") console.error(entry.text());
+    if (entry.text().includes("THREE.WebGLProgram: Shader Error")) errors.push(entry.text());
+  });
   await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
   const frame = page.frameLocator("#viewer");
   await frame.getByRole("button", { name: "3D", exact: true }).waitFor({ state: "visible" });
@@ -155,7 +158,7 @@ try {
   }, undefined, { timeout: 60000 });
   assert.equal(await canvas.getAttribute("data-bounces"), "8");
   assert.equal(await canvas.getAttribute("data-display-transform"), "blender-lut");
-  assert.equal(await canvas.getAttribute("data-effects"), "bloom,haze,dust");
+  assert.equal(await canvas.getAttribute("data-effects"), "bloom,haze,dust,sun-shafts,local-fog");
   assert.equal(await canvas.getAttribute("data-dust-lighting"), "sun-shadow");
   await canvas.screenshot({ path: resolve(root, "viewer-3d.png") });
   const first = await canvas.screenshot();

@@ -7,7 +7,8 @@ import { BlenderClient } from "../src/service/blender.js";
 import { SceneStore, type Scene } from "../src/service/store.js";
 import { cameraFromGLB, modelWithoutPunctualLights, renderThreeRT } from "../src/service/threert.js";
 import { buildThreeRTScene, type ThreeRTInput } from "../runtime/threert/scene.js";
-import { FogVolume } from "@threert/scene";
+import { DirectionalLight, FogVolume, VolumeMesh } from "@threert/scene";
+import { PNG } from "pngjs";
 
 function glb(cameraType = "perspective") {
   const text = JSON.stringify({ nodes: [{ translation: [10, 0, 0], children: [1] },
@@ -22,6 +23,46 @@ function glb(cameraType = "perspective") {
 const profile = { colorManagement: { exposure: 0.65 }, render: { resolutionX: 1280, resolutionY: 640 },
   camera: { name: "Main" }, world: { color: [0.1, 0.1, 0.1], strength: 1 }, lights: [],
   previewAppearance: { dust: { color: [0.8, 0.7, 0.6], volumes: [{ center: [2, 3, 4], radius: [5, 6, 7], density: 0.1 }] } } };
+
+test("native models normalize RGB16 and RGBA16 PNGs without changing source, mesh bytes or 8-bit textures", () => {
+  const pixel = (data: Buffer) => Object.assign(new PNG({ width: 1, height: 1 }), { data });
+  const rgb = PNG.sync.write(pixel(Buffer.from(new Uint16Array([0, 32768, 65535]).buffer)),
+    { bitDepth: 16, colorType: 2, inputColorType: 2 });
+  const rgba = PNG.sync.write(pixel(Buffer.from(new Uint16Array([65535, 16384, 0, 32768]).buffer)),
+    { bitDepth: 16, colorType: 6 });
+  const eight = PNG.sync.write(pixel(Buffer.from([1, 2, 3, 4])));
+  const geometry = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const binary = Buffer.concat([geometry, rgb, rgba, eight]);
+  const document = JSON.parse(glb().toString("utf8", 20).trim());
+  document.buffers = [{ byteLength: binary.length }];
+  document.bufferViews = [{ buffer: 0, byteOffset: 0, byteLength: geometry.length }];
+  let offset = geometry.length;
+  for (const png of [rgb, rgba, eight]) {
+    document.bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: png.length }); offset += png.length;
+  }
+  document.images = [1, 2, 3].map(bufferView => ({ bufferView, mimeType: "image/png" }));
+  const jsonText = JSON.stringify(document), json = Buffer.from(jsonText.padEnd(Math.ceil(jsonText.length / 4) * 4, " "));
+  const header = Buffer.from(glb().subarray(0, 20)), chunk = Buffer.alloc(8);
+  chunk.writeUInt32LE(Math.ceil(binary.length / 4) * 4); chunk.write("BIN\0", 4);
+  header.writeUInt32LE(json.length, 12); header.writeUInt32LE(20 + json.length + 8 + chunk.readUInt32LE(0), 8);
+  const source = Buffer.concat([header, json, chunk, binary, Buffer.alloc((4 - binary.length % 4) % 4)]);
+  const original = Buffer.from(source), result = modelWithoutPunctualLights(source);
+  assert.deepEqual(source, original);
+  const converted = JSON.parse(result.toString("utf8", 20, 20 + result.readUInt32LE(12)));
+  const binOffset = 28 + result.readUInt32LE(12);
+  assert.deepEqual(result.subarray(binOffset, binOffset + binary.length), binary);
+  const images = converted.images.map((image: { bufferView: number }) => {
+    const view = converted.bufferViews[image.bufferView];
+    return result.subarray(binOffset + view.byteOffset, binOffset + view.byteOffset + view.byteLength);
+  });
+  assert.equal(images[0][24], 8); assert.equal(images[1][24], 8);
+  assert.deepEqual([...PNG.sync.read(images[0]).data], [0, 128, 255, 255]);
+  assert.deepEqual([...PNG.sync.read(images[1]).data], [255, 64, 0, 128]);
+  assert.deepEqual(images[2], eight);
+  assert.deepEqual(cameraFromGLB(result), cameraFromGLB(source));
+  assert.equal(result.length, result.readUInt32LE(8));
+  assert.equal(modelWithoutPunctualLights(result).length, result.length, "Conversion must be idempotent");
+});
 
 test("thin atmosphere retains physical extinction through ThreeRT's fog coverage combination", () => {
   for (const density of [0.004, 0.14]) {
@@ -41,6 +82,29 @@ test("thin atmosphere retains physical extinction through ThreeRT's fog coverage
   }
 });
 
+test("native sunlight and volume shaders use the exported sun and shaft axis", () => {
+  const input: ThreeRTInput = { camera: cameraFromGLB(glb()), profile: structuredClone(profile) };
+  input.profile.lights = [{ name: "Sun", type: "SUN", energy: 5, color: [1, 0.8, 0.4], useShadow: true,
+    size: 0, sizeY: 0, shape: "", spotSize: 0, spotBlend: 0, worldMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }];
+  input.profile.effects = { version: 1, sun: { name: "Sun", direction: [0, 0, 1], angularRadius: Math.PI / 360,
+    radiance: [1, 0.8, 0.4], inBackground: true }, fog: [], issues: [], shafts: [
+    { name: "shaft", start: [1, 2, 6], end: [1, 2, 4], radii: [0.2, 0.4], density: 0.02,
+      albedo: [1, 1, 1], emission: [0.3, 0.2, 0.1], anisotropy: 0.7 },
+  ] };
+  const { scene } = buildThreeRTScene(input);
+  const sun = scene.children.find(child => child.name === "Sun");
+  assert.ok(sun instanceof DirectionalLight);
+  assert.equal(sun.angularDiameter, 1);
+  const disk = scene.children.find(child => child.name === "Solar disk");
+  assert.ok(disk);
+  assert.deepEqual(disk.position.toArray(), [10, 2, 100005]);
+  const shaft = scene.children.find(child => child.name === "shaft");
+  assert.ok(shaft instanceof VolumeMesh);
+  assert.deepEqual(shaft.volume.params.Start, [1, 2, 6, 0.2]);
+  assert.deepEqual(shaft.volume.params.End, [1, 2, 4, 0.4]);
+  assert.ok(shaft.majorant >= 0.02);
+});
+
 test("ThreeRT preserves a parented camera and converts local dust from Z-up to Y-up", () => {
   const camera = cameraFromGLB(glb(), "Main");
   assert.deepEqual(camera.position, [10, 2, 5]);
@@ -57,6 +121,10 @@ test("ThreeRT preserves a parented camera and converts local dust from Z-up to Y
     size: 0, sizeY: 0, shape: "", spotSize: 0, spotBlend: 0, worldMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }];
   const built = buildThreeRTScene(input);
   const sun = built.scene.children.find(child => child.name === "Sun")!;
+  assert.deepEqual((sun as unknown as { color: { toArray(): number[] } }).color.toArray(), [1, 0.8, 0.4],
+    "Profile light colors are already linear and must not be decoded from sRGB again");
+  assert.deepEqual(built.options.overrides.post.colorGrading, { expandGamut: 0, blueCorrection: 0 },
+    "The native adapter must not add a second artistic color grade");
   assert.deepEqual([sun.position.x, sun.position.y, sun.position.z], [0, 0, 0], "Remove the constructor's default offset");
   assert.equal((sun as unknown as { target: unknown }).target, null);
   input.profile.lights[0]!.type = "AREA";

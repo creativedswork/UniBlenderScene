@@ -288,6 +288,34 @@ active. `previewAppearance.renderMode: "raster"` also enables this rendering
 mode without lightmaps. Existing appearance bakes and unbaked path-traced
 exports remain supported. ThreeRT exports use the source materials.
 
+### Effects read from Blender
+
+`scene_export` reads the reviewed Blender checkpoint. The export profile and
+`manifest.json` report effects the viewers approximate or omit. A missing effect
+in Three.js marks the interactive export as degraded.
+
+Objects that share a mesh and use mesh-local procedural textures reuse a bake.
+The report flags the potential difference in bump detail when instances have
+different scales. It also reports GLBs above the embedded viewer's asset limit.
+Raster rendering prioritizes the sun and strongest lights for shadow maps when
+the GPU has limited texture slots. The remaining lights still illuminate the scene.
+
+- For a visible sun, set `codex_sun_disc = true` on the Blender Sun object.
+  The exporter uses that light's world direction. It also recognizes the legacy
+  procedural solar disk from the forest scene.
+- For sunlight shafts, set `codex_effect = "sun_shaft_v1"` on a shader node group
+  used by a Principled Volume material. Expose `Start`, `End`, `Start Radius`,
+  `End Radius`, `Density`, and `Emission Strength` as inputs. Use Blender world
+  coordinates for the endpoints and scene units for radii. The viewer preserves
+  the end and length, and sets the axis parallel to the visible sun direction.
+- Local fog supports axis-aligned boxes with constant density or up to two
+  clamped linear ramps of world position. World volume graphs and volume grids
+  appear in the missing-effects report.
+- Procedural water normals go through material baking. Three.js automatically
+  adds a planar reflection for one thin horizontal water surface with water IOR
+  and transmission. Set `codex_planar_reflection = true` on a mesh to choose the
+  receiver explicitly, or select path tracing to use the scene lighting instead.
+
 ## Image history and recovery
 
 Version 0.3.1 adds image selection to `scene_get`. Use `images: "references"`

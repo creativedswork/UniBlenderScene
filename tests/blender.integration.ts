@@ -5,6 +5,8 @@ import { createServer as httpsServer } from "node:https";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { PNG } from "pngjs";
+import { Matrix4, Quaternion, Vector3 } from "three";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -169,7 +171,7 @@ try {
   const previewAppearance = { exposureEV: 0.6, saturation: 1.1, whiteBalance: [0.9, 1, 1.4], contrast: 1.3, hazeScale: 0.25, dust: { color: [0.25, 0.18, 0.1], wind: [0.2, 0, 0],
     volumes: [{ center: [0, 0, 1], radius: [1.8, 1.8, 0.9], density: 0.2 }] } };
   await call("scene_export", { sceneId: id, lightingBakes: [{ objectName: "RedCube", resolution: 128 }], previewAppearance }); const exported = await poll(id);
-  assert.deepEqual(await readFile(sourcePath), sourceBeforeExport, "Export baking must preserve the editable source.");
+  assert.ok((await readFile(sourcePath)).equals(sourceBeforeExport), "Export baking must preserve the editable source.");
   const glb = exported.artifacts.find((file: { name: string }) => file.name === "final.glb");
   assert.ok(glb);
   const glbResponse = await fetch(glb.url); assert.equal(glbResponse.status, 200);
@@ -194,6 +196,27 @@ try {
   assert.ok(gltf.materials.some((material: { name?: string; pbrMetallicRoughness?: { baseColorTexture?: unknown } }) =>
     material.name?.startsWith("Procedural swatch") && material.pbrMetallicRoughness?.baseColorTexture),
     "Procedural base color must become a GLB texture.");
+  const masked = gltf.materials.find((material: any) => material.name?.startsWith("Procedural swatch"));
+  assert.ok(masked.emissiveTexture, "Linked strength must be baked into an emission-color texture");
+  assert.ok(Math.abs(masked.extensions.KHR_materials_emissive_strength.emissiveStrength - 4) < 0.01,
+    "HDR emission must retain its peak after image normalization");
+  const maskImage = gltf.images[gltf.textures[masked.emissiveTexture.index].source];
+  const maskView = gltf.bufferViews[maskImage.bufferView];
+  const maskOffset = 28 + bytes.readUInt32LE(12) + (maskView.byteOffset ?? 0);
+  const maskPixels = PNG.sync.read(bytes.subarray(maskOffset, maskOffset + maskView.byteLength)).data;
+  let dark = 0, bright = 0;
+  const srgbToLinear = (v: number) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  for (let i = 0; i < maskPixels.length; i += 4) {
+    if (maskPixels[i]! < 5) dark++;
+    if (maskPixels[i]! > 250) {
+      bright++;
+      assert.ok(Math.abs(srgbToLinear(maskPixels[i + 1]! / 255) - 0.4) < 0.01,
+        "Emission PNG must encode linear green as sRGB, not darken it by a second decode");
+      assert.ok(Math.abs(srgbToLinear(maskPixels[i + 2]! / 255) - 0.1) < 0.01,
+        "Emission PNG must retain its linear blue ratio");
+    }
+  }
+  assert.ok(dark > 1000 && bright > 1000, "The exported mask must have both unlit and emitting regions");
   const portableNormal = gltf.materials.find((material: any) => material.name === "Warm floor" && material.normalTexture);
   assert.ok(portableNormal, "The unbaked receiver retains its portable normal map");
   const normalImage = gltf.images[gltf.textures[portableNormal.normalTexture.index].source];
@@ -201,9 +224,21 @@ try {
   const normalBytes = bytes.subarray(28 + bytes.readUInt32LE(12) + (normalView.byteOffset ?? 0));
   assert.equal(normalImage.mimeType, "image/png");
   assert.equal(normalBytes.readUInt32BE(16), 64, "A tiled normal map must not become a 1024px procedural bake");
+  const packedMaterial = gltf.materials.find((material: any) => material.name === "Portable packed PBR");
+  assert.ok(packedMaterial?.pbrMetallicRoughness?.metallicRoughnessTexture, "The packed PBR material retains its texture and identity.");
+  const packedTexture = gltf.textures[packedMaterial.pbrMetallicRoughness.metallicRoughnessTexture.index];
+  const packedImage = gltf.images[packedTexture.source];
+  const packedView = gltf.bufferViews[packedImage.bufferView];
+  const packedBytes = bytes.subarray(28 + bytes.readUInt32LE(12) + (packedView.byteOffset ?? 0));
+  assert.equal(packedImage.mimeType, "image/png");
+  assert.equal(packedBytes.readUInt32BE(16), 64, "Packed PBR data must retain its source resolution");
+  assert.equal(gltf.nodes.find((node: any) => node.name === "PackedPBRSwatch").mesh,
+    gltf.nodes.find((node: any) => node.name === "PackedPBRInstance").mesh,
+    "Portable packed PBR instances must keep shared mesh data");
   const glbChunk = await call("scene_asset_chunk", { sceneId: id, name: "final.glb", offset: 0 });
   assert.equal(glbChunk.isError, undefined);
-  assert.deepEqual(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64"), bytes.subarray(0, 256 * 1024));
+  assert.ok(Buffer.from((glbChunk.structuredContent as { data: string }).data, "base64").equals(bytes.subarray(0, 256 * 1024)),
+    "The streamed GLB chunk must match the downloaded GLB bytes.");
   const profileURL = exported.artifacts.find((file: { name: string }) => file.name === "render-profile.json").url;
   const profile = await (await fetch(profileURL)).json() as Record<string, any>;
   assert.equal(profile.camera.name, "__CodexBlenderActiveCamera");
@@ -217,8 +252,40 @@ try {
   assert.ok(Math.abs(profile.postprocessing.bloom.strength - 0.1) < 1e-6);
   assert.ok(Math.abs(profile.postprocessing.haze.strength - 0.03) < 1e-6);
   assert.deepEqual(profile.previewAppearance, previewAppearance);
+  assert.ok(Math.abs(profile.world.environmentRotationY - Math.PI / 2) < 1e-6);
+  assert.equal(profile.effects.sun.name, "Visible sun");
+  assert.ok(profile.effects.fog.some((fog: { name: string; density: number }) =>
+    fog.name === "PureVolumeProxy" && Math.abs(fog.density - 0.01) < 1e-6));
+  const [shaft] = profile.effects.shafts;
+  assert.equal(shaft.name, "Visible shaft");
+  assert.deepEqual(shaft.end, [-1, 0.5, 0]);
+  assert.ok(Math.abs(shaft.radii[1] - 0.3) < 1e-6);
+  assert.ok(Math.abs(shaft.emission[0] - 0.35) < 1e-6);
+  assert.ok(!gltf.nodes.some((node: { name: string }) => node.name === "Shaft atmosphere"));
+  const camera = gltf.nodes.find((node: { name: string }) => node.name === profile.camera.name);
+  const projection = new Matrix4().fromArray(profile.camera.projectionMatrix);
+  const direction = new Vector3().fromArray(profile.effects.sun.direction);
+  const sourceSun = profile.lights.find((light: { name: string }) => light.name === profile.effects.sun.name);
+  assert.ok(direction.distanceTo(new Vector3().fromArray(sourceSun.worldMatrix, 8)) < 1e-6);
+  const viewRotation = new Quaternion().fromArray(camera.rotation).invert();
+  for (const offset of [[0, 0, 0], [1.5, 0.2, -1]]) {
+    const cameraPosition = new Vector3().fromArray(camera.translation).add(new Vector3().fromArray(offset));
+    const project = (point: Vector3) => point.sub(cameraPosition).applyQuaternion(viewRotation).applyMatrix4(projection);
+    const start = project(new Vector3().fromArray(shaft.start)), end = project(new Vector3().fromArray(shaft.end));
+    const sun = direction.clone().applyQuaternion(viewRotation).applyMatrix4(projection);
+    assert.ok(Math.abs((end.x - start.x) * (sun.y - start.y) - (end.y - start.y) * (sun.x - start.x)) < 1e-6,
+      "Each shaft must converge on the sun even when viewed from a second position");
+  }
+  assert.equal(exported.exportAlignment.status, "degraded");
+  assert.ok(exported.exportAlignment.issues.some((issue: { object: string; effect: string; status: string }) =>
+    issue.object === "Studio" && issue.effect === "world volume" && issue.status === "missing"));
   assert.deepEqual(profile.bakedTints.Floor, [1, 1, 1]);
-  assert.ok(profile.materials.objects >= 1 && profile.materials.textures >= 1);
+  assert.equal(profile.materials.objects, 1, "Only the procedural swatch needs material baking");
+  assert.ok(profile.materials.textures >= 1);
+  assert.equal(profile.materials.sharedMeshes[0].reusedObjects, 1);
+  assert.equal(gltf.nodes.find((node: any) => node.name === "ProceduralSwatch").mesh,
+    gltf.nodes.find((node: any) => node.name === "ProceduralSwatchInstance").mesh,
+    "The material bake must preserve shared mesh data for mesh-local procedural textures");
   const forbidden = await fetch(`${origin}/artifacts/${id}/run.json?token=invalid`); assert.equal(forbidden.status, 403);
   const unauthorizedGLB = await fetch(glb.url.replace(/token=[^&]+/, "token=invalid")); assert.equal(unauthorizedGLB.status, 403);
   await writeFile(join(root, "scene.json"), JSON.stringify(exported, null, 2));
@@ -341,7 +408,10 @@ bpy.context.scene.render.resolution_y=128
     observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible cube geometry", actual: "Cube geometry visible in gray rendering",
       evidence: "Rendered PNG and Blender object summary" }],
     visualScore: 90, regressions: [], repairable: false, nextAction: "Continue stage" });
-  await call("scene_edit", { sceneId: stagedId, code: await readFile("tests/scene.py", "utf8") });
+  await call("scene_edit", { sceneId: stagedId, code: `${await readFile("tests/scene.py", "utf8")}
+bpy.ops.mesh.primitive_plane_add(size=0.65, location=(-1.6, 0, 0.03))
+bpy.context.object.name = "Test pool"
+` });
   const geometry = await poll(stagedId);
   assert.equal(geometry.workflowState.phase, "geometry");
   assert.deepEqual(geometry.workflowState.presentation, { mode: "structural", purpose: "work", source: "current", iteration: 1, contentIteration: 1 });
@@ -433,7 +503,24 @@ bpy.context.scene.render.resolution_y=128
   assert.equal(approval.structuredContent?.stage, "edit");
   await call("scene_edit",{sceneId:stagedId,code:"bpy.context.scene.camera.location.x += 1"});
   assert.match((await poll(stagedId,"failed")).error,/frozen placement/);
-  await call("scene_edit",{sceneId:stagedId,code:"assert bpy.data.objects['RedCube'].data.materials[0].name == 'Red'\nassert bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value[0] > 0.5\nbpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.45"});
+  await call("scene_edit", { sceneId: stagedId, code: `
+assert bpy.data.objects['RedCube'].data.materials[0].name == 'Red'
+assert bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value[0] > 0.5
+bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value = 0.45
+water = bpy.data.materials.new('Pool with procedural ripples')
+water.use_nodes = True
+bpy.data.objects['Test pool'].data.materials.append(water)
+tree = water.node_tree
+pbr = tree.nodes.get('Principled BSDF')
+pbr.inputs['IOR'].default_value = 1.333
+pbr.inputs['Transmission Weight'].default_value = 0.8
+noise = tree.nodes.new('ShaderNodeTexNoise')
+noise.inputs['Scale'].default_value = 8
+bump = tree.nodes.new('ShaderNodeBump')
+bump.inputs['Distance'].default_value = 0.025
+tree.links.new(noise.outputs['Fac'], bump.inputs['Height'])
+tree.links.new(bump.outputs['Normal'], pbr.inputs['Normal'])
+` });
   await poll(stagedId);await reviewFixture(stagedReview(3));
   await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.2"});
   assert.match((await poll(stagedId,"failed")).error,/frozen materials/);
@@ -449,6 +536,11 @@ bpy.context.scene.render.resolution_y=128
   const finalStageBytes = await readFile(join(root, ".canova/runs", stagedId, `artifacts/${finalStage.exportedIteration}/final.glb`));
   const finalStageGltf = JSON.parse(finalStageBytes.subarray(20, 20 + finalStageBytes.readUInt32LE(12)).toString("utf8"));
   assert.ok(finalStageGltf.textures.length > 0, "Final export retains the original textures after structural approval");
+  const waterProfile = JSON.parse(await readFile(join(root, ".canova/runs", stagedId, `artifacts/${finalStage.exportedIteration}/render-profile.json`), "utf8"));
+  assert.equal(waterProfile.previewAppearance.planarReflection, "Test pool", "The export must detect a single horizontal water surface");
+  assert.equal(waterProfile.previewAppearance.renderMode, "raster");
+  const waterMaterial = finalStageGltf.materials.find((material: { name: string }) => material.name.startsWith("Pool with procedural ripples"));
+  assert.ok(waterMaterial?.normalTexture, "Blender's procedural bump must arrive as a GLB normal texture");
   assert.ok(finalStageGltf.materials.some((material: any) => {
     const color = material.pbrMetallicRoughness?.baseColorFactor;
     return color && color[0] > color[1] * 2 && color[0] > color[2] * 2;

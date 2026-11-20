@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { addPlanarReflection, applyLightmaps, limitRasterLights } from "../src/viewer/lighting.js";
+import { addPlanarReflection, applyLightmaps, limitRasterLights, limitRasterShadows } from "../src/viewer/lighting.js";
 
 test("static lightmaps preserve PBR inputs, source UVs and shared materials", async () => {
   const geometry = new THREE.PlaneGeometry(4, 4);
@@ -45,6 +45,18 @@ test("raster light selection retains influential lights and directional illumina
   assert.ok(lamps.slice(0, 12).every(light => light.visible));
   assert.ok(lamps.slice(12).every(light => !light.visible));
   assert.equal(sun.visible, true);
+});
+
+test("raster shadow maps leave slots for PBR textures on a 16-sampler GPU", () => {
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(), sun = new THREE.DirectionalLight();
+  const solar = new THREE.Group(); solar.userData.sourceLight = "Sun"; solar.add(sun); scene.add(solar);
+  sun.castShadow = true;
+  const lights = Array.from({ length: 10 }, () => new THREE.SpotLight());
+  lights.forEach(light => { light.castShadow = true; scene.add(light); });
+  assert.equal(limitRasterShadows(scene, camera, 16, "Sun"), 4);
+  assert.equal(sun.castShadow, true);
+  assert.equal(lights.filter(light => light.castShadow).length, 3);
+  assert.ok(lights.every(light => light.visible));
 });
 
 test("planar reflection preserves physical receiver materials and rejects a tall receiver", () => {

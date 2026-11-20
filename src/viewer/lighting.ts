@@ -28,6 +28,22 @@ export function limitRasterLights(scene: THREE.Scene, camera: THREE.Camera, coun
   lights.sort((a, b) => b.score - a.score).slice(count).forEach(({ light }) => { light.visible = false; });
 }
 
+/** Keep sampler slots available for material maps, environment and reflections. */
+export function limitRasterShadows(scene: THREE.Scene, camera: THREE.Camera, maxTextureUnits: number, solarName?: string) {
+  const eye = camera.getWorldPosition(new THREE.Vector3());
+  const casters: { light: THREE.Light; priority: number; score: number }[] = [];
+  scene.traverseVisible(light => {
+    if (!light.castShadow || !(light instanceof THREE.DirectionalLight || light instanceof THREE.PointLight || light instanceof THREE.SpotLight)) return;
+    const directional = light instanceof THREE.DirectionalLight;
+    const priority = directional && solarName && light.parent?.userData.sourceLight === solarName ? 2 : directional ? 1 : 0;
+    const score = light.intensity / Math.max(1, light.getWorldPosition(new THREE.Vector3()).distanceToSquared(eye));
+    casters.push({ light, priority, score });
+  });
+  const budget = Math.max(1, maxTextureUnits - 12);
+  casters.sort((a, b) => b.priority - a.priority || b.score - a.score).slice(budget).forEach(({ light }) => { light.castShadow = false; });
+  return Math.min(budget, casters.length);
+}
+
 function belongsTo(mesh: THREE.Object3D, name: string): boolean {
   for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
     if (normalized(node.name) === normalized(name)) return true;

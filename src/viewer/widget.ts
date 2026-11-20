@@ -12,7 +12,9 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 import { connectThreeRT } from "./threert-live.js";
 import { keyboardNavigation } from "./navigation.js";
-import { addPlanarReflection, applyLightmaps, captureEnvironment, limitRasterLights, type Lightmap } from "./lighting.js";
+import { addPlanarReflection, applyLightmaps, captureEnvironment, limitRasterLights, limitRasterShadows, type Lightmap } from "./lighting.js";
+import { volumeShader, fogUniforms, shaftUniforms } from "./volumes.js";
+import { maxViewerAssetBytes, type ExportEffects } from "../render-effects.js";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
 type GraphNode = { id: string; label: string; kind: string; parentId: string | null; description: string;
@@ -23,6 +25,7 @@ type Snapshot = {
   reference: { url: string; name?: string; label?: string } | null; references?: ReferenceView[]; best?: { iteration: number };
   job?: { id: string; status: string; kind: string }; exportedIteration?: number; previewedIteration?: number; error?: string;
   exportVersion?: string;
+  exportAlignment?: { status: "supported" | "approximate" | "degraded"; issues: ExportEffects["issues"] };
   realtimeUrl?: string | null;
   threeRT?: { available: boolean; reason?: string; liveAvailable?: boolean; liveReason?: string };
   threeRTRender?: { status: string; iteration: number; exportVersion: string; error?: string; warnings?: string[] };
@@ -41,6 +44,7 @@ type Profile = {
   bakedObjects?: string[];
   bakedTints?: Record<string, number[]>;
   lightmaps?: Lightmap[];
+  effects?: ExportEffects;
   previewAppearance?: { renderMode?: "pathtracing" | "raster"; planarReflection?: string; reflectionProbe?: number[]; exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
     dust?: { color: number[]; wind: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
   postprocessing?: {
@@ -104,7 +108,7 @@ function assetURL(name: string, version: string): Promise<string> {
     let offset = 0, size = -1, mimeType = "application/octet-stream";
     do {
       const chunk = await requestAssetChunk(sceneId, name, offset);
-      if (!chunk || chunk.name !== name || chunk.offset !== offset || !Number.isSafeInteger(chunk.size) || chunk.size > 256 * 1024 * 1024) {
+      if (!chunk || chunk.name !== name || chunk.offset !== offset || !Number.isSafeInteger(chunk.size) || chunk.size > maxViewerAssetBytes) {
         throw new Error(`Invalid ${name} chunk.`);
       }
       if (size >= 0 && chunk.size !== size) throw new Error(`${name} changed while loading.`);
@@ -483,6 +487,7 @@ function applyLights(model: THREE.Group, profile: Profile) {
     const marker = imported.splice(index >= 0 ? index : 0, 1)[0];
     if (!marker?.parent) continue;
     const holder = new THREE.Group();
+    holder.userData.sourceLight = definition.name;
     holder.position.copy(marker.position); holder.quaternion.copy(marker.quaternion); holder.scale.copy(marker.scale);
     if (definition.worldMatrix?.length === 16) {
       marker.parent.matrixWorld.clone().invert().multiply(new THREE.Matrix4().fromArray(definition.worldMatrix))
@@ -547,7 +552,12 @@ async function displayTransform(profile: Profile, textures: THREE.Texture[]): Pr
 function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, profile: Profile) {
   const settings = profile.postprocessing;
   const appearance = profile.previewAppearance, dust = appearance?.dust;
-  if (!settings?.bloom && !settings?.haze && !dust && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
+  const shafts = profile.effects?.shafts ?? [];
+  const fog = profile.effects?.fog ?? [];
+  const solar = profile.effects?.sun;
+  const drawSun = Boolean(solar && !solar.inBackground && !profile.render.filmTransparent);
+  const volumes = shafts.length > 0 || fog.length > 0;
+  if (!settings?.bloom && !settings?.haze && !dust && !volumes && !drawSun && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
   const composer = new EffectComposer(renderer, target);
   composer.renderToScreen = false;
@@ -556,9 +566,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   source.material.toneMapped = false;
   composer.addPass(source);
   let sun: THREE.DirectionalLight | undefined;
-  const sunDirection = new THREE.Vector3(0, 1, 0);
-  if (dust) {
-    scene.traverse(object => { if (!sun && object instanceof THREE.DirectionalLight) sun = object; });
+  const sunDirection = new THREE.Vector3(...(solar?.direction ?? [0, 1, 0]));
+  if (dust || volumes) {
+    scene.traverse(object => {
+      if (!sun && object instanceof THREE.DirectionalLight && (!solar || object.parent?.userData.sourceLight === solar.name)) sun = object;
+    });
     if (sun) {
       scene.updateMatrixWorld(true);
       sunDirection.copy(sun.getWorldPosition(new THREE.Vector3())).sub(sun.target.getWorldPosition(new THREE.Vector3())).normalize();
@@ -573,14 +585,13 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
       scene.updateMatrixWorld(true);
     }
   }
-  if (settings?.bloom) {
-    const bloom = settings.bloom;
-    composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), bloom.strength ?? 0.25,
-      bloom.radius ?? 0.35, bloom.threshold ?? 1.2));
-  }
+  const bloom = settings?.bloom;
+  const bloomPass = bloom && new UnrealBloomPass(new THREE.Vector2(1, 1), bloom.strength ?? 0.25,
+    bloom.radius ?? 0.35, bloom.threshold ?? 1.2);
+  if (bloomPass && !volumes && !drawSun) composer.addPass(bloomPass);
   let depth: THREE.WebGLRenderTarget | undefined, depthMaterial: THREE.MeshDepthMaterial | undefined;
   let hazePass: ShaderPass | undefined;
-  if (settings?.haze || appearance) {
+  if (settings?.haze || appearance || volumes || drawSun) {
     const haze = settings?.haze;
     const centers = Array.from({ length: 6 }, (_, i) => {
       const v = dust?.volumes[i]; return v ? new THREE.Vector4(v.center[0], v.center[2], -v.center[1]!, v.density) : new THREE.Vector4();
@@ -605,6 +616,10 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         whiteBalance: { value: new THREE.Vector3(...(appearance?.whiteBalance ?? [1, 1, 1]) as [number, number, number]) },
         contrast: { value: appearance?.contrast ?? 1 },
         sunDepth: { value: null }, sunMatrix: { value: new THREE.Matrix4() }, sunDirection: { value: sunDirection },
+        orthographic: { value: camera instanceof THREE.OrthographicCamera },
+        sunDisk: { value: new THREE.Vector4(...(solar?.radiance ?? [0, 0, 0]), drawSun ? Math.cos(solar!.angularRadius) : 2) },
+        ...shaftUniforms(shafts),
+        ...fogUniforms(fog),
         // The shader's HG lobe omits 1/(4π); normalize here to conserve scattered energy.
         sunColor: { value: sun ? sun.color.clone().multiplyScalar(sun.intensity / (4 * Math.PI)) : new THREE.Color(0, 0, 0) },
         hasSunShadow: { value: false }, shadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
@@ -615,10 +630,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         uniform sampler2D tDiffuse,depthImage,sunDepth;
         uniform mat4 projectionInverse,cameraWorld,sunMatrix;
         uniform float start,range,strength,time,exposureGain,saturation,contrast;
-        uniform bool quadratic,hasSunShadow;
+        uniform bool quadratic,hasSunShadow,orthographic;
         uniform vec2 shadowTexel;
         uniform vec3 hazeColor,dustColor,wind,dustRadii[6],whiteBalance,sunDirection,sunColor;
         uniform vec4 dustCenters[6];
+        uniform vec4 sunDisk;
         uniform int dustCount;
         varying vec2 vUv;
         float hash(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}
@@ -638,15 +654,22 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
           }
           return visible*0.25;
         }
+        ${volumeShader}
         void main(){
           float depth=unpackRGBAToDepth(texture2D(depthImage,vUv));
           vec4 p=projectionInverse*vec4(vUv*2.0-1.0,depth*2.0-1.0,1.0);
           float mist=clamp((length(p.xyz/p.w)-start)/range,0.0,1.0);
           if(quadratic)mist*=mist;
           vec4 color=texture2D(tDiffuse,vUv);
-          vec3 origin=cameraWorld[3].xyz;
-          vec3 direction=normalize(mat3(cameraWorld)*(p.xyz/p.w));
-          float surfaceDistance=length(p.xyz/p.w),optical=0.0;
+          vec4 nearPoint=projectionInverse*vec4(vUv*2.0-1.0,-1.0,1.0);
+          vec3 viewOrigin=orthographic ? nearPoint.xyz/nearPoint.w : vec3(0);
+          vec3 viewRay=p.xyz/p.w-viewOrigin;
+          vec3 origin=(cameraWorld*vec4(viewOrigin,1.0)).xyz;
+          vec3 direction=normalize(mat3(cameraWorld)*viewRay);
+          float solarCosine=dot(direction,sunDirection);
+          float solarEdge=max(fwidth(solarCosine),0.0000001);
+          if(depth>=0.999999) color.rgb+=sunDisk.rgb*smoothstep(sunDisk.w-solarEdge,sunDisk.w+solarEdge,solarCosine);
+          float surfaceDistance=length(viewRay),optical=0.0;
           vec3 scatter=vec3(0);
           float entries[6],exits[6];
           for(int cloud=0;cloud<6;cloud++){
@@ -683,6 +706,10 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
             }
           }
           color.rgb=color.rgb*exp(-optical)+scatter;
+          vec4 fog=integrateFog(origin,direction,surfaceDistance);
+          color.rgb=color.rgb*fog.a+fog.rgb;
+          vec4 shafts=integrateShafts(origin,direction,surfaceDistance);
+          color.rgb=color.rgb*shafts.a+shafts.rgb;
           color.rgb=mix(color.rgb,hazeColor,mist*strength)*exposureGain*whiteBalance;
           // A luminance curve preserves hue while separating sunlit and shaded regions.
           float preContrastLuminance=max(dot(color.rgb,vec3(0.2126,0.7152,0.0722)),0.00001);
@@ -696,6 +723,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
     hazePass.material.toneMapped = false;
     composer.addPass(hazePass);
   }
+  if (bloomPass && (volumes || drawSun)) composer.addPass(bloomPass);
   return {
     animated: Boolean(dust?.volumes.length),
     shadowedDust: Boolean(dust && sun),
@@ -903,6 +931,7 @@ async function loadModel(url: string) {
     controls.enableDamping = true; controls.update();
     const navigation = keyboardNavigation(camera, controls, renderer.domElement, () => mode === "3d" && controls.enabled);
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
+    if (raster) limitRasterShadows(scene, camera, renderer.capabilities.maxTextures, profile.effects?.sun?.name);
     const probe = raster && profile.previewAppearance?.reflectionProbe ?
       captureEnvironment(renderer, scene, profile.previewAppearance.reflectionProbe, camera.far) : undefined;
     if (probe) {
@@ -1008,6 +1037,8 @@ async function loadModel(url: string) {
     renderer.domElement.dataset.samples = "0";
     renderer.domElement.dataset.effects = Object.keys(profile.postprocessing ?? {}).join(",");
     if (profile.previewAppearance?.dust) renderer.domElement.dataset.effects += ",dust";
+    if (profile.effects?.shafts.length) renderer.domElement.dataset.effects += ",sun-shafts";
+    if (profile.effects?.fog?.length) renderer.domElement.dataset.effects += ",local-fog";
     renderer.domElement.dataset.dustLighting = effects?.shadowedDust ? "sun-shadow" : "ambient";
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
@@ -1057,6 +1088,9 @@ function receive(data: unknown) {
     next.stage === "review" ? "Awaiting review" :
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
   if (!busy && !next.error && presentation) el("status").textContent = `${state!.phase ?? "Planning"} / ${state!.status} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  const webIssues = next.exportAlignment?.issues.filter(issue => !issue.target || issue.target === "threejs") ?? [];
+  el("status").title = webIssues.map(issue => `${issue.object} · ${issue.effect} — ${issue.reason}`).join("\n");
+  if (!busy && !next.error && next.exportAlignment?.status === "degraded") el("status").textContent += " · 3D export is missing effects";
   el("review-panel").hidden = !pending && !(structural && next.reviewViews?.length);
   el("review-panel").querySelector("h2")!.textContent = pending ? "Geometry and composition preview" : "Structural work preview — not approved";
   el("review-gaps").textContent = (next.remainingGaps?.length ? `Remaining differences: ${next.remainingGaps.join(", ")}. ` : "") + `${pending ? "Review" : "Work draft: review"} geometry, wall directions and camera in neutral gray. Original materials are preserved for later stages. Auxiliary views hide walls and ceilings to reveal the layout.`;

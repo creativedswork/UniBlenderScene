@@ -75,6 +75,7 @@ export type Scene = {
   reference?: { fileId: string; name: string; mime: string; label?: string };
   references?: StoredReference[];
   render?: string; exportedIteration?: number; previewedIteration?: number; job?: Job; error?: string;
+  exportAlignment?: ReturnType<typeof writeGraphExport>;
   workflowIndex?: number; reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
   graphReview?: GraphReview; assetStrategies?: AssetStrategy[];
   inspection?: { id: string; iteration: number; stage: string; summary: Record<string, unknown> };
@@ -1168,12 +1169,13 @@ result = {"reviewViews": 5}
         .replace("__PREVIEW_APPEARANCE__", py(appearance))
         .replace("__STRUCTURAL_PREVIEW__", preview ? "True" : "False");
       await this.blender.execute(code);
-      writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
+      const alignment = writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
         blend, render: preview ? "review-main.png" : "best.png", kind: target.source, purpose: target.purpose, phase: state.phase,
         revisionId: target.revisionId, contentIteration: target.contentIteration,
       }, this.path(scene, "."));
       scene[marker] = iteration;
       if (!preview) {
+        scene.exportAlignment = alignment;
         scene.exportLighting = bakes; scene.exportAppearance = appearance; scene.exportVersion = randomUUID(); scene.exportPipelineHash = pipelineHash;
         this.captureExperience(scene);
       }
@@ -1363,6 +1365,7 @@ result = {"reviewViews": 5}
     const { binary: _binary, ...threeRT } = { binary: undefined, ...threeRTCapability() };
     return {
       ...publicScene,
+      exportAlignment: scene.exportVersion && scene.exportedIteration === scene.best?.iteration ? scene.exportAlignment : undefined,
       workflowState,
       threeRT,
       realtimeUrl: scene.exportVersion ? `${origin}/realtime/${scene.id}?token=${token}&version=${encodeURIComponent(scene.exportVersion)}` : null,
