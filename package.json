@@ -1,6 +1,6 @@
 {
   "name": "uni-blender-scene",
-  "version": "0.3.3",
+  "version": "0.3.6-effects.7",
   "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP.",
   "private": true,
   "type": "module",
@@ -24,16 +24,18 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@threert/gameplay": "^0.1.1",
     "@threert/scene": "^0.1.1",
+    "esbuild": "^0.25.0",
+    "pngjs": "^7.0.0",
     "three": "0.180.0",
     "three-gpu-pathtracer": "^0.0.24",
+    "tsx": "^4.20.6",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
+    "@types/pngjs": "^6.0.5",
     "@types/three": "0.180.0",
-    "esbuild": "^0.25.0",
     "playwright": "^1.64.1",
-    "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
 }

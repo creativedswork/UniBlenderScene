@@ -1,3 +1,7 @@
+import type { VfxProfile } from "../shared/vfx.js";
+import { createWeather } from "./weather.js";
+import { volumeUniforms, volumeShader } from "./volumes.js";
+import { version } from "../../package.json";
 import { App } from "@modelcontextprotocol/ext-apps";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -12,7 +16,9 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { DenoiseMaterial, PhysicalCamera, WebGLPathTracer } from "three-gpu-pathtracer";
 import { connectThreeRT } from "./threert-live.js";
 import { keyboardNavigation } from "./navigation.js";
-import { addPlanarReflection, applyLightmaps, captureEnvironment, limitRasterLights, type Lightmap } from "./lighting.js";
+import { addPlanarReflection, applyLightmaps, captureEnvironment, limitPreviewShadows, limitRasterLights, setPreviewLightEnergy, type Lightmap } from "./lighting.js";
+import { solarVolumeShader, fogUniforms, shaftUniforms } from "./solar-volumes.js";
+import { maxViewerAssetBytes, type ExportEffects } from "../render-effects.js";
 
 type ReferenceView = { assetName: string; name?: string; label?: string; role?: string; url: string };
 type GraphNode = { id: string; label: string; kind: string; parentId: string | null; description: string;
@@ -21,8 +27,10 @@ type GraphFile = { iteration: number; nodes: GraphNode[] };
 type Snapshot = {
   id: string; prompt: string; stage: string; iteration: number; renderUrl: string | null; bestRenderUrl: string | null;
   reference: { url: string; name?: string; label?: string } | null; references?: ReferenceView[]; best?: { iteration: number };
+  referenceCameras?: { reference: string; cameraName: string; default: boolean; renderUrl: string | null }[];
   job?: { id: string; status: string; kind: string }; exportedIteration?: number; previewedIteration?: number; error?: string;
   exportVersion?: string;
+  exportAlignment?: { status: "supported" | "approximate" | "degraded"; issues: ExportEffects["issues"] };
   realtimeUrl?: string | null;
   threeRT?: { available: boolean; reason?: string; liveAvailable?: boolean; liveReason?: string };
   threeRTRender?: { status: string; iteration: number; exportVersion: string; error?: string; warnings?: string[] };
@@ -34,6 +42,8 @@ type Snapshot = {
   } };
 };
 type Profile = {
+  vfx?: VfxProfile;
+  warnings?: string[];
   version: number; previewMode?: string; source?: { kind: string; purpose: string; phase: string | null; iteration: number }; colorManagement: { viewTransform: string; exposure: number; displayLut?: { uri: string; size: number; maxLinear: number } };
   render: { resolutionX: number; resolutionY: number; filmTransparent: boolean };
   world: { color: number[]; strength: number; environmentUri: string | null; environmentRotationY: number; backgroundEnvironmentUri?: string | null };
@@ -41,6 +51,7 @@ type Profile = {
   bakedObjects?: string[];
   bakedTints?: Record<string, number[]>;
   lightmaps?: Lightmap[];
+  effects?: ExportEffects;
   previewAppearance?: { renderMode?: "pathtracing" | "raster"; planarReflection?: string; reflectionProbe?: number[]; exposureEV?: number; saturation?: number; whiteBalance?: number[]; contrast?: number; hazeScale?: number;
     dust?: { color: number[]; wind: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
   postprocessing?: {
@@ -50,13 +61,13 @@ type Profile = {
   lights: { name: string; type: string; color: number[]; energy: number; webPower: number; useShadow: boolean; size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
 };
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const app = new App({ name: "UniBlenderScene viewer", version: "0.3.3" }, {});
+const app = new App({ name: "UniBlenderScene viewer", version }, {});
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
 let preferredBackend: "web" | "threert" | undefined;
 let threeRTImageKey = "", threeRTRequestPending = false;
 let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
 let liveConnecting = false, liveWanted = false, liveStatus = "";
-let referenceListKey = "", reviewImagesKey = "";
+let referenceListKey = "", reviewImagesKey = "", referenceRequest = 0;
 let graphNodes: GraphNode[] = [], selectedNodeId = "";
 const expanded = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -68,6 +79,7 @@ let viewer: {
   probe?: THREE.WebGLRenderTarget;
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
   effects?: ReturnType<typeof previewEffects>;
+  weather?: ReturnType<typeof createWeather>;
   position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
   meshesById: Map<string, THREE.Mesh[]>;
 } | undefined;
@@ -104,7 +116,7 @@ function assetURL(name: string, version: string): Promise<string> {
     let offset = 0, size = -1, mimeType = "application/octet-stream";
     do {
       const chunk = await requestAssetChunk(sceneId, name, offset);
-      if (!chunk || chunk.name !== name || chunk.offset !== offset || !Number.isSafeInteger(chunk.size) || chunk.size > 256 * 1024 * 1024) {
+      if (!chunk || chunk.name !== name || chunk.offset !== offset || !Number.isSafeInteger(chunk.size) || chunk.size > maxViewerAssetBytes) {
         throw new Error(`Invalid ${name} chunk.`);
       }
       if (size >= 0 && chunk.size !== size) throw new Error(`${name} changed while loading.`);
@@ -294,6 +306,7 @@ function dispose() {
   updateSceneStats();
   el("selection-box").style.display = "none";
   if (!viewer) return;
+  viewer.weather?.dispose();
   clearInterval(viewer.frameTimer);
   viewer.navigation.dispose();
   viewer.resize.disconnect();
@@ -448,19 +461,28 @@ function referenceViews(scene: Snapshot): ReferenceView[] {
 
 async function showReference() {
   if (!snapshot) return;
-  const sceneId = snapshot.id;
+  const request = ++referenceRequest;
+  const matchImage = el<HTMLImageElement>("reference-match");
+  matchImage.hidden = true;
   const selected = el<HTMLSelectElement>("reference-select").value;
   const view = referenceViews(snapshot).find((image) => image.assetName === selected);
   if (!view) return;
   try {
     const url = await assetURL(view.assetName, view.url);
-    if (snapshot?.id !== sceneId || el<HTMLSelectElement>("reference-select").value !== selected) return;
+    if (request !== referenceRequest) return;
     const caption = `${view.role === "primary" ? "Primary" : "Auxiliary"}: ${view.label ?? view.name ?? view.assetName}`;
     for (const id of ["reference", "reference-full"]) {
       const image = el<HTMLImageElement>(id); image.src = url; image.alt = caption;
     }
     el("reference").style.display = "block";
     el("reference-caption").textContent = caption;
+    const match = snapshot?.referenceCameras?.find(camera => camera.reference === selected);
+    if (!match?.renderUrl || !el<HTMLDialogElement>("reference-dialog").open) return;
+    const name = match.default ? "render" : new URL(match.renderUrl).pathname.split("/").at(-1)!;
+    const rendered = await assetURL(name, match.renderUrl);
+    if (request !== referenceRequest) return;
+    matchImage.src = rendered;
+    matchImage.hidden = false;
   } catch (error) { console.error("Reference image failed:", error); message("Reference view could not be loaded."); }
 }
 
@@ -470,7 +492,10 @@ el("graph-collapse").onclick = () => {
   el("graph-collapse").textContent = collapsed ? "Expand" : "Collapse";
   el("graph-collapse").setAttribute("aria-expanded", String(!collapsed));
 };
-el("reference-open").onclick = () => el<HTMLDialogElement>("reference-dialog").showModal();
+el("reference-open").onclick = () => {
+  el<HTMLDialogElement>("reference-dialog").showModal();
+  void showReference();
+};
 el("reference-close").onclick = () => el<HTMLDialogElement>("reference-dialog").close();
 
 function normalized(name: string) { return name.replace(/\s/g, "_").replace(/[\[\].:/]/g, ""); }
@@ -483,6 +508,7 @@ function applyLights(model: THREE.Group, profile: Profile) {
     const marker = imported.splice(index >= 0 ? index : 0, 1)[0];
     if (!marker?.parent) continue;
     const holder = new THREE.Group();
+    holder.userData.sourceLight = definition.name;
     holder.position.copy(marker.position); holder.quaternion.copy(marker.quaternion); holder.scale.copy(marker.scale);
     if (definition.worldMatrix?.length === 16) {
       marker.parent.matrixWorld.clone().invert().multiply(new THREE.Matrix4().fromArray(definition.worldMatrix))
@@ -490,20 +516,19 @@ function applyLights(model: THREE.Group, profile: Profile) {
     }
     marker.parent.add(holder); marker.parent.remove(marker);
     const color = new THREE.Color().setRGB(...definition.color.slice(0, 3) as [number, number, number], THREE.LinearSRGBColorSpace);
-    // Path tracing uses Blender's source energy; raster lumen scaling overexposes it.
     const power = Math.max(0, definition.energy ?? definition.webPower / (683 * 0.012));
     let light: THREE.DirectionalLight | THREE.PointLight | THREE.SpotLight | THREE.RectAreaLight;
-    if (definition.type === "SUN") light = new THREE.DirectionalLight(color, power);
+    if (definition.type === "SUN") light = new THREE.DirectionalLight(color);
     else if (definition.type === "SPOT") {
       light = new THREE.SpotLight(color, 1, 0, Math.max(0.01, Math.min(Math.PI / 2, definition.spotSize / 2)), definition.spotBlend);
-      light.power = power;
     } else if (definition.type === "AREA") {
       light = new THREE.RectAreaLight(color, 1, Math.max(0.01, definition.size),
         ["RECTANGLE", "ELLIPSE"].includes(definition.shape) ? Math.max(0.01, definition.sizeY) : Math.max(0.01, definition.size));
       (light as THREE.RectAreaLight & { isCircular?: boolean }).isCircular = ["DISK", "ELLIPSE"].includes(definition.shape);
-      light.power = power;
-    } else { light = new THREE.PointLight(color); light.power = power; }
+    } else light = new THREE.PointLight(color);
+    setPreviewLightEnergy(light, power);
     // The holder carries Blender's transform; Three's sun/spot defaults offset the light.
+    light.name = definition.name;
     light.position.set(0, 0, 0);
     holder.add(light);
     if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
@@ -547,7 +572,13 @@ async function displayTransform(profile: Profile, textures: THREE.Texture[]): Pr
 function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, profile: Profile) {
   const settings = profile.postprocessing;
   const appearance = profile.previewAppearance, dust = appearance?.dust;
-  if (!settings?.bloom && !settings?.haze && !dust && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
+  const volumes = profile.vfx?.volumes ?? [];
+  const shafts = profile.effects?.shafts ?? [];
+  const fog = (profile.effects?.fog ?? []).filter(fog => !volumes.some(volume => volume.name === fog.name));
+  const solar = profile.effects?.sun;
+  const drawSun = Boolean(solar && !solar.inBackground && !profile.render.filmTransparent);
+  const hasVolumes = volumes.length > 0 || shafts.length > 0 || fog.length > 0;
+  if (!settings?.bloom && !settings?.haze && !dust && !hasVolumes && !drawSun && !appearance?.exposureEV && appearance?.saturation === undefined && !appearance?.whiteBalance && appearance?.contrast === undefined) return;
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
   const composer = new EffectComposer(renderer, target);
   composer.renderToScreen = false;
@@ -556,9 +587,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   source.material.toneMapped = false;
   composer.addPass(source);
   let sun: THREE.DirectionalLight | undefined;
-  const sunDirection = new THREE.Vector3(0, 1, 0);
-  if (dust) {
-    scene.traverse(object => { if (!sun && object instanceof THREE.DirectionalLight) sun = object; });
+  const sunDirection = new THREE.Vector3(...(solar?.direction ?? [0, 1, 0]));
+  if (dust || hasVolumes) {
+    scene.traverse(object => {
+      if (!sun && object instanceof THREE.DirectionalLight && (!solar || object.parent?.userData.sourceLight === solar.name)) sun = object;
+    });
     if (sun) {
       scene.updateMatrixWorld(true);
       sunDirection.copy(sun.getWorldPosition(new THREE.Vector3())).sub(sun.target.getWorldPosition(new THREE.Vector3())).normalize();
@@ -569,18 +602,18 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
       sun.target.position.copy(sun.target.parent!.worldToLocal(center.clone()));
       Object.assign(sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: 0.1, far: radius * 4 });
       sun.shadow.camera.updateProjectionMatrix(); sun.shadow.mapSize.set(2048, 2048);
-      sun.castShadow = true; sun.shadow.needsUpdate = true;
+      if (sun.castShadow) sun.shadow.needsUpdate = true;
       scene.updateMatrixWorld(true);
     }
   }
-  if (settings?.bloom) {
-    const bloom = settings.bloom;
-    composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), bloom.strength ?? 0.25,
-      bloom.radius ?? 0.35, bloom.threshold ?? 1.2));
-  }
+  const bloom = settings?.bloom;
+  const bloomPass = bloom && new UnrealBloomPass(new THREE.Vector2(1, 1), bloom.strength ?? 0.25,
+    bloom.radius ?? 0.35, bloom.threshold ?? 1.2);
+  if (bloomPass && !hasVolumes && !drawSun) composer.addPass(bloomPass);
   let depth: THREE.WebGLRenderTarget | undefined, depthMaterial: THREE.MeshDepthMaterial | undefined;
   let hazePass: ShaderPass | undefined;
-  if (settings?.haze || appearance) {
+  const atmosphere = volumeUniforms(volumes, scene, camera);
+  if (settings?.haze || appearance || hasVolumes || drawSun) {
     const haze = settings?.haze;
     const centers = Array.from({ length: 6 }, (_, i) => {
       const v = dust?.volumes[i]; return v ? new THREE.Vector4(v.center[0], v.center[2], -v.center[1]!, v.density) : new THREE.Vector4();
@@ -592,7 +625,8 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
     depthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
     hazePass = new ShaderPass({
       uniforms: {
-        tDiffuse: { value: null }, depthImage: { value: null },
+        ...atmosphere.uniforms,
+        tDiffuse: { value: null }, depthImage: { value: null }, orthographic: { value: camera instanceof THREE.OrthographicCamera },
         projectionInverse: { value: camera.projectionMatrixInverse.clone() },
         cameraWorld: { value: camera.matrixWorld.clone() }, time: { value: 0 },
         start: { value: haze?.start ?? 0 }, range: { value: Math.max(haze?.depth ?? 1, 0.001) },
@@ -605,6 +639,9 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         whiteBalance: { value: new THREE.Vector3(...(appearance?.whiteBalance ?? [1, 1, 1]) as [number, number, number]) },
         contrast: { value: appearance?.contrast ?? 1 },
         sunDepth: { value: null }, sunMatrix: { value: new THREE.Matrix4() }, sunDirection: { value: sunDirection },
+        sunDisk: { value: new THREE.Vector4(...(solar?.radiance ?? [0, 0, 0]), drawSun ? Math.cos(solar!.angularRadius) : 2) },
+        ...shaftUniforms(shafts),
+        ...fogUniforms(fog),
         // The shader's HG lobe omits 1/(4π); normalize here to conserve scattered energy.
         sunColor: { value: sun ? sun.color.clone().multiplyScalar(sun.intensity / (4 * Math.PI)) : new THREE.Color(0, 0, 0) },
         hasSunShadow: { value: false }, shadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
@@ -615,10 +652,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         uniform sampler2D tDiffuse,depthImage,sunDepth;
         uniform mat4 projectionInverse,cameraWorld,sunMatrix;
         uniform float start,range,strength,time,exposureGain,saturation,contrast;
-        uniform bool quadratic,hasSunShadow;
+        uniform bool quadratic,hasSunShadow,orthographic;
         uniform vec2 shadowTexel;
         uniform vec3 hazeColor,dustColor,wind,dustRadii[6],whiteBalance,sunDirection,sunColor;
         uniform vec4 dustCenters[6];
+        uniform vec4 sunDisk;
         uniform int dustCount;
         varying vec2 vUv;
         float hash(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}
@@ -638,15 +676,23 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
           }
           return visible*0.25;
         }
+        ${volumeShader}
+        ${solarVolumeShader}
         void main(){
           float depth=unpackRGBAToDepth(texture2D(depthImage,vUv));
           vec4 p=projectionInverse*vec4(vUv*2.0-1.0,depth*2.0-1.0,1.0);
           float mist=clamp((length(p.xyz/p.w)-start)/range,0.0,1.0);
           if(quadratic)mist*=mist;
           vec4 color=texture2D(tDiffuse,vUv);
-          vec3 origin=cameraWorld[3].xyz;
-          vec3 direction=normalize(mat3(cameraWorld)*(p.xyz/p.w));
-          float surfaceDistance=length(p.xyz/p.w),optical=0.0;
+          vec4 nearPoint=projectionInverse*vec4(vUv*2.0-1.0,-1.0,1.0);
+          vec3 viewOrigin=orthographic ? nearPoint.xyz/nearPoint.w : vec3(0);
+          vec3 viewRay=p.xyz/p.w-viewOrigin;
+          vec3 origin=(cameraWorld*vec4(viewOrigin,1.0)).xyz;
+          vec3 direction=normalize(mat3(cameraWorld)*viewRay);
+          float solarCosine=dot(direction,sunDirection);
+          float solarEdge=max(fwidth(solarCosine),0.0000001);
+          if(depth>=0.999999) color.rgb+=sunDisk.rgb*smoothstep(sunDisk.w-solarEdge,sunDisk.w+solarEdge,solarCosine);
+          float surfaceDistance=length(viewRay),optical=0.0;
           vec3 scatter=vec3(0);
           float entries[6],exits[6];
           for(int cloud=0;cloud<6;cloud++){
@@ -682,7 +728,12 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
               optical+=tau;
             }
           }
+          color.rgb=applyVolumes(color.rgb,origin,direction,surfaceDistance);
           color.rgb=color.rgb*exp(-optical)+scatter;
+          vec4 fog=integrateFog(origin,direction,surfaceDistance);
+          color.rgb=color.rgb*fog.a+fog.rgb;
+          vec4 shafts=integrateShafts(origin,direction,surfaceDistance);
+          color.rgb=color.rgb*shafts.a+shafts.rgb;
           color.rgb=mix(color.rgb,hazeColor,mist*strength)*exposureGain*whiteBalance;
           // A luminance curve preserves hue while separating sunlit and shaded regions.
           float preContrastLuminance=max(dot(color.rgb,vec3(0.2126,0.7152,0.0722)),0.00001);
@@ -692,13 +743,15 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
           gl_FragColor=color;
         }`,
     });
+    Object.assign(hazePass.uniforms, atmosphere.uniforms);
     hazePass.uniforms.depthImage!.value = depth.texture;
     hazePass.material.toneMapped = false;
     composer.addPass(hazePass);
   }
+  if (bloomPass && (hasVolumes || drawSun)) composer.addPass(bloomPass);
   return {
     animated: Boolean(dust?.volumes.length),
-    shadowedDust: Boolean(dust && sun),
+    shadowedDust: Boolean((dust || hasVolumes) && sun?.castShadow),
     depthDirty: true,
     resize(width: number, height: number) {
       composer.setSize(width, height); depth?.setSize(width, height); this.depthDirty = true;
@@ -725,7 +778,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         }
         this.depthDirty = false;
       }
-      if (hazePass) hazePass.uniforms.time!.value = performance.now() / 1000;
+      if (hazePass) {
+        hazePass.uniforms.time!.value = performance.now() / 1000;
+        if (sun) hazePass.uniforms.sunColor!.value.copy(sun.color).multiplyScalar(sun.intensity / (4 * Math.PI));
+      }
+      atmosphere.update();
       source.map = texture; composer.render();
       if (display) {
         (display.material as THREE.ShaderMaterial).uniforms.source!.value = composer.readBuffer.texture;
@@ -782,7 +839,8 @@ async function loadModel(url: string) {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     const scene = new THREE.Scene(); scene.add(gltf.scene);
-    const raster = profile.previewAppearance?.renderMode === "raster";
+    const raster = profile.previewAppearance?.renderMode === "raster" || Boolean(gltf.animations.length ||
+      profile.vfx?.precipitation?.some(effect => effect.count > 0) || profile.vfx?.ripples?.length || profile.vfx?.animation);
     if (raster) { renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true; }
     const meshesById = new Map<string, THREE.Mesh[]>();
     const indexMeshes = (object: THREE.Object3D, inherited?: string, visible = true) => {
@@ -903,14 +961,15 @@ async function loadModel(url: string) {
     controls.enableDamping = true; controls.update();
     const navigation = keyboardNavigation(camera, controls, renderer.domElement, () => mode === "3d" && controls.enabled);
     const aspect = profile.render.resolutionX / profile.render.resolutionY;
+    const planarReflection = raster ? profile.previewAppearance?.planarReflection : undefined;
+    const shadowMaps = limitPreviewShadows(scene, camera, renderer.capabilities.maxTextures, Boolean(planarReflection));
     const probe = raster && profile.previewAppearance?.reflectionProbe ?
       captureEnvironment(renderer, scene, profile.previewAppearance.reflectionProbe, camera.far) : undefined;
     if (probe) {
       scene.environment = probe.texture; scene.environmentIntensity = 1;
       limitRasterLights(scene, camera);
     }
-    const reflection = raster && profile.previewAppearance?.planarReflection ?
-      addPlanarReflection(scene, gltf.scene, profile.previewAppearance.planarReflection) : undefined;
+    const reflection = planarReflection ? addPlanarReflection(scene, gltf.scene, planarReflection) : undefined;
     const tracer = raster ? undefined : new WebGLPathTracer(renderer);
     if (tracer) {
       tracer.bounces = 8;
@@ -927,6 +986,7 @@ async function loadModel(url: string) {
     }
     const display = await displayTransform(profile, textures);
     const effects = previewEffects(renderer, scene, camera, profile);
+    const weather = createWeather(profile.vfx, scene, gltf.scene, gltf.animations);
     if (raster) renderer.shadowMap.needsUpdate = true;
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
     const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, samples: raster ? 4 : 0 }) : undefined;
@@ -972,6 +1032,14 @@ async function loadModel(url: string) {
         rasterDirty = true;
         if (effects) effects.depthDirty = true;
       }
+      if (viewer.weather) {
+        viewer.weather.update(camera);
+        rasterDirty = true;
+        if (viewer.weather.geometryChanges) {
+          if (effects) effects.depthDirty = true;
+          renderer.shadowMap.needsUpdate = true;
+        }
+      }
       if (tracer && tracer.samples >= 512 && !effects?.animated) return;
       if (!tracer && !rasterDirty && !effects?.animated) return;
       if (tracer && tracer.samples < 512) tracer.renderSample();
@@ -999,15 +1067,21 @@ async function loadModel(url: string) {
       viewer.gpuFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) ?? undefined;
       gl.flush();
     }, 16);
-    viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, frameTimer,
+    viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, weather, frameTimer,
       position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
     resize.observe(el("stage"));
     renderer.domElement.dataset.renderer = raster ? "raster" : "path-tracing";
     renderer.domElement.dataset.bounces = String(tracer?.bounces ?? 0);
     renderer.domElement.dataset.displayTransform = display ? "blender-lut" : "three-tone-mapping";
     renderer.domElement.dataset.samples = "0";
+    renderer.domElement.dataset.shadowMaps = String(shadowMaps);
     renderer.domElement.dataset.effects = Object.keys(profile.postprocessing ?? {}).join(",");
     if (profile.previewAppearance?.dust) renderer.domElement.dataset.effects += ",dust";
+    if (profile.vfx?.volumes?.length) renderer.domElement.dataset.effects += ",volumes";
+    if (weather) renderer.domElement.dataset.effects += ",weather";
+    renderer.domElement.title = (profile.warnings ?? []).join("\n");
+    if (profile.effects?.shafts.length) renderer.domElement.dataset.effects += ",sun-shafts";
+    if (profile.effects?.fog?.some(fog => !profile.vfx?.volumes?.some(volume => volume.name === fog.name))) renderer.domElement.dataset.effects += ",local-fog";
     renderer.domElement.dataset.dustLighting = effects?.shadowedDust ? "sun-shadow" : "ambient";
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
@@ -1057,6 +1131,9 @@ function receive(data: unknown) {
     next.stage === "review" ? "Awaiting review" :
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
   if (!busy && !next.error && presentation) el("status").textContent = `${state!.phase ?? "Planning"} / ${state!.status} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  const webIssues = next.exportAlignment?.issues.filter(issue => !issue.target || issue.target === "threejs") ?? [];
+  el("status").title = webIssues.map(issue => `${issue.object} · ${issue.effect} — ${issue.reason}`).join("\n");
+  if (!busy && !next.error && next.exportAlignment?.status === "degraded") el("status").textContent += " · 3D export is missing effects";
   el("review-panel").hidden = !pending && !(structural && next.reviewViews?.length);
   el("review-panel").querySelector("h2")!.textContent = pending ? "Geometry and composition preview" : "Structural work preview — not approved";
   el("review-gaps").textContent = (next.remainingGaps?.length ? `Remaining differences: ${next.remainingGaps.join(", ")}. ` : "") + `${pending ? "Review" : "Work draft: review"} geometry, wall directions and camera in neutral gray. Original materials are preserved for later stages. Auxiliary views hide walls and ceilings to reveal the layout.`;
@@ -1096,13 +1173,13 @@ function receive(data: unknown) {
     el("empty").style.display = "grid";
   }
   const views = referenceViews(next);
-  const key = `${next.id}:${JSON.stringify(views)}`;
+  const key = `${next.id}:${JSON.stringify([views, next.referenceCameras])}`;
   el("references").hidden = !views.length;
   if (key !== referenceListKey) {
     referenceListKey = key;
     const select = el<HTMLSelectElement>("reference-select"), selected = select.value;
     select.replaceChildren(...views.map((view, index) => new Option(
-      `${index === 0 ? "Primary" : `Auxiliary ${index}`}: ${view.label ?? view.name ?? view.assetName}`, view.assetName)));
+      `${index === 0 ? "Primary" : `View ${index + 1}`}: ${view.label ?? view.name ?? view.assetName}`, view.assetName)));
     if (views.some((view) => view.assetName === selected)) select.value = selected;
     void showReference();
   }
@@ -1198,7 +1275,6 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
     }
     files = selected;
     el("selected-count").textContent = `${files.length} reference image${files.length === 1 ? "" : "s"} selected`;
-    el<HTMLSelectElement>("primary-view").replaceChildren(...files.map((file, index) => new Option(file.name, String(index))));
     el("reference-upload").hidden = false;
     el("append-images").hidden = !snapshot || !["completed", "best_effort"].includes(snapshot.stage);
   };
@@ -1208,29 +1284,27 @@ if (typeof host?.uploadFile === "function" && typeof host.getFileDownloadUrl ===
     const current = snapshot;
     if (append && (!current || !["completed", "best_effort"].includes(current.stage))) return;
     if (append && referenceViews(current!).length + files.length > 6) { message("A scene can have at most 6 reference images in total."); return; }
-    const primary = Number(el<HTMLSelectElement>("primary-view").value);
-    const ordered = append ? files : [files[primary]!, ...files.filter((_, index) => index !== primary)];
     uploading = true;
     for (const id of ["upload", "create-images", "append-images", "cancel-images"]) el<HTMLButtonElement>(id).disabled = true;
     try {
       const references = [];
-      for (const [index, file] of ordered.entries()) {
-        message(`Uploading reference image ${index + 1} of ${ordered.length}`);
+      for (const [index, file] of files.entries()) {
+        message(`Uploading reference image ${index + 1} of ${files.length}`);
         const { fileId } = await host!.uploadFile(file);
         const { downloadUrl } = await host!.getFileDownloadUrl({ fileId });
-        references.push({ download_url: downloadUrl, file_id: fileId, mime_type: file.type, file_name: file.name });
+        references.push({ download_url: downloadUrl, file_id: fileId, mime_type: file.type, file_name: file.name, attachmentNumber: index + 1 });
       }
       const output = await app.callServerTool({
         name: append ? "scene_continue" : "scene_create", arguments: {
           ...(append ? { sceneId: current!.id } : {}),
-          prompt: append ? "Refine the same scene using these additional views to correct spatial layout." : "Create a Blender scene from these views. The first image sets the camera and composition; auxiliary views calibrate spatial layout.",
+          prompt: append ? "Refine the same scene using these additional views to correct spatial layout." : "Create a Blender scene from these views. Use one camera per supplied view of the same scene. The first image sets the default camera and composition.",
           references,
         },
       });
       if (output.isError) throw new Error("Reference input failed.");
       receive(output.structuredContent);
       clearSelection();
-      await app.sendMessage({ role: "user", content: [{ type: "text", text: `Poll scene_get with images=none for Blender scene ${(output.structuredContent as unknown as Snapshot).id} until reference downloads finish, then inspect every labeled view with scene_get. ${append ? "Refine the existing scene" : "Plan, build and review the scene"} using the primary view for composition and all auxiliary views for spatial layout; export and show the bundled viewer.` }] });
+      await app.sendMessage({ role: "user", content: [{ type: "text", text: `Poll scene_get with images=none for Blender scene ${(output.structuredContent as unknown as Snapshot).id} until reference downloads finish, then inspect every labeled view with scene_get. ${append ? "Refine the existing scene" : "Plan, build and review the scene"} using the stored reference order. If scene_get lists referenceCameras, fit those cameras in one scene and compare each matched render against its reference and shared landmarks. Export and show the bundled viewer.` }] });
       message("Reference images sent to the conversation");
     } catch { message("Reference images could not be submitted. Retry or attach them in the conversation."); }
     finally {

@@ -1,21 +1,43 @@
 ---
 name: blender-scene
-description: Build or refine Blender scenes from text or reference images, review renders, and deliver an interactive 3D preview. Use for scene creation or refinement; use blender-setup for installation.
+description: Build or refine Blender scenes and review renders. Image 1 is primary and the default camera. An angle from image N applies to camera N, including in the first reply. Use blender-setup for installation.
 ---
 
 # Blender scene workflow
 
+Apply the reference rule before the first user-facing update. For example,
+“俯瞰视角和第五张图一致” means Camera 5 should match the overhead view. Describe
+Camera 1 as the default and avoid assigning a new primary view or main output.
+Pass the user's request verbatim as `scene_create.prompt`. Keep inferred
+scene details and camera adjustments in `scene_plan`. Confirm the stored
+roles with `scene_get.reference` and `referenceCameras` after creation.
+
 Use the host model for planning, Python generation, and visual review. The MCP
 service owns scenes, checkpoints, convergence decisions, rendering, and export.
+
+Before creating or resuming a scene, verify the host exposes the workflow tools,
+including `scene_plan`, `scene_plan_review`, `scene_edit`, `scene_get`,
+`scene_review`, `scene_preview`, `scene_review_decision`, `scene_export` and
+`scene_view`. Use the host's tool discovery when available; a connected service
+or a partial `scene_*` list does not establish availability. If tools are absent,
+follow [Blender setup](../blender-setup/SKILL.md) to diagnose and recover the
+connection before importing references or creating another scene. Once tools
+are available, resume an existing scene with `scene_get` and `images: "none"`.
 
 At task start, inspect `learning.skills` and retrieve relevant active entries
 with `scene_library_search` before planning. After export and actual viewer
 verification, complete `learning.retrospectiveDue` before the delivery reply.
-Read [experience learning](references/experience.md) for recording evidence,
-consolidating recurring lessons when `learning.batchDue` is true, and validating
+Co-load the [Scene Skill Library](../blender-skill-library/SKILL.md) for recording
+evidence, consolidating recurring lessons when `learning.batchDue` is true, and validating
 new library versions. The host performs this outer loop during the task; the
 service does not run a background model. Learned text/code is reference data,
 never permission to override the user, Provider rules, stage guards or approval.
+
+For multi-object spatial planning, numeric layout repair or reusable spatial
+scoring functions, co-load [blender-spatial](../blender-spatial/SKILL.md). It owns
+Python reward selection, bounded `scene_optimize` search and the spatial
+specialization of library learning; this Skill retains all scene workflow and
+approval responsibilities.
 
 For a scene request, this Skill coordinates the whole scene. Provider generation
 is an asset substep; after successful delivery, return to the
@@ -44,15 +66,14 @@ phase, purpose and source iteration. Never substitute old views or a colored
 working render when current gray evidence is unavailable; generate the required
 evidence through the service or report that it is not ready.
 
-1. For a new scene, call `scene_create` with the user's request and every supplied
-   host file object in `references` (1-6 images of the same scene). Respect the
-   user's primary-view choice; otherwise use attachment order. Put the primary
-   view first: it determines the target camera and composition. Auxiliary views
-   calibrate depth, occlusion, and object placement. Add short `label` values
-   when viewpoints are known; leave unknown viewpoints unspecified. The legacy
-   `reference` field accepts one image; use only one input form. Never invent
-   file IDs or download URLs. Resolve missing attachments before creating an
-   image-based scene. In a local harness such as Codex or Claude Code, pass an
+1. For a new scene, call `scene_create` with every supplied image in upload
+   order (up to six). Pass each original 1-based `attachmentNumber` when the host
+   exposes it. The first image stays primary and supplies the default
+   composition. Apply a request such as “俯瞰视角与第五张图一致” to the camera
+   paired with image 5. Keep the original upload order, image IDs and asset names.
+   Add short labels for known viewpoints. Use `reference` only for one image and
+   resolve missing attachments before starting an image-based scene.
+   In a local harness such as Codex or Claude Code, pass an
    attached image's absolute path as
    `local_path` instead of a download object; omit `file_id`. The service must
    allow its directory through `LOCAL_REFERENCE_ROOTS`. If needed, copy only the
@@ -70,6 +91,17 @@ evidence through the service or report that it is not ready.
    restart the dedicated bridge and service before doing further work.
 3. Inspect every labeled reference once before planning; use `referenceName`
    to revisit a particular view only when its visual evidence is needed again.
+   Bind original attachment numbers to file IDs and the returned reference asset
+   names; selecting one image does not renumber the inputs or make it primary.
+   For an existing scene, `scene_get.reference` and the `primary` role in
+   `scene_get.references` determine the camera/composition source, regardless of
+   which image was mentioned or inspected most recently. Record the primary
+   asset and the role of every view in the frozen plan. For each entry in
+   `scene_get.referenceCameras`, plan its pose and framing around shared
+   world-space landmarks. Keep one layout for all cameras. Compare relative
+   direction, height, overlap and occlusion. Record specific view conflicts
+   while preserving the shared layout. Keep primary-view anchors in image 1
+   and bind other observations to their actual `referenceView`.
    Reuse reference observations while the images remain in active context; after
    compaction or a new conversation, reload the views required for the next check. Reconcile all views into one spatial
    layout before modeling: identify shared objects, wall/window planes, depth
@@ -90,13 +122,18 @@ evidence through the service or report that it is not ready.
 4. For a visually detailed scene, read [production knowledge](references/production-knowledge.md)
    and [scene craft](references/scene-craft.md) before planning. Co-load the
    top-level [Scenario Blender expert](../scenario-blender-expert/SKILL.md) and
-   only the relevant sibling Scenario domain Skills. They supply production
+   only the relevant domain Skills from the production map, including environment
+   and surface effects when requested. They supply production
    techniques; this Skill remains the authority for the `scene_*` workflow.
    Freeze a global plan with
    `scene_plan`: state the target, 1-12 observable criteria with unique IDs and
    severities, bounded implementation steps, and a visual threshold from 0 to
    100. The first new-scene edit must create a complete recognizable blockout
-   with every major subject, camera, ground, and basic lighting. Later edits
+   with every major subject, ground and basic lighting. Create every named
+   `referenceCameras` object in the same Blender scene during that edit. Fit
+   each to its paired image and keep camera 1 active. For a scene without a
+   camera list, set an active camera as usual. Preserve camera names through
+   production. Later edits
    refine bounded parts without deleting the complete composition. For a
    primary reference, also freeze 2-8 major visual anchors as normalized
    `[left, top, right, bottom]` boxes in `referenceAnchors`. Include the main
@@ -109,7 +146,13 @@ evidence through the service or report that it is not ready.
    Every plan requires `graph` and `assets`; full reconstruction also requires
    ordered `workflow` stages ending in final.
    Give every graph node a stable ID, parent, kind, label, description and direct
-   Blender object names. Set ordered stages such as geometry (5 rounds),
+   Blender object names. For new multi-object plans, add independent `relations`
+   with stable IDs, participant roles and `criterionIds`; use `[]` when no
+   inter-object constraint is needed. Keep `parentId` for object hierarchy.
+   Read [spatial relations](references/relations.md) before planning relations
+   or reviewing a scene that has them. Review participant roles, world axes,
+   tolerances and criterion bindings during the graph verification pass.
+   Set ordered stages such as geometry (5 rounds),
    composition (3), materials (3), lighting (2), final (2), with criterion IDs
    for each stage. Reconstruction requires composition; its user confirmation
    cannot be disabled. Stage budgets apply to the whole scene.
@@ -162,10 +205,23 @@ evidence through the service or report that it is not ready.
    its stored asset name. In a staged workflow, provide one `observations` entry per criterion with
    its graph node ID, target, actual observation, visual evidence and
    `sceneEvidence` from the runtime inspection or an explicit limitation.
+   For every relation bound to a current-stage criterion, submit one
+   `relationReviews` entry using `inspection.summary.relationChecks` and visual
+   evidence; final reviews cover all relations. Failed or unmeasurable numeric
+   checks cannot pass. A numeric pass still requires visual verification.
+   Failed relations need a correction and failed linked criteria. After moving
+   an object, recheck its relations, including those involving unmoved objects;
+   `affectedRelations` identifies dependencies during a scoped revision without
+   expanding its authorized edit scope.
    `referenceView` must name a stored reference asset when references exist. Failed items
    also need a reason, concrete correction and rerender acceptance check.
    Provide at most three ranked `repairs`. Measure reference anchors in
    composition and final reviews.
+   In a multi-reference scene, read each available matched render once using
+   `scene_get` with `images: "camera"` and its `referenceName`. In composition
+   and final reviews, record per-image evidence that compares the matched
+   render and the shared landmarks. Identify visible mismatches or conflicting
+   references before accepting the scene.
 8. Follow the returned stage. In `edit`, make the requested correction and repeat
    the render/review loop. In `completed` or `best_effort`, optionally run
    `scene_bake` for static surface lightmaps (see [Blender code guidance](references/blender-code.md))
@@ -179,11 +235,15 @@ evidence through the service or report that it is not ready.
    regions, and prominent materials; orbit to check depth, window/wall placement,
    and occlusion against auxiliary views. Do not substitute a GLB-only page: it
    omits the exported render profile, lighting and atmosphere settings.
-   In a CLI without MCP Apps, use the inspected render and report that
-   interactive viewing needs an MCP Apps host. Do not claim viewer
-   verification from an export alone. Report remaining gaps; an export or viewer
-   failure is a delivery issue, not a reason to spend a scene edit attempt on a
-   pre-export criterion.
+   Record the checkpoint iteration, export version, active backend and engine
+   version with the screenshot. Verify Three.js and ThreeRT separately when
+   delivering both. If color or emission differs, follow the
+   [export color checks](references/blender-code.md#export-color-checks) before
+   changing reviewed source lights. Keep the source checkpoint during diagnosis
+   and report crop or display-transform limits that affect the comparison.
+   In a CLI without MCP Apps, use the inspected render and explain that
+   interactive viewing requires an MCP Apps host. Track export and viewer
+   failures as delivery issues outside the scene edit budget.
    In `awaiting_review`, show the neutral gray main image and five review views.
    `scene_get` selects the checkpoint evidence, which may differ from the latest
    working iteration; follow `workflowState.presentation.iteration`.

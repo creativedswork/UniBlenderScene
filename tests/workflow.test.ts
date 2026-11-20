@@ -11,8 +11,10 @@ import { BlenderClient } from "../src/service/blender.js";
 import { allowedDownloadURL, requestsImageReference, SceneStore, validateSceneGraph, type Plan, type Scene, type SceneNode } from "../src/service/store.js";
 import { createMcpServer } from "../src/service/server.js";
 import { writeGraphExport } from "../src/service/graph-export.js";
+import { checkSceneTools } from "../scripts/check-mcp-tools.js";
 
 class FakeBlender extends BlenderClient {
+  relationBounds?: Record<string, { min: number[]; max: number[] }>;
   bakeExecutions = 0;
   failNext = false;
   failMessage = "Invalid Python edit";
@@ -42,7 +44,7 @@ class FakeBlender extends BlenderClient {
       const render = line.match(/render\.filepath = (".*")/);
       if (render) writeFileSync(JSON.parse(render[1]!), Buffer.from(code.includes('result = {"reviewViews": 5}') ? "review" : "render"));
     }
-    return { objects: [], camera: "Camera" };
+    return { objects: [], camera: "Camera", ...(this.relationBounds ? { relationBounds: this.relationBounds } : {}) };
   }
 }
 const plan: Plan = {
@@ -818,6 +820,39 @@ test("staged review pauses at composition and resumes from the same checkpoint",
   assert.equal(scene.stage, "completed");
 });
 
+test("relation review binds measured geometry to criteria and survives service restart", async () => {
+  const { store, blender, root } = setup();
+  const scene = store.create("Two primitives with an explicit support relation");
+  await store.settled();
+  const relation = { id: "cube-on-base", type: "support" as const, description: "Cube rests on base",
+    participants: [{ nodeId: "cube", role: "subject" }, { nodeId: "base", role: "support" }],
+    criterionIds: ["cube"], axis: "z" as const, tolerance: 0.01 };
+  const graph: SceneNode[] = [...plan.graph!, { id: "base", label: "Base", kind: "object", parentId: null,
+    blenderObjectNames: ["Base"], description: "Base primitive" }];
+  const relationPlan = { ...plan, graph, relations: [relation], assets: [...plan.assets!, { nodeId: "base", kind: "structure" as const, reason: "Primitive base" }] };
+  assert.throws(() => store.plan(scene.id, { ...relationPlan, relations: [{ ...relation, criterionIds: ["missing"] }] }), /criterionIds/);
+  preparePlan(store, scene, relationPlan);
+  blender.relationBounds = { cube: { min: [0, 0, 2], max: [1, 1, 3] }, base: { min: [-1, -1, 0], max: [2, 2, 1] } };
+  store.edit(scene.id, "result = {}"); await store.settled();
+  assert.equal((scene.inspection!.summary.relationChecks as { status: string }[])[0]!.status, "failed");
+  const oldInspection = scene.inspection!.id;
+  const relationReview = { relationId: relation.id, passed: true, evidence: "Measured and visually inspected support" };
+  assert.throws(() => store.review(scene.id, review(scene, 1, 95, true)), /active relation/);
+  assert.throws(() => store.review(scene.id, { ...review(scene, 1, 95, true), relationReviews: [relationReview] }), /cannot pass/);
+  assert.throws(() => store.review(scene.id, { ...review(scene, 1, 95, true), relationReviews: [{ ...relationReview, passed: false, correction: "Lower cube" }] }), /criterion cannot pass/);
+  store.review(scene.id, { ...review(scene, 1, 60, false), relationReviews: [{ ...relationReview, passed: false, correction: "Lower cube" }] });
+  assert.equal(scene.stage, "edit");
+  blender.relationBounds.cube = { min: [0, 0, 1], max: [1, 1, 2] };
+  store.edit(scene.id, "result = {}"); await store.settled();
+  assert.throws(() => store.review(scene.id, { ...review(scene, 2, 95, true), inspectionId: oldInspection, relationReviews: [relationReview] }), /inspectionId/);
+  const resumed = new SceneStore(root, blender);
+  const restored = resumed.get(scene.id);
+  assert.equal(restored.plan!.relations![0]!.id, relation.id);
+  assert.equal((restored.inspection!.summary.relationChecks as { status: string }[])[0]!.status, "passed");
+  resumed.review(scene.id, { ...review(restored, 2, 95, true), relationReviews: [relationReview] });
+  assert.equal(restored.stage, "completed");
+});
+
 test("GLB export maps stable IDs across multiple meshes and rejects missing built nodes", () => {
   const root = mkdtempSync(join(tmpdir(), "uni-graph-export-"));
   const directory = join(root, "artifacts", "7"); mkdirSync(directory, { recursive: true });
@@ -833,9 +868,12 @@ test("GLB export maps stable IDs across multiple meshes and rejects missing buil
     { id: "root", label: "Root", kind: "group", parentId: null, blenderObjectNames: [], description: "All", status: "built" },
     { id: "subject", label: "Subject", kind: "object", parentId: "root", blenderObjectNames: ["Original name"], description: "Main", status: "built" },
   ];
-  writeGraphExport(directory, 7, graph, "completed", []);
+  const relations = [{ id: "subject-in-group", type: "semantic" as const, description: "Subject belongs to the composition",
+    participants: [{ nodeId: "root", role: "group" }, { nodeId: "subject", role: "subject" }], criterionIds: ["layout"] }];
+  writeGraphExport(directory, 7, graph, "completed", [], undefined, root, relations);
   const output = JSON.parse(readFileSync(join(directory, "scene-graph.json"), "utf8"));
   assert.deepEqual(output.nodes[1].gltfNodeIndices, [1, 2]);
+  assert.deepEqual(output.relations, relations);
   assert.equal(output.nodes[0].status, "renderable");
   assert.equal(output.nodes[1].status, "renderable");
   assert.equal(JSON.parse(readFileSync(join(directory, "render-profile.json"), "utf8")).iteration, 7);
@@ -900,6 +938,82 @@ test("validates file host boundary and excludes metadata from downloadable artif
   assert.equal(store.allowedFiles(scene).includes("current.blend"), false);
 });
 
+test("MCP numeric vectors use homogeneous item schemas and retain input constraints", async (t) => {
+  const { store } = setup();
+  const scene = store.create("Schema validation fixture"); await store.settled();
+  const planCall = t.mock.method(store, "plan", () => scene);
+  const reviewCall = t.mock.method(store, "review", () => scene);
+  const exportCall = t.mock.method(store, "export", () => scene);
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "schema-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const { tools } = await client.listTools();
+    function checkItems(value: unknown, path: string) {
+      if (!value || typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "items") assert.equal(Array.isArray(child), false, `${path}.items must be a schema, not a tuple array`);
+        checkItems(child, `${path}.${key}`);
+      }
+    }
+    for (const tool of tools) checkItems(tool.inputSchema, tool.name);
+
+    const boxes = ["scene_plan", "scene_review"].map((name) => ({
+      name, length: 4, minimum: undefined, maximum: undefined,
+      path: name === "scene_plan" ? ["referenceAnchors", "items", "targetBox"] : ["referenceAlignment", "items", "renderBox"],
+      args: (box: unknown) => name === "scene_plan" ? { sceneId: scene.id, ...plan,
+        referenceAnchors: ["first", "second"].map(id => ({ id, description: "Anchor", targetBox: box })) } : {
+        sceneId: scene.id, iteration: 1, inspectionId: "fixture", criteria: [{ id: "cube", passed: true, evidence: "Fixture" }],
+        visualScore: 90, regressions: [], repairable: false, nextAction: "Complete",
+        referenceAlignment: ["first", "second"].map(id => ({ id, renderBox: box, evidence: "Measured" })),
+      },
+      calls: () => (name === "scene_plan" ? planCall : reviewCall).mock.callCount(),
+    }));
+    const vectors = [
+      { path: ["reflectionProbe"], minimum: -10000, maximum: 10000 },
+      { path: ["whiteBalance"], minimum: 0.25, maximum: 4 },
+      { path: ["dust", "color"], minimum: 0, maximum: 10 },
+      { path: ["dust", "wind"], minimum: -10, maximum: 10 },
+      { path: ["dust", "volumes", "items", "center"], minimum: -10000, maximum: 10000 },
+      { path: ["dust", "volumes", "items", "radius"], minimum: 0.05, maximum: 1000 },
+    ].map(({ path, minimum, maximum }) => ({
+      name: "scene_export", path: ["previewAppearance", ...path], length: 3, minimum, maximum,
+      args: (vector: unknown) => {
+        const appearance: Record<string, any> = { reflectionProbe: [0, 0, 0], whiteBalance: [1, 1, 1],
+          dust: { color: [1, 1, 1], wind: [0, 0, 0], volumes: [{ center: [0, 0, 0], radius: [1, 1, 1], density: 1 }] } };
+        let target = appearance;
+        for (const key of path.slice(0, -1)) target = key === "items" ? target[0] : target[key];
+        target[path.at(-1)!] = vector;
+        return { sceneId: scene.id, previewAppearance: appearance };
+      },
+      calls: () => exportCall.mock.callCount(),
+    }));
+    for (const spec of [...boxes, ...vectors]) {
+      let schema: any = tools.find(tool => tool.name === spec.name)!.inputSchema;
+      for (const key of spec.path) schema = key === "items" ? schema.items : schema.properties[key];
+      assert.equal(schema.type, "array");
+      assert.equal(schema.minItems, spec.length); assert.equal(schema.maxItems, spec.length);
+      assert.deepEqual(schema.items, { type: "number", ...(spec.minimum === undefined ? {} : { minimum: spec.minimum, maximum: spec.maximum }) });
+      const valid = Array(spec.length).fill(spec.minimum ?? 0);
+      for (const vector of [valid, Array(spec.length).fill(spec.maximum ?? 1)]) {
+        const before = spec.calls();
+        const result = await client.callTool({ name: spec.name, arguments: spec.args(vector) });
+        assert.equal(result.isError, undefined, JSON.stringify(result.content));
+        assert.equal(spec.calls(), before + 1);
+      }
+      const invalid: unknown[] = [valid.slice(1), [...valid, 0], ["0", ...valid.slice(1)], null];
+      if (spec.minimum !== undefined) invalid.push([spec.minimum - 1, ...valid.slice(1)], [spec.maximum! + 1, ...valid.slice(1)]);
+      for (const vector of invalid) {
+        const before = spec.calls();
+        const result = await client.callTool({ name: spec.name, arguments: spec.args(vector) });
+        assert.equal(result.isError, true, `${spec.name}.${spec.path.join(".")} accepted ${JSON.stringify(vector)}`);
+        assert.equal(spec.calls(), before, "Invalid vectors must not reach the store");
+      }
+    }
+  } finally { await client.close(); await server.close(); }
+});
+
 test("MCP advertises file transfer, UI resource, prompt and validates tool inputs", async () => {
   const { store } = setup();
   const server = createMcpServer(store, "https://example.com");
@@ -908,7 +1022,8 @@ test("MCP advertises file transfer, UI resource, prompt and validates tool input
   await server.connect(a); await client.connect(b);
   try {
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 23);
+    checkSceneTools(tools.tools);
+    assert.equal(tools.tools.length, 24);
     assert.equal(tools.tools.find((tool) => tool.name === "scene_render_high_quality")?._meta?.["openai/widgetAccessible"], true);
     assert.ok(tools.tools.some((tool) => tool.name === "scene_preview"));
     const create = tools.tools.find((tool) => tool.name === "scene_create")!;
@@ -1015,6 +1130,75 @@ test("scene_get selects images without replaying six references during render re
   } finally { await client.close(); await server.close(); }
 });
 
+test("reference guidance is available at MCP initialization and scene_create preserves the user's request", async (t) => {
+  const { store } = setup();
+  t.mock.method(globalThis, "fetch", async () => new Response(Buffer.from("89504e470d0a1a0a01020304", "hex")));
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "reference-intake-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  await client.connect(b);
+  try {
+    const instructions = client.getInstructions() ?? "";
+    assert.match(instructions, /Before the first user-facing update, keep image 1 as the primary reference and default camera/);
+    assert.match(instructions, /俯瞰视角和第五张图一致[^.]+only applies to Camera 5/);
+    const { tools } = await client.listTools();
+    const schema = tools.find(tool => tool.name === "scene_create")!.inputSchema;
+    assert.match((schema.properties?.prompt as { description: string }).description, /verbatim/);
+    const prompt = "构建如图所示的场景，并且俯瞰视角和第五张图一致";
+    const references = [1, 2, 3, 4, 5].map(attachmentNumber => ({
+      download_url: `https://files.oaiusercontent.com/camera-${attachmentNumber}.png`,
+      file_id: `image-${attachmentNumber}`, attachmentNumber,
+    }));
+    const created = await client.callTool({ name: "scene_create", arguments: {
+      prompt, references: [references[4], ...references.slice(0, 4)],
+    } });
+    assert.equal(created.isError, undefined);
+    await store.settled();
+    const scene = store.get((created.structuredContent as { id: string }).id);
+    assert.equal(scene.prompt, prompt);
+    assert.equal(scene.reference?.fileId, "image-1");
+    const cameras = (store.snapshot(scene, "https://example.com").referenceCameras as { default: boolean }[]);
+    assert.deepEqual(cameras.map(camera => camera.default), [true, false, false, false, false]);
+  } finally { await client.close(); await server.close(); }
+});
+
+test("auxiliary appearance alignment and image selection preserve the first reference as primary", async (t) => {
+  const png = Buffer.from("89504e470d0a1a0a01020304", "hex");
+  t.mock.method(globalThis, "fetch", async (input: URL | string) =>
+    new Response(Buffer.concat([png, Buffer.from(String(input))])));
+  const { store, blender } = setup();
+  const scene = store.create("第一张是主图，最后效果要和第三张图对齐", undefined,
+    ["front", "side", "appearance"].map((name) => ({
+      download_url: `https://files.oaiusercontent.com/${name}.png`, file_id: name,
+    })));
+  await store.settled();
+  assert.equal(scene.job?.status, "done");
+  const before = JSON.stringify(scene);
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "appearance-reference-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const selected = await client.callTool({ name: "scene_get", arguments: {
+      sceneId: scene.id, referenceName: "reference-3", images: "references",
+    } }) as CallToolResult;
+    assert.equal(selected.isError, undefined);
+    const images = selected.content.filter((item) => item.type === "image");
+    assert.equal(images.length, 1);
+    assert.deepEqual(Buffer.from(images[0]!.data, "base64"), readFileSync(store.path(scene, "reference-3")));
+    const state = selected.structuredContent!;
+    assert.equal((state.reference as { fileId: string }).fileId, "front");
+    assert.deepEqual((state.references as { assetName: string; role: string }[]).map((r) => [r.assetName, r.role]), [
+      ["reference", "primary"], ["reference-2", "auxiliary"], ["reference-3", "auxiliary"],
+    ]);
+    assert.equal(JSON.stringify(scene), before);
+    const restarted = new SceneStore(store.root, blender);
+    assert.equal(restarted.get(scene.id).reference?.fileId, "front");
+    assert.equal(restarted.referenceImages(restarted.get(scene.id))[2]?.fileId, "appearance");
+  } finally { await client.close(); await server.close(); }
+});
+
 test("multi-view references keep primary order, persist, and append atomically", async (t) => {
   const png = Buffer.from("89504e470d0a1a0a01020304", "hex");
   t.mock.method(globalThis, "fetch", async (input: URL | string) =>
@@ -1071,7 +1255,7 @@ test("multi-view references keep primary order, persist, and append atomically",
   assert.equal(scene.best, best);
   assert.equal(store.referenceImages(scene).length, 2);
   assert.equal(store.allowedFiles(scene).includes("reference-3"), false);
-  store.continue(scene.id, "Correct depth", [image("back")]); await store.settled();
+  store.continue(scene.id, "Match the final effect to image 3", [image("back")]); await store.settled();
   assert.equal(scene.stage, "planning");
   assert.equal(scene.startIteration, 2);
   assert.equal(scene.reference?.fileId, "front");

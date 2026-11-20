@@ -5,13 +5,14 @@ const bridge = new AppBridge(null, { name: "Integration host", version: "1.0.0" 
   serverTools: {}, message: { text: {} }, openLinks: {},
 }, { hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] } });
 const query = new URLSearchParams(location.search);
-const snapshot = await (await fetch(query.has("lightmap") ? "/scene?lightmap=1" : query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
+const snapshot = await (await fetch(query.has("cameras") ? "/scene?cameras=1" : query.has("lightmap") ? "/scene?lightmap=1" : query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
 const inaccessible = (url: string | null) => url ? `http://127.0.0.1:1${new URL(url).pathname}` : null;
 const widgetSnapshot = {
   ...snapshot,
   renderUrl: inaccessible(snapshot.renderUrl), bestRenderUrl: inaccessible(snapshot.bestRenderUrl),
   reference: snapshot.reference ? { ...snapshot.reference, url: inaccessible(snapshot.reference.url) } : null,
   references: snapshot.references?.map((image: { url: string }) => ({ ...image, url: inaccessible(image.url) })),
+  referenceCameras: snapshot.referenceCameras?.map((view: { renderUrl: string | null }) => ({ ...view, renderUrl: inaccessible(view.renderUrl) })),
   artifacts: snapshot.artifacts.map((item: { name: string; url: string }) => ({ ...item, url: inaccessible(item.url) })),
 };
 const assetBuffers = new Map<string, Promise<Uint8Array>>();
@@ -56,6 +57,8 @@ bridge.oncalltool = async ({ name, arguments: args }) => {
     input.name === "best.png" ? snapshot.bestRenderUrl :
     snapshot.references?.find((image: { assetName: string }) => image.assetName === input.name)?.url ??
     (input.name === "reference" ? snapshot.reference?.url : undefined) ??
+    snapshot.referenceCameras?.find((view: { renderUrl: string | null }) =>
+      view.renderUrl && new URL(view.renderUrl).pathname.split("/").at(-1) === input.name)?.renderUrl ??
     snapshot.artifacts.find((item: { name: string }) => item.name === input.name)?.url;
   if (!url) return { isError: true, content: [{ type: "text", text: "Missing asset" }] };
   const bytes = await loadAssetBytes(url);

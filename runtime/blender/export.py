@@ -12,6 +12,7 @@ from mathutils import Matrix, Vector
 source = __SOURCE_BLEND__
 directory = __OUTPUT_DIRECTORY__
 structural_preview = __STRUCTURAL_PREVIEW__
+reference_camera_names = __REFERENCE_CAMERA_NAMES__
 prepared = __PREPARED_BLEND__
 bake_metadata = json.loads(__BAKE_METADATA_JSON__)
 preview_appearance = __PREVIEW_APPEARANCE__
@@ -25,6 +26,9 @@ def volume_only(obj):
         node.type == "OUTPUT_MATERIAL" and node.is_active_output and
         node.inputs["Volume"].is_linked and not node.inputs["Surface"].is_linked
         for node in material.node_tree.nodes) for material in materials)
+
+
+__VFX_EXPORT_SOURCE__
 
 
 def upstream(socket, kind, seen=None):
@@ -45,7 +49,212 @@ def upstream(socket, kind, seen=None):
     return None
 
 
-def compositor_profile(scene):
+def socket_default(socket):
+    if socket.is_linked:
+        socket = socket.links[0].from_socket
+        if socket.node.type not in {"VALUE", "RGB"}:
+            raise ValueError("an input is driven by an unsupported node")
+    return socket.default_value
+
+
+def world_vector(vector):
+    return [float(vector[0]), float(vector[2]), -float(vector[1])]
+
+
+def fog_density(socket):
+    try:
+        return max(0.0, float(socket_default(socket))), []
+    except ValueError:
+        pass
+    node = socket.links[0].from_node
+    if node.type == "MATH" and node.operation == "MULTIPLY":
+        left, ramps_left = fog_density(node.inputs[0])
+        right, ramps_right = fog_density(node.inputs[1])
+        ramps = ramps_left + ramps_right
+        if len(ramps) <= 2:
+            return left * right, ramps
+    if node.type == "MAP_RANGE" and node.data_type == "FLOAT" and node.interpolation_type == "LINEAR" and node.clamp:
+        axis_links = node.inputs["Value"].links
+        split = axis_links[0].from_node if axis_links else None
+        position = split.inputs[0].links if split and split.type == "SEPXYZ" else []
+        if position and position[0].from_node.type == "NEW_GEOMETRY" and position[0].from_socket.name == "Position":
+            axis = axis_links[0].from_socket.name
+            start, end, low, high = (float(socket_default(node.inputs[key])) for key in ("From Min", "From Max", "To Min", "To Max"))
+            if end > start and min(low, high) >= 0 and axis in {"X", "Y", "Z"}:
+                selector = {"X": 0, "Y": 2, "Z": 1}[axis]
+                if axis == "Y":
+                    start, end, low, high = -end, -start, high, low
+                return 1.0, [{"axis": selector, "range": [start, end], "density": [low, high]}]
+    raise ValueError("the density graph uses unsupported inputs")
+
+
+def fog_volume(obj, shader, density, emission):
+    # The portable representation supports rectangular volumes aligned with the world axes.
+    if obj.modifiers or len(obj.data.vertices) != 8 or len(obj.data.polygons) != 6:
+        raise ValueError("the fog container is not a rectangular box")
+    points = [world_vector(obj.matrix_world @ vertex.co) for vertex in obj.data.vertices]
+    lo = [min(axis) for axis in zip(*points)]
+    hi = [max(axis) for axis in zip(*points)]
+    if any(a >= b for a, b in zip(lo, hi)) or len({tuple(round(x, 5) for x in p) for p in points}) != 8 or any(
+            min(abs(p[i] - lo[i]), abs(p[i] - hi[i])) > 1e-5 for p in points for i in range(3)):
+        raise ValueError("the fog box is not axis-aligned")
+    value, ramps = fog_density(density)
+    return {"name": obj.name, "min": lo, "max": hi, "density": value, "ramps": ramps, "emission": emission,
+            "albedo": list(socket_default(shader.inputs["Color"]))[:3],
+            "anisotropy": float(socket_default(shader.inputs["Anisotropy"]))}
+
+
+def shaft_parameters(tree, node):
+    if node.type == "GROUP":
+        return (Vector(socket_default(node.inputs["Start"])), Vector(socket_default(node.inputs["End"])),
+                float(socket_default(node.inputs["Start Radius"])), float(socket_default(node.inputs["End Radius"])),
+                float(socket_default(node.inputs["Emission Strength"])))
+
+    # Earlier scenes built the same axial envelope out of primitive math nodes.
+    children = {child.label: child for child in tree.nodes if child.parent == node}
+    origin = children["Position from the branch opening"]
+    axis = children["Distance along the shaft"]
+    width = children["Widen gently into the clearing"]
+    gain = children["Volumetric contribution"]
+    if (origin.type, origin.operation, axis.type, axis.operation, width.type, gain.type, gain.operation) != (
+            "VECT_MATH", "SUBTRACT", "VECT_MATH", "DOT_PRODUCT", "MAP_RANGE", "MATH", "MULTIPLY"):
+        raise ValueError("unrecognized legacy light shaft")
+    start = Vector(socket_default(origin.inputs[1]))
+    end = start + Vector(socket_default(axis.inputs[1])) * float(socket_default(width.inputs["From Max"]))
+    return (start, end, float(socket_default(width.inputs["To Min"])),
+            float(socket_default(width.inputs["To Max"])), float(socket_default(gain.inputs[1])))
+
+
+def effect_profile(scene, world_output, visible_disk=None):
+    effects = {"version": 1, "shafts": [], "fog": [], "issues": []}
+    suns = [obj for obj in scene.objects if obj.type == "LIGHT" and obj.data.type == "SUN"
+            and not obj.hide_render and obj.visible_get()]
+    sun = next((obj for obj in suns if obj.get("codex_sun_disc")), None)
+    if visible_disk and sun is None:
+        axis = visible_disk.inputs["Value"].links
+        if axis and axis[0].from_node.type == "VECT_MATH" and axis[0].from_node.operation == "DOT_PRODUCT":
+            direction = Vector(axis[0].from_node.inputs[1].default_value).normalized()
+            sun = next((obj for obj in suns if direction.dot(obj.matrix_world.to_quaternion() @ Vector((0, 0, 1))) > 0.999),
+                       suns[0] if len(suns) == 1 else None)
+    direction = sun.matrix_world.to_quaternion() @ Vector((0, 0, 1)) if sun else None
+    if sun:
+        radius = (math.acos(max(-1.0, min(1.0, visible_disk.inputs["From Min"].default_value)))
+                  if visible_disk else max(0.0001, sun.data.angle * 0.5))
+        effects["sun"] = {"name": sun.name, "direction": world_vector(direction), "angularRadius": radius,
+                          "radiance": [float(value) * float(sun.data.energy) for value in sun.data.color],
+                          "inBackground": visible_disk is not None}
+        effects["issues"].append({"object": sun.name, "effect": "sun disk", "status": "approximate",
+                                  "target": "threeRT", "reason": "ThreeRT draws the disk as distant unlit geometry."})
+    if world_output and world_output.inputs["Volume"].is_linked:
+        effects["issues"].append({"object": scene.world.name, "effect": "world volume", "status": "missing",
+                                  "reason": "The world volume graph has no interactive representation."})
+    for obj in scene.objects:
+        if obj.hide_render or not obj.visible_get():
+            continue
+        if obj.type == "VOLUME":
+            effects["issues"].append({"object": obj.name, "effect": "volume grid", "status": "missing",
+                                      "reason": "Volume grids are not exported to the interactive viewers."})
+        if not volume_only(obj):
+            continue
+        materials = {slot.material for slot in obj.material_slots}
+        tree = next(iter(materials)).node_tree if len(materials) == 1 else None
+        output = next((node for node in tree.nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None) if tree else None
+        shader = output.inputs["Volume"].links[0].from_node if output else None
+        nodes = [node for node in tree.nodes if
+                 (node.type == "GROUP" and node.node_tree and node.node_tree.get("codex_effect") == "sun_shaft_v1") or
+                 (node.type == "FRAME" and node.name.startswith("Sun shaft "))] if tree else []
+        legacy = any(node.type == "FRAME" for node in nodes)
+        if shader and shader.type in {"VOLUME_SCATTER", "PRINCIPLED_VOLUME"} and (not nodes or legacy):
+            try:
+                density = shader.inputs["Density"]
+                emission = [0.0, 0.0, 0.0]
+                if legacy:
+                    source = density.links[0].from_node if density.links else None
+                    if not source or source.type != "MATH" or source.operation != "ADD" or source.label != "Base forest mist and illuminated areas":
+                        raise ValueError("the base mist could not be separated from the shafts")
+                    density = source.inputs[0]
+                elif shader.type == "PRINCIPLED_VOLUME":
+                    color = socket_default(shader.inputs["Emission Color"])
+                    emission = [c * float(socket_default(shader.inputs["Emission Strength"])) for c in color[:3]]
+                    if any(socket_default(shader.inputs["Absorption Color"])[:3]) or socket_default(shader.inputs["Blackbody Intensity"]) > 0:
+                        raise ValueError("colored absorption or blackbody emission is unsupported")
+                if len(effects["fog"]) == 8:
+                    raise ValueError("the preview supports up to eight local fog boxes")
+                effects["fog"].append(fog_volume(obj, shader, density, emission))
+                effects["issues"].append({"object": obj.name, "effect": "fog", "status": "approximate", "target": "threejs",
+                                          "reason": "Three.js reconstructs the local fog with single scattering."})
+                if not nodes:
+                    continue
+            except (KeyError, TypeError, ValueError) as error:
+                effects["issues"].append({"object": obj.name, "effect": "fog", "status": "missing", "reason": str(error)})
+                if not nodes:
+                    continue
+        if not nodes or not direction or not shader or shader.type != "PRINCIPLED_VOLUME":
+            effects["issues"].append({"object": obj.name, "effect": "volume material", "status": "missing",
+                                      "reason": "The volume graph has no supported light shaft with a visible sun."})
+            continue
+        for node in nodes:
+            try:
+                start, end, r0, r1, emission = shaft_parameters(tree, node)
+                length = (start - end).length
+                if not all(math.isfinite(value) for value in (*start, *end, r0, r1, emission)) or min(length, r0, r1) <= 1e-6 or emission < 0:
+                    raise ValueError("invalid shaft dimensions or emission")
+                if node.type == "GROUP":
+                    extinction = float(socket_default(node.inputs["Density"]))
+                else:
+                    scattering = next(n for n in tree.nodes if n.type == "MATH" and n.operation == "MULTIPLY" and n.label == "Local increase in scattering")
+                    extinction = float(socket_default(scattering.inputs[1]))
+                if not math.isfinite(extinction) or extinction < 0:
+                    raise ValueError("invalid shaft density")
+                if len(effects["shafts"]) == 8:
+                    raise ValueError("the preview supports up to eight simultaneous shafts")
+                effects["shafts"].append({"name": node.label or node.name, "start": world_vector(end + direction * length),
+                                           "end": world_vector(end), "radii": [r0, r1], "density": extinction,
+                                           "albedo": list(socket_default(shader.inputs["Color"]))[:3],
+                                           "emission": [float(c) * emission for c in socket_default(shader.inputs["Emission Color"])[:3]],
+                                           "anisotropy": float(socket_default(shader.inputs["Anisotropy"]))})
+            except (KeyError, TypeError, ValueError, StopIteration) as error:
+                effects["issues"].append({"object": obj.name, "effect": node.label or node.name, "status": "missing",
+                                          "reason": str(error)})
+        effects["issues"].append({"object": obj.name, "effect": "volume material", "status": "approximate",
+                                  "reason": "The preview uses solar-aligned shafts with a simplified density profile."})
+    return effects
+
+
+def solar_disk_socket(disk):
+    if disk:
+        return next((link.to_socket for link in disk.outputs[0].links if link.to_node.bl_idname == "ShaderNodeMixRGB"
+                     and link.to_node.blend_type == "ADD" and link.to_socket == link.to_node.inputs[0]), None)
+    return None
+
+
+def planar_reflection_receiver(scene):
+    marked, water = [], []
+    for obj in scene.objects:
+        if obj.type != "MESH" or obj.hide_render or not obj.visible_get() or volume_only(obj):
+            continue
+        if obj.get("codex_planar_reflection"):
+            marked.append(obj.name)
+            continue
+        bounds = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+        x, y, z = [max(point[i] for point in bounds) - min(point[i] for point in bounds) for i in range(3)]
+        if min(x, y) <= 0.1 or z > min(x, y) * 0.02:
+            continue
+        for slot in obj.material_slots:
+            material = slot.material
+            if not material or not material.use_nodes:
+                continue
+            output = next((n for n in material.node_tree.nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output), None)
+            pbr = upstream(output.inputs["Surface"], "BSDF_PRINCIPLED") if output else None
+            if pbr and not pbr.inputs["IOR"].is_linked and not pbr.inputs["Transmission Weight"].is_linked and (
+                    abs(pbr.inputs["IOR"].default_value - 1.333) < 0.01 and pbr.inputs["Transmission Weight"].default_value > 0.3):
+                water.append(obj.name)
+                break
+    receivers = marked or water
+    return receivers[0] if len(receivers) == 1 else None, receivers
+
+
+def compositor_profile(scene, warnings):
     tree = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
     if not tree or not scene.render.use_compositing:
         return {}
@@ -54,10 +263,19 @@ def compositor_profile(scene):
         return {}
     result = {}
     glare = upstream(output.inputs["Image"], "GLARE")
-    if glare and glare.inputs.get("Type") and glare.inputs["Type"].default_value == "Bloom":
+    glare_type = (glare.inputs["Type"].default_value if glare.inputs.get("Type")
+                  else getattr(glare, "glare_type", "")) if glare else ""
+    mode = glare_type.upper().replace(" ", "_")
+    if mode in {"BLOOM", "FOG_GLOW"}:
         result["bloom"] = {key: float(glare.inputs[name].default_value) for key, name in
                            [("strength", "Strength"), ("threshold", "Threshold"), ("radius", "Size")]
                            if glare.inputs.get(name)}
+        if not result["bloom"] and hasattr(glare, "threshold"):
+            result["bloom"]["threshold"] = float(glare.threshold)
+        if mode == "FOG_GLOW":
+            warnings.append("Compositor Fog Glow is approximated with Bloom.")
+    elif glare:
+        warnings.append(f"Compositor Glare mode {glare_type} is unsupported.")
     source = output.inputs["Image"].links[0].from_node if output.inputs["Image"].is_linked else None
     if source and source.bl_idname == "ShaderNodeMix" and source.data_type == "RGBA" and source.inputs[0].is_linked:
         amount = source.inputs[0].links[0].from_node
@@ -72,11 +290,13 @@ def compositor_profile(scene):
     return result
 
 
-def bake_world_backgrounds(scene, world_output, ambient):
+def bake_world_backgrounds(scene, world_output, ambient, disk_socket=None):
     surface = world_output.inputs["Surface"]
     original_surface = surface.links[0].from_socket
     volume = world_output.inputs["Volume"]
     volume_sources = [link.from_socket for link in volume.links]
+    disk_source = disk_socket.links[0].from_socket if disk_socket else None
+    disk_value = disk_socket.default_value if disk_socket else None
     original_camera = scene.camera
     visibility = [(obj, obj.hide_render) for obj in scene.objects]
     render = scene.render
@@ -98,6 +318,9 @@ def bake_world_backgrounds(scene, world_output, ambient):
         # scattering out of the environment light and background panorama.
         for link in list(volume.links):
             scene.world.node_tree.links.remove(link)
+        if disk_source is not None:
+            scene.world.node_tree.links.remove(disk_socket.links[0])
+            disk_socket.default_value = 0.0
         for obj, _ in visibility:
             obj.hide_render = True
         scene.camera = camera
@@ -119,6 +342,9 @@ def bake_world_backgrounds(scene, world_output, ambient):
         scene.world.node_tree.links.new(original_surface, surface)
         for socket in volume_sources:
             scene.world.node_tree.links.new(socket, volume)
+        if disk_source is not None:
+            disk_socket.default_value = disk_value
+            scene.world.node_tree.links.new(disk_source, disk_socket)
         scene.camera = original_camera
         for obj, hidden in visibility:
             obj.hide_render = hidden
@@ -238,6 +464,10 @@ try:
     mapping = upstream(environment.inputs.get("Vector"), "MAPPING") if environment else None
     environment_uri = None
     background_uri = None
+    baked_panorama = False
+    visible_disk = next((node for node in output.id_data.nodes
+                         if node.type == "MAP_RANGE" and node.label == "Apparent solar disc"), None) if output else None
+    effects = {} if structural_preview else effect_profile(scene, output, visible_disk)
     if environment and environment.image:
         settings = scene.render.image_settings
         original = (settings.file_format, settings.color_mode, settings.color_depth)
@@ -248,20 +478,64 @@ try:
         finally:
             settings.file_format, settings.color_mode, settings.color_depth = original
     elif not structural_preview and background and background.inputs["Color"].is_linked:
-        background_uri = bake_world_backgrounds(scene, output, background)
+        solar = effects.get("sun")
+        disk_socket = solar_disk_socket(visible_disk) if solar else None
+        if disk_socket is not None:
+            visible = next((node for node in output.id_data.nodes if node.type == "BACKGROUND" and node.label == "Visible sky"), None)
+            gain = float(visible.inputs["Strength"].default_value) if visible else 1.0
+            solar["radiance"] = [float(channel) * gain for channel in disk_socket.node.inputs[2].default_value[:3]]
+            solar["inBackground"] = False
+        background_uri = bake_world_backgrounds(scene, output, background, disk_socket)
         environment_uri = "environment.exr"
         strength = 1.0
+        baked_panorama = True
+    if not environment_uri and os.path.exists(os.path.join(directory, "environment.exr")):
+        os.unlink(os.path.join(directory, "environment.exr"))
+    appearance = {} if structural_preview else dict(preview_appearance)
+    warnings = []
+    postprocessing = {} if structural_preview else compositor_profile(scene, warnings)
+    if not structural_preview and scene.render.use_compositing:
+        compositor = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
+        final = next((n for n in compositor.nodes if n.type in {"GROUP_OUTPUT", "COMPOSITE"} and getattr(n, "is_active_output", True)), None) if compositor else None
+        image = final.inputs.get("Image") if final else None
+        if image and image.is_linked and image.links[0].from_node.type != "R_LAYERS":
+            effects["issues"].append({"object": compositor.name, "effect": "compositor", "target": "threejs",
+                                      "status": "approximate" if postprocessing else "missing",
+                                      "reason": "The viewer approximates the compositor's glare and mist."
+                                      if postprocessing else "The compositor graph has no supported interactive effect."})
+    if not structural_preview and not appearance.get("planarReflection") and appearance.get("renderMode") != "pathtracing":
+        receiver, candidates = planar_reflection_receiver(scene)
+        if receiver:
+            appearance["planarReflection"] = receiver
+        elif len(candidates) > 1:
+            effects["issues"].append({"object": ", ".join(candidates), "effect": "planar reflection", "status": "approximate",
+                                      "target": "threejs", "reason": "Multiple receivers use environment reflection."})
+    if appearance.get("planarReflection"):
+        effects["issues"].append({"object": appearance["planarReflection"], "effect": "planar reflection", "status": "approximate",
+                                  "target": "threejs", "reason": "Three.js uses a planar reflection capture."})
     camera = scene.camera
     camera_projection = camera.calc_matrix_camera(
         bpy.context.evaluated_depsgraph_get(), x=scene.render.resolution_x,
         y=scene.render.resolution_y, scale_x=scene.render.pixel_aspect_x,
         scale_y=scene.render.pixel_aspect_y) if camera else None
-    if camera:
+    if camera and not reference_camera_names:
         camera.name = "__CodexBlenderActiveCamera"
     baked_objects = bake_metadata.get("bakedObjects", [])
     lightmaps = bake_metadata.get("lightmaps", [])
     material_bakes = bake_metadata.get("materials", {"objects": 0, "textures": 0})
+    if effects:
+        for shared in material_bakes.get("sharedMeshes", []):
+            effects["issues"].append({"object": shared["name"], "effect": "shared material bake", "status": "approximate",
+                                      "reason": "Mesh-local textures are shared. Bump detail can vary from Blender on differently scaled instances."})
     baked_tints = bake_metadata.get("bakedTints", {})
+    excluded = set()
+    handled_volumes = {issue["object"] for issue in effects.get("issues", [])
+                       if issue["status"] == "approximate" and issue["effect"] in {"fog", "volume material"}}
+    vfx = {} if structural_preview else vfx_profile(scene, excluded, warnings, handled_volumes)
+    if effects:
+        vfx_volumes = {volume["name"] for volume in vfx["volumes"]}
+        effects["issues"] = [issue for issue in effects["issues"] if not (
+            issue["object"] in vfx_volumes and issue["effect"] in {"world volume", "fog", "volume material"})]
     profile = {
         "version": 1,
         "previewMode": "structural" if structural_preview else "final",
@@ -292,14 +566,17 @@ try:
         } if camera else None,
         "world": {
             "color": color, "strength": strength, "environmentUri": environment_uri,
-            "environmentRotationY": -float(mapping.inputs["Rotation"].default_value[2]) if mapping else 0.0,
+            # Cycles' rendered panorama has its longitude origin a quarter turn from Three.js.
+            "environmentRotationY": math.pi / 2 if baked_panorama else -float(mapping.inputs["Rotation"].default_value[2]) if mapping else 0.0,
             "backgroundEnvironmentUri": background_uri,
         },
-        "postprocessing": {} if structural_preview else compositor_profile(scene),
-        "previewAppearance": {} if structural_preview else {
-            **preview_appearance,
-            **({"renderMode": "raster"} if lightmaps or preview_appearance.get("planarReflection") or preview_appearance.get("reflectionProbe") else {}),
+        "postprocessing": postprocessing,
+        "vfx": vfx,
+        "previewAppearance": {
+            **appearance,
+            **({"renderMode": "raster"} if lightmaps or appearance.get("planarReflection") or appearance.get("reflectionProbe") else {}),
         },
+        **({"effects": effects} if effects else {}),
         "bakedObjects": baked_objects,
         "bake": {key: bake_metadata[key] for key in ("id", "sourceBlendSha256", "pipelineHash") if key in bake_metadata},
         "lightmaps": lightmaps,
@@ -308,11 +585,11 @@ try:
         "lights": [],
         "warnings": [
             "WebGL path tracing approximates Cycles lighting. Use the Blender render for visual review.",
-            "Procedural shaders, volumes, and compositor effects may require baking for glTF.",
+            *warnings,
         ],
     }
     for obj in scene.objects:
-        if obj.type != "LIGHT":
+        if obj.type != "LIGHT" or obj.hide_render or not obj.visible_get():
             continue
         light = obj.data
         world_matrix = Matrix(((1, 0, 0, 0), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1))) @ obj.matrix_world
@@ -338,8 +615,8 @@ try:
         json.dump(profile, file, indent=2)
     for obj in scene.objects:
         if obj.type == "CAMERA":
-            obj.hide_set(obj != camera)
-        elif volume_only(obj):
+            obj.hide_set(obj != camera and obj.name not in reference_camera_names)
+        elif obj.hide_render or volume_only(obj) or obj.name in excluded:
             obj.hide_set(True)
     bpy.ops.export_scene.gltf(
         filepath=os.path.join(directory, "final.glb"),

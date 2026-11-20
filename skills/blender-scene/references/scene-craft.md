@@ -24,13 +24,27 @@ Scenario helpers are optional source material and its MCP tools are not used.
   each `scene_get` render and `scene_review` to record what changed and which
   criterion still fails.
 
+## Align multiple views in one scene
+
+Keep the upload order and map each image to its named Blender camera. Use two
+or more recognizable landmarks across overlapping views to check relative
+camera direction, height and occlusion. Fit the lens and framing per image.
+Render the same geometry from each camera and compare its paired image at the
+same crop. Use the primary view for the default camera and its image-space
+anchors. When images imply conflicting geometry, identify the conflicting
+landmark or occlusion and keep one consistent layout.
+
 ## Match the lighting in the render
 
 - Set the camera and composition before lighting. Identify visible sources such
   as windows, lamps, and emissive screens, then place and color lights to match
-  their apparent contribution in the reference.
-- When a reference is available, compare it with the Blender render at the same
-  crop; otherwise use the lighting goals in the scene plan. Check the large light
+  their apparent contribution in the plan's lighting reference. This may be an
+  auxiliary image selected for appearance; it does not replace the stored
+  primary camera/composition reference.
+- Compare primary-view composition at the same crop. When lighting comes from
+  another view, compare the specified light direction, color and surface response
+  without copying that view's camera or image-space anchors; otherwise use the
+  lighting goals in the scene plan. Check the large light
   and dark regions first, including a desaturated view when color obscures value
   differences. Adjust one source at a time and inspect the next render; light
   settings alone do not show the final result.

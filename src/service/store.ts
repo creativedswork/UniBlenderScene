@@ -2,8 +2,10 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, delimiter, isAbsolute, relative, resolve, sep } from "node:path";
 import { open, readFile, realpath } from "node:fs/promises";
-import { BlenderClient, factorGuardCode, inspectObjectCode, renderCode, sceneSummaryCode, structuralShadingCode } from "./blender.js";
+import { BlenderClient, factorGuardCode, inspectObjectCode, referenceCamerasCode, referenceRendersCode, renderCode, sceneSummaryCode, structuralShadingCode } from "./blender.js";
 import { writeGraphExport } from "./graph-export.js";
+import { checkRelations, relationsForScope, validateRelations, verifyRelationReviews, type SceneRelation, type RelationCheck, type RelationReview, type SpatialScore } from "./relations.js";
+import { builtinSpatialSource, spatialEvaluationCode, spatialOptimizeCode, type SpatialLibrary, type SpatialRequest, type LayoutSearch } from "./spatial.js";
 import { verifyAssetStrategy, verifyGraphReview, type AssetRequirement, type AssetStrategy, type GraphReview } from "./workflow-guards.js";
 import { ExperienceLibrary, fileHash, type RetrospectiveInput, type Replay, type FixtureResult } from "./experience.js";
 import { renderThreeRT, threeRTCapability } from "./threert.js";
@@ -17,6 +19,7 @@ export type Plan = {
   summary: string; criteria: Criterion[]; steps: string[]; visualThreshold: number;
   referenceAnchors?: ReferenceAnchor[];
   graph?: SceneNode[];
+  relations?: SceneRelation[];
   assets?: AssetRequirement[];
   workflow?: { stages: { name: StageName; criterionIds: string[]; budget: number }[]; compositionApproval?: boolean };
 };
@@ -45,6 +48,8 @@ export type SceneNode = { id: string; label: string; kind: "group" | "object" | 
   blenderObjectNames: string[]; description: string; status?: "planned" | "built" | "hidden" | "unsupported";
   relations?: { targetId: string; description: string }[] };
 export type Review = {
+  relationReviews?: RelationReview[];
+  spatialReport?: string;
   inspectionId?: string; phase?: StageName; revisionId?: string;
   referenceEvidence?: { reference: string; observation: string }[];
   iteration: number;
@@ -74,10 +79,13 @@ export type Scene = {
   plan?: Plan; summary?: Record<string, unknown>; reviews: Review[]; best?: Review;
   reference?: { fileId: string; name: string; mime: string; label?: string };
   references?: StoredReference[];
+  orderedReferenceCameras?: true; bestReferenceRender?: string;
   render?: string; exportedIteration?: number; previewedIteration?: number; job?: Job; error?: string;
+  exportAlignment?: ReturnType<typeof writeGraphExport>;
   workflowIndex?: number; reviewViews?: string[]; reviewFeedback?: string; remainingGaps?: string[];
   graphReview?: GraphReview; assetStrategies?: AssetStrategy[];
-  inspection?: { id: string; iteration: number; stage: string; summary: Record<string, unknown> };
+  spatialLibrary?: SpatialLibrary;
+  inspection?: { id: string; iteration: number; stage: string; summary: Record<string, unknown>; spatialReport?: string };
   compositionApproved?: boolean;
   pendingIteration?: number;
   renderMode?: Presentation["mode"]; bestRenderMode?: Presentation["mode"];
@@ -98,9 +106,16 @@ export type Scene = {
   skillValidation?: { candidateId: string; validationId: string; passed: boolean };
 };
 export const REFERENCE_ASSETS = ["reference", "reference-2", "reference-3", "reference-4", "reference-5", "reference-6"] as const;
-export type Reference = { download_url?: string; file_id?: string; local_path?: string; mime_type?: string; file_name?: string; label?: string };
+export type Reference = { download_url?: string; file_id?: string; local_path?: string; mime_type?: string; file_name?: string; label?: string; attachmentNumber?: number };
+type ReferenceCamera = { reference: typeof REFERENCE_ASSETS[number]; cameraName: string };
 type StoredReference = NonNullable<Scene["reference"]> & { assetName: typeof REFERENCE_ASSETS[number] };
 const py = JSON.stringify;
+function exportTemplate() {
+  const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+  const vfx = readFileSync(new URL("../../runtime/blender/vfx.py", import.meta.url), "utf8");
+  return template.replace("__VFX_EXPORT_SOURCE__", () => vfx);
+}
+const cameraRenderFile = (render: string, reference: ReferenceCamera["reference"]) => render.replace(/\.png$/, `-${reference}.png`);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_ANCHOR_ERROR = 0.08;
 const REFERENCE_REQUEST = /如图|参考图|图中|根据.{0,12}(?:图片|照片)|(?:this|attached|provided|reference)\s+(?:image|photo|picture)|(?:from|based on)\s+(?:the|this|an?|attached)\s+(?:image|photo|picture)/i;
@@ -425,7 +440,32 @@ export class SceneStore {
     return scene.references ?? (scene.reference ? [{ ...scene.reference, assetName: "reference" }] : []);
   }
 
-  private validateReferences(references: Reference[], existing: StoredReference[] = []): void {
+  referenceCameras(scene: Scene): ReferenceCamera[] {
+    const references = this.referenceImages(scene);
+    return scene.orderedReferenceCameras && references.length > 1 ? references.map((image, index) => ({
+      reference: image.assetName, cameraName: `Reference Camera ${index + 1}`,
+    })) : [];
+  }
+
+  referenceCameraFiles(scene: Scene): { reference: ReferenceCamera["reference"]; file: string }[] {
+    const target = this.workflowState(scene).presentation;
+    const captures = target.source === "current" ?
+      (scene.render && scene.renderMode === target.mode && (scene.compositionRevalidation || scene.render === `renders/iteration-${target.iteration}.png`) ? scene.render : undefined) :
+      (scene.best && scene.bestRenderMode === target.mode ? scene.bestReferenceRender : undefined);
+    if (!captures) return [];
+    return this.referenceCameras(scene).flatMap(({ reference }, index) => {
+      const file = index === 0 ? this.renderFile(scene) : cameraRenderFile(captures, reference);
+      return file && existsSync(this.path(scene, file)) ? [{ reference, file }] : [];
+    });
+  }
+
+  private referenceRenderCode(scene: Scene, render: string): string {
+    return referenceRendersCode(this.referenceCameras(scene).slice(1).map(({ reference, cameraName }) => ({
+      cameraName, image: this.path(scene, reference), output: this.path(scene, cameraRenderFile(render, reference)),
+    })));
+  }
+
+  private validateReferences(references: Reference[], existing: StoredReference[] = []): Reference[] {
     if (!references.length || existing.length + references.length > REFERENCE_ASSETS.length) {
       throw new Error("Use 1-6 reference images in total. The first image is the primary view.");
     }
@@ -436,6 +476,13 @@ export class SceneStore {
     }
     const ids = [...existing.map((image) => image.fileId), ...references.map((image) => image.file_id ?? image.local_path!)];
     if (new Set(ids).size !== ids.length) throw new Error("Each reference image must have a distinct file_id.");
+    if (!references.some(image => image.attachmentNumber !== undefined)) return references;
+    const numbers = references.map(image => image.attachmentNumber);
+    if (new Set(numbers).size !== references.length || references.some(({ attachmentNumber: n }) =>
+      n === undefined || !Number.isInteger(n) || n < 1 || n > references.length)) {
+      throw new Error("Supply distinct original attachment numbers from 1 through the size of this batch for every image.");
+    }
+    return [...references].sort((a, b) => a.attachmentNumber! - b.attachmentNumber!);
   }
 
   create(prompt: string, reference?: Reference, references?: Reference[]): Scene {
@@ -448,7 +495,7 @@ export class SceneStore {
     const scene: Scene = {
       id: `scene_${randomUUID()}`, prompt, token: randomBytes(32).toString("hex"),
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      stage: "planning", iteration: 0, startIteration: 0, noImprovement: 0, extended: false, reviews: [],
+      stage: "planning", iteration: 0, startIteration: 0, noImprovement: 0, extended: false, reviews: [], orderedReferenceCameras: true,
     };
     mkdirSync(this.path(scene, "renders"), { recursive: true });
     mkdirSync(this.path(scene, "artifacts"), { recursive: true });
@@ -470,8 +517,7 @@ ${sceneSummaryCode()}`);
 
   private async downloadReferences(scene: Scene, references: Reference[]): Promise<void> {
     const images = [...this.referenceImages(scene)];
-    this.validateReferences(references, images);
-    for (const reference of references) {
+    for (const reference of this.validateReferences(references, images)) {
       const image = await this.downloadReference(scene, reference, REFERENCE_ASSETS[images.length]!);
       if (images.some((existing) => existing.fileId === image.fileId)) throw new Error("Each reference image must be distinct.");
       images.push(image);
@@ -566,6 +612,13 @@ ${sceneSummaryCode()}`);
     }
     if (plan.graph) validateSceneGraph(plan.graph);
     if (!plan.graph?.length || !plan.assets) throw new Error("Plan needs a Scene Graph and explicit asset requirements.");
+    validateRelations(plan.graph, plan.criteria, plan.relations ?? []);
+    const bindings: SpatialLibrary["bindings"] = [];
+    for (const relation of plan.relations ?? []) {
+      const candidate = relation.scorer ? this.library.spatialCandidate(relation.scorer.id, relation.scorer.hash, true) :
+        relation.type !== "semantic" ? this.library.activeSpatial(`spatial-${relation.type}`) : undefined;
+      if (candidate) bindings.push({ relationId: relation.id, id: candidate.id, hash: candidate.hash });
+    }
     const subjects = plan.graph.filter((n) => n.kind !== "group");
     if (plan.assets.length !== subjects.length || new Set(plan.assets.map((a) => a.nodeId)).size !== subjects.length ||
         subjects.some((n) => !plan.assets!.some((a) => a.nodeId === n.id && a.reason.trim() &&
@@ -604,6 +657,7 @@ ${sceneSummaryCode()}`);
       }
     }
     scene.plan = plan;
+    scene.spatialLibrary = { builtin: builtinSpatialSource(), bindings };
     delete scene.previewedIteration;
     delete scene.reviewEvidence;
     delete scene.graphReview;
@@ -654,6 +708,55 @@ ${sceneSummaryCode()}`);
     this.save(scene); return scene;
   }
 
+  private spatialRequest(scene: Scene): SpatialRequest {
+    const library = scene.spatialLibrary ?? { builtin: builtinSpatialSource(), bindings: [] };
+    const skills = library.bindings.map(binding => {
+      const candidate = this.library.spatialCandidate(binding.id, binding.hash);
+      return { id: candidate.id, hash: candidate.hash, code: candidate.code! };
+    });
+    return { ...library, graph: scene.plan?.graph ?? [], relations: scene.plan?.relations ?? [], skills };
+  }
+
+  private recordSpatialInspection(scene: Scene): void {
+    if (!scene.inspection || !scene.summary?.spatialEvaluation) return;
+    const file = `measurements/${scene.inspection.id}.json`;
+    mkdirSync(this.path(scene, "measurements"), { recursive: true });
+    writeFileSync(this.path(scene, file), JSON.stringify({ inspectionId: scene.inspection.id, iteration: scene.iteration,
+      phase: scene.inspection.stage, relationChecks: scene.summary.relationChecks,
+      spatialEvaluation: scene.summary.spatialEvaluation, layoutOptimization: scene.summary.layoutOptimization }, null, 2));
+    scene.inspection.spatialReport = file;
+  }
+
+  optimize(id: string, options: LayoutSearch): Scene {
+    const scene = this.get(id); this.idle(scene);
+    const phase = this.workflowState(scene).phase;
+    if (!scene.plan || scene.stage !== "edit" || scene.plan.workflow && !["geometry", "composition"].includes(phase ?? "")) {
+      throw new Error("Optimize layout only during an authorized geometry/composition edit.");
+    }
+    if (!options.movableNodeIds.length || options.movableNodeIds.length > 30 || new Set(options.movableNodeIds).size !== options.movableNodeIds.length ||
+      options.movableNodeIds.some(id => !scene.plan!.graph?.some(node => node.id === id && node.kind !== "group")) ||
+      !Number.isFinite(options.translationStep) || options.translationStep <= 0 || options.translationStep > 1000 ||
+      !Number.isInteger(options.passes) || options.passes < 1 || options.passes > 8 ||
+      !Number.isFinite(options.rotationStepDegrees) || options.rotationStepDegrees < 0 || options.rotationStepDegrees > 45) {
+      throw new Error("Layout search needs 1-30 distinct non-group nodes, a positive step up to 1000 units, 1-8 passes and rotation step in [0, 45] degrees.");
+    }
+    const revision = this.activeRevision(scene);
+    if (revision && options.movableNodeIds.some(id => !revision.request.scopeNodeIds.includes(id))) throw new Error("Layout search cannot expand the authorized revision scope.");
+    const criterionIds = scene.plan.workflow?.stages[scene.workflowIndex ?? 0]?.criterionIds ?? scene.plan.criteria.map(c => c.id);
+    const relationIds = (scene.plan.relations ?? []).filter(r => r.type !== "semantic" && r.criterionIds.some(id => criterionIds.includes(id))).map(r => r.id);
+    if (!relationIds.length) throw new Error("No measurable relations are bound to this stage; semantic descriptions alone cannot drive numeric layout search.");
+    const request = this.spatialRequest(scene);
+    const overrides = options.scorerOverrides ?? [];
+    if (new Set(overrides.map(binding => binding.relationId)).size !== overrides.length || overrides.some(binding => !relationIds.includes(binding.relationId))) {
+      throw new Error("Candidate overrides must reference distinct active measured relations.");
+    }
+    for (const binding of overrides) {
+      const candidate = this.library.spatialCandidate(binding.id, binding.hash);
+      request.skills.push({ id: candidate.id, hash: candidate.hash, code: candidate.code! });
+    }
+    return this.edit(id, spatialOptimizeCode(request, { ...options, relationIds }));
+  }
+
   edit(id: string, code: string): Scene {
     const scene = this.get(id);
     this.idle(scene);
@@ -672,6 +775,7 @@ ${sceneSummaryCode()}`);
     const { spent, limit } = this.attemptLimit(scene);
     if (spent >= limit) throw new Error("Stage edit budget reached. An explicit scene_revise grant is required for additional rounds.");
     const revision = this.activeRevision(scene);
+    const scoring = scene.plan.relations?.length ? this.spatialRequest(scene) : undefined;
     delete scene.previewedIteration;
     delete scene.reviewEvidence;
     this.enqueue(scene, "edit", async () => {
@@ -694,6 +798,7 @@ ${sceneSummaryCode()}`);
 bpy.ops.wm.open_mainfile(filepath=${py(current)})
 ${beforeGuard}
 ${code}
+${referenceCamerasCode(this.referenceCameras(scene).map(view => view.cameraName))}
 ${afterGuard}
 _provider_assets = ${py((scene.assetStrategies ?? []).filter((a) => a.provider).map((a) => ({ node: a.nodeId, task: a.taskId, hash: a.sha256 })))}
 for _asset in _provider_assets:
@@ -708,10 +813,15 @@ for _asset in _provider_assets:
     if not _matches: raise RuntimeError('Import and tag the recorded provider asset before rendering: ' + _asset['node'])
 bpy.ops.wm.save_as_mainfile(filepath=${py(current)})
 ${renderCode(this.path(scene, render), this.workflowState(scene).presentation.mode === "structural")}
-${sceneSummaryCode()}`);
+${this.referenceRenderCode(scene, render)}
+${sceneSummaryCode()}
+${scoring ? spatialEvaluationCode(scoring) : ""}`);
         scene.render = render;
         scene.renderMode = this.workflowState(scene).presentation.mode;
+        scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds,
+          (scene.summary.spatialEvaluation as { results: SpatialScore[] } | undefined)?.results);
         scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: activeStage ?? "scene", summary: scene.summary };
+        this.recordSpatialInspection(scene);
         scene.currentContentIteration = scene.iteration;
         mkdirSync(this.path(scene, "scripts"), { recursive: true });
         writeFileSync(this.path(scene, `scripts/iteration-${scene.iteration}.py`), code);
@@ -757,6 +867,14 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       throw new Error("Review must bind the current runtime inspectionId from scene_get.");
     }
     const expectedIds = workflowStage?.name === "final" || !workflowStage ? scene.plan.criteria.map((item) => item.id) : workflowStage.criterionIds;
+    verifyRelationReviews(scene.plan.relations ?? [], expectedIds,
+      (scene.inspection.summary.relationChecks ?? []) as RelationCheck[], input.relationReviews ?? []);
+    for (const result of input.relationReviews ?? []) if (!result.passed) {
+      const relation = scene.plan.relations!.find((relation) => relation.id === result.relationId)!;
+      if (input.criteria.some((criterion) => criterion.passed && relation.criterionIds.includes(criterion.id))) {
+        throw new Error("A criterion cannot pass while one of its active relations fails.");
+      }
+    }
     if (input.criteria.length !== expectedIds.length ||
       new Set(input.criteria.map((criterion) => criterion.id)).size !== input.criteria.length ||
       expectedIds.some((id) => !input.criteria.some((result) => result.id === id))) {
@@ -806,7 +924,8 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       return anchor.targetBox.map((value, index) => Math.abs(value - render[index]!));
     })) : 0;
     const revision = this.activeRevision(scene);
-    const reviewed: Review = { ...input, phase: workflowStage?.name, revisionId: revision?.id ?? scene.confirmationRevisionId,
+    const reviewed: Review = { ...input, spatialReport: scene.inspection.spatialReport,
+      phase: workflowStage?.name, revisionId: revision?.id ?? scene.confirmationRevisionId,
       ...(anchors ? { alignmentMaxError } : {}) };
     const quality = (review: Review): number[] => [
       -(Number((review.alignmentMaxError ?? 0) > MAX_ANCHOR_ERROR)),
@@ -826,6 +945,7 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
     if (better) {
       scene.best = reviewed;
       scene.bestRenderMode = scene.renderMode;
+      scene.bestReferenceRender = this.referenceCameras(scene).length ? scene.render : undefined;
       scene.bestContentIteration = scene.currentContentIteration ?? scene.iteration;
       if (revision) revision.bestIteration = scene.iteration;
       scene.noImprovement = 0;
@@ -894,10 +1014,15 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       scene.summary = await this.blender.execute(`
 bpy.ops.wm.open_mainfile(filepath=${py(this.path(scene, "current.blend"))})
 ${renderCode(this.path(scene, render), true)}
-${sceneSummaryCode()}`);
+${this.referenceRenderCode(scene, render)}
+${sceneSummaryCode()}
+${scene.plan?.relations?.length ? spatialEvaluationCode(this.spatialRequest(scene)) : ""}`);
       scene.render = render;
       scene.renderMode = "structural";
+      scene.summary.relationChecks = checkRelations(scene.plan?.relations ?? [], scene.summary.relationBounds,
+        (scene.summary.spatialEvaluation as { results: SpatialScore[] } | undefined)?.results);
       scene.inspection = { id: randomUUID(), iteration: scene.iteration, stage: "composition", summary: scene.summary };
+      this.recordSpatialInspection(scene);
       scene.stage = "review";
     });
   }
@@ -1142,7 +1267,7 @@ result = {"reviewViews": 5}
             !vector(v.center, -10000, 10000) || !vector(v.radius, 0.05, 1000) || !Number.isFinite(v.density) || v.density < 0 || v.density > 2)))) {
       throw new Error("Invalid preview appearance: use finite exposure, saturation and up to six bounded dust volumes.");
     }
-    const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+    const template = exportTemplate();
     const pipelineHash = createHash("sha256").update(template)
       .update(readFileSync(new URL("../../runtime/blender/postprocess/bake.py", import.meta.url))).digest("hex");
     const sameLighting = preview || (JSON.stringify(scene.exportLighting ?? []) === JSON.stringify(bakes) &&
@@ -1166,14 +1291,16 @@ result = {"reviewViews": 5}
         .replace("__PREPARED_BLEND__", bake ? py(this.path(scene, `${bake.directory}/prepared.blend`)) : "None")
         .replace("__BAKE_METADATA_JSON__", py(JSON.stringify(bake ?? {})))
         .replace("__PREVIEW_APPEARANCE__", py(appearance))
-        .replace("__STRUCTURAL_PREVIEW__", preview ? "True" : "False");
+        .replace("__STRUCTURAL_PREVIEW__", preview ? "True" : "False")
+        .replace("__REFERENCE_CAMERA_NAMES__", py(this.referenceCameras(scene).map(view => view.cameraName)));
       await this.blender.execute(code);
-      writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
+      const alignment = writeGraphExport(directory, iteration, scene.plan?.graph ?? [], scene.stage, scene.remainingGaps ?? [], {
         blend, render: preview ? "review-main.png" : "best.png", kind: target.source, purpose: target.purpose, phase: state.phase,
         revisionId: target.revisionId, contentIteration: target.contentIteration,
-      }, this.path(scene, "."));
+      }, this.path(scene, "."), scene.plan?.relations ?? []);
       scene[marker] = iteration;
       if (!preview) {
+        scene.exportAlignment = alignment;
         scene.exportLighting = bakes; scene.exportAppearance = appearance; scene.exportVersion = randomUUID(); scene.exportPipelineHash = pipelineHash;
         this.captureExperience(scene);
       }
@@ -1202,12 +1329,13 @@ result = {"reviewViews": 5}
         mkdirSync(output, { recursive: true });
         // ThreeRT uses the materials-only copy, keeping baked illumination out of physical emitters.
         const bake = await prepareBake(this.blender, this.path(scene, "best.blend"), this.path(scene, "."), [], false);
-        const template = readFileSync(new URL("../../runtime/blender/export.py", import.meta.url), "utf8");
+        const template = exportTemplate();
         const code = template.replace("__SOURCE_BLEND__", py(this.path(scene, "best.blend")))
           .replace("__OUTPUT_DIRECTORY__", py(output))
           .replace("__PREPARED_BLEND__", py(this.path(scene, `${bake.directory}/prepared.blend`)))
           .replace("__BAKE_METADATA_JSON__", py(JSON.stringify(bake)))
-          .replace("__PREVIEW_APPEARANCE__", py(scene.exportAppearance ?? {})).replace("__STRUCTURAL_PREVIEW__", "False");
+          .replace("__PREVIEW_APPEARANCE__", py(scene.exportAppearance ?? {})).replace("__STRUCTURAL_PREVIEW__", "False")
+          .replace("__REFERENCE_CAMERA_NAMES__", py(this.referenceCameras(scene).map(view => view.cameraName)));
         await this.blender.execute(code);
         state.warnings = await renderThreeRT(output, capability.binary);
         state.status = "done";
@@ -1256,8 +1384,9 @@ result = {"reviewViews": 5}
     const candidate = this.library.candidate(candidateId);
     if (candidate.hash !== expectedHash) throw new Error("Candidate hash changed.");
     const checked = this.library.checkReplays(candidate, replays);
-    const finish = (results: FixtureResult[], version?: string, error?: string) => {
-      const validation = this.library.validate(candidateId, expectedHash, checked, results, version, error);
+    const regressionFixtures = this.library.regressionFixtures(candidate);
+    const finish = (results: FixtureResult[], version?: string, error?: string, regressions: FixtureResult[] = []) => {
+      const validation = this.library.validate(candidateId, expectedHash, checked, results, version, error, regressions);
       scene.skillValidation = { candidateId, validationId: validation.id, passed: validation.passed };
     };
     if (candidate.kind === "guidance") { finish([]); this.save(scene); return scene; }
@@ -1266,7 +1395,8 @@ result = {"reviewViews": 5}
       const template = readFileSync(new URL("../../runtime/blender/validate_skill.py", import.meta.url), "utf8");
       let output: Record<string, unknown>;
       try {
-        output = await this.blender.execute(template.replace("__SKILL_REQUEST__", py(JSON.stringify({ code: candidate.code, fixtures: candidate.fixtures }))));
+        output = await this.blender.execute(template.replace("__SKILL_REQUEST__", py(JSON.stringify({ code: candidate.code, kind: candidate.kind,
+          fixtures: [...candidate.fixtures, ...regressionFixtures] }))));
       } catch (error) {
         finish([], undefined, error instanceof Error ? error.message : String(error));
         throw error;
@@ -1280,7 +1410,9 @@ result = {"reviewViews": 5}
           throw new Error("Blender recovery failed; restart the dedicated bridge and service.");
         }
       }
-      finish(output.fixtures as FixtureResult[], String(output.blenderVersion));
+      const reports = output.fixtures as FixtureResult[];
+      finish(reports.filter(r => candidate.fixtures.some(f => f.name === r.name)), String(output.blenderVersion), undefined,
+        reports.filter(r => regressionFixtures.some(f => f.name === r.name)));
     });
     return scene;
   }
@@ -1329,7 +1461,7 @@ result = {"reviewViews": 5}
     const workingRender = target.source === "current" && scene.renderMode === target.mode &&
       scene.render?.match(/iteration-(\d+)\.png$/)?.[1] === String(target.iteration) ? scene.render : undefined;
     const files = [...this.referenceImages(scene).map((reference) => reference.assetName), this.renderFile(scene),
-      workingRender,
+      workingRender, ...this.referenceCameraFiles(scene).map(view => view.file),
       ...(this.reviewViewsReady(scene) ? scene.reviewViews ?? [] : []),
       scene.best && "best.blend", scene.best && "best.png"];
     const directory = scene.exportedIteration !== undefined && scene.exportedIteration === scene.best?.iteration ?
@@ -1354,16 +1486,24 @@ result = {"reviewViews": 5}
   }
 
   snapshot(scene: Scene, origin: string): Record<string, unknown> {
-    const { token, reference: _, references: __, ...publicScene } = scene;
+    const { token, reference: _, references: __, spatialLibrary, bestReferenceRender: ___, ...publicScene } = scene;
     const workflowState = this.workflowState(scene);
     const url = (file: string) => `${origin}/artifacts/${scene.id}/${file}?token=${token}${file.startsWith("previews/") ? `&preview=structural&source=${workflowState.presentation.source}&phase=${workflowState.phase}` : ""}${file.startsWith("artifacts/") && scene.exportVersion ? `&v=${scene.exportVersion}` : ""}`;
     const references = this.referenceImages(scene).map((image, index) => ({ ...image,
       role: index === 0 ? "primary" : "auxiliary", url: url(image.assetName), localPath: this.path(scene, image.assetName) }));
     const render = this.renderFile(scene);
+    const cameraFiles = this.referenceCameraFiles(scene);
+    const referenceCameras = this.referenceCameras(scene).map(view => {
+      const file = cameraFiles.find(item => item.reference === view.reference)?.file;
+      return { ...view, default: view.reference === REFERENCE_ASSETS[0], renderUrl: file ? url(file) : null };
+    });
     const { binary: _binary, ...threeRT } = { binary: undefined, ...threeRTCapability() };
     return {
       ...publicScene,
+      exportAlignment: scene.exportVersion && scene.exportedIteration === scene.best?.iteration ? scene.exportAlignment : undefined,
       workflowState,
+      spatialLibrary: spatialLibrary ? { builtin: { id: spatialLibrary.builtin.id, hash: spatialLibrary.builtin.hash }, bindings: spatialLibrary.bindings } : undefined,
+      affectedRelations: relationsForScope(scene.plan?.graph ?? [], scene.plan?.relations ?? [], this.activeRevision(scene)?.request.scopeNodeIds ?? []),
       threeRT,
       realtimeUrl: scene.exportVersion ? `${origin}/realtime/${scene.id}?token=${token}&version=${encodeURIComponent(scene.exportVersion)}` : null,
       learning: this.library.context(scene.id, scene.plan?.summary ?? scene.prompt),
@@ -1371,9 +1511,10 @@ result = {"reviewViews": 5}
       render,
       reference: references[0] ?? null,
       references,
+      referenceCameras,
       renderUrl: render ? url(render) : null,
       bestRenderUrl: render ? url(render) : null,
-      artifacts: this.allowedFiles(scene).filter((file) => ![...references.map((image) => image.assetName), scene.render,
+      artifacts: this.allowedFiles(scene).filter((file) => ![...references.map((image) => image.assetName), ...cameraFiles.map(view => view.file), scene.render,
         ...(workflowState.presentation.mode === "structural" ? ["best.png", ...(workflowState.presentation.purpose === "work" ? ["best.blend"] : [])] : [])].includes(file))
         .map((file) => ({ name: file.split("/").at(-1), url: url(file) })),
     };

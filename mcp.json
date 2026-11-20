@@ -2,8 +2,14 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "uni-blender-scene": {
-      "type": "streamable-http",
-      "url": "http://127.0.0.1:4312/mcp"
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "${PLUGIN_ROOT}/node_modules/tsx/dist/loader.mjs",
+        "${PLUGIN_ROOT}/scripts/codex-mcp.ts"
+      ],
+      "cwd": "${PLUGIN_ROOT}"
     }
   }
 }

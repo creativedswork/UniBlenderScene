@@ -118,6 +118,35 @@ test("batch consolidation counts distinct scenes and stops counting activated so
   assert.equal(library.context("scene_c", "sun").batchDue, false);
 });
 
+test("spatial scorer trials are versioned and shared activation needs two source scenes plus inherited regressions", () => {
+  const { library, directory, source, input } = setup();
+  const first = library.record(source, directory, input).lessons[0]!.id;
+  const definition = { ...proposal([first]), key: "spatial-support", kind: "spatial_score" as const,
+    code: "def score(layouts, relation): return 1.0" };
+  const one = library.propose(definition);
+  const replayOne = [{ lessonId: first, applies: true, passed: true, evidence: "Reviewed first source" }];
+  const validatedOne = library.validate(one.id, one.hash, replayOne, reports);
+  assert.equal(library.spatialCandidate(one.id, one.hash).id, one.id);
+  assert.throws(() => library.spatialCandidate(one.id, one.hash, true), /active/);
+  assert.throws(() => library.activate(one.id, validatedOne.id), /two distinct/);
+  const other = library.capture({ ...source, sceneId: "scene_b", exportVersion: "other" });
+  const second = library.record(other, directory, { ...input, caseFingerprint: other.fingerprint }).lessons[0]!.id;
+  const two = library.propose({ ...definition, sourceLessonIds: [first, second] });
+  const replays = [...replayOne, { lessonId: second, applies: true, passed: true, evidence: "Reviewed second source" }];
+  assert.equal(library.validate(two.id, two.hash, replays, reports).passed, false, "Omitting old passing fixtures cannot manufacture success");
+  const regressions = library.regressionFixtures(two).map(f => ({ name: f.name, testsRun: 1, passed: true, errors: [] }));
+  const validatedTwo = library.validate(two.id, two.hash, replays, reports, undefined, undefined, regressions);
+  library.activate(two.id, validatedTwo.id);
+  assert.equal(library.activeSpatial("spatial-support")!.id, two.id);
+  assert.throws(() => library.spatialCandidate(two.id, "0".repeat(64)), /exact/);
+  const three = library.propose({ ...definition, sourceLessonIds: [first, second], code: definition.code + "\n# bad revision" });
+  const failedRegression = library.regressionFixtures(three).map(f => ({ name: f.name, testsRun: 1, passed: false, errors: ["Regression"] }));
+  const rejected = library.validate(three.id, three.hash, replays, reports, undefined, undefined, failedRegression);
+  assert.equal(rejected.passed, false);
+  assert.throws(() => library.activate(three.id, rejected.id), /latest passing/);
+  assert.equal(library.activeSpatial("spatial-support")!.id, two.id);
+});
+
 class FixtureBlender extends BlenderClient {
   fail = false;
   override async execute(code: string) {

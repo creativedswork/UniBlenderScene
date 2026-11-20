@@ -19,34 +19,32 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
 | Claude Code | Load the plugin; inspect renders and access `.blend`/GLB files from the terminal |
 | Other agent harnesses | Connect to the MCP service and load the scene workflow instructions; preview support depends on the host |
 
-## Showcase: winter cabin at blue hour
+## Showcase · Forest house at sunset
 
-A single reference image guided this scene in Blender. After confirming the
-gray-model composition, the scene received textures, cool exterior lighting,
-warm windows and a chimney plume. Below are the reference, Blender render and
-ThreeRT render.
+This glass-fronted house, pool and surrounding pine forest were modeled in Blender
+from a single reference. The previews show the same scene after export.
 
 <table>
   <tr>
-    <th width="33%">Reference</th>
-    <th width="33%">Blender render</th>
-    <th width="33%">ThreeRT render</th>
+    <th width="50%">Reference</th>
+    <th width="50%">Blender</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="docs/winter-cabin-reference.webp" alt="Reference of a snow-covered log cabin with warm windows and fir trees at dusk" width="360" /></td>
-    <td align="center" valign="top"><img src="docs/winter-cabin-blender.webp" alt="Blender reconstruction with a snowy roof, lit log facade and winding stone path" width="360" /></td>
-    <td align="center" valign="top"><img src="docs/winter-cabin-threert.webp" alt="The exported cabin rendered by the native ThreeRT engine" width="360" /></td>
+    <td align="center" valign="top"><img src="docs/forest-house-reference.webp" alt="Reference showing a modern house and a pool in a pine forest at sunset" width="480" /></td>
+    <td align="center" valign="top"><img src="docs/forest-house-blender.webp" alt="Blender render showing sunlight through the pines, warm interior lights and pool reflections" width="480" /></td>
+  </tr>
+  <tr>
+    <th>Three.js</th>
+    <th>ThreeRT</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/forest-house-threejs.webp" alt="Three.js preview of the exported forest house, sunbeams and pool" width="480" /></td>
+    <td align="center" valign="top"><img src="docs/forest-house-threert.webp" alt="ThreeRT render of the forest house and sunbeams with simplified trees" width="480" /></td>
   </tr>
 </table>
 
-This stylized reconstruction was modeled locally in Blender. Some vegetation
-and path details are simplified; sky brightness, window color and smoke differ
-between the two renderers.
-
-![Three.js preview selecting the snow-covered roof in the Scene Graph, showing its bounds and XYZ axes while orbiting](docs/winter-cabin-scene-graph.gif)
-
-Select a Scene Graph node to focus its object and show its bounds and XYZ axes.
-The Three.js preview keeps the selection aligned as you orbit the scene.
+The ThreeRT image uses simplified tree geometry. Fog, shadows and reflections
+vary between renderers.
 
 ## What's in the plugin
 
@@ -92,7 +90,7 @@ later tasks can retrieve applicable entries.
 
 Memory stays in the service's local data directory and survives restarts.
 Learning runs during agent tasks; it does not change model weights. See the
-[experience workflow](skills/blender-scene/references/experience.md).
+[Scene Skill Library](skills/blender-skill-library/SKILL.md).
 
 ## Interactive 3D preview
 
@@ -145,3 +143,8 @@ The plugin includes [Scenario Blender Skills](skills/scenario-blender-expert/SKI
 credited to Scenario Labs and its contributors under the
 [MIT license](skills/scenario/LICENSE). See [upstream tracking](docs/scenario-skills.md)
 for the pinned revision and update process.
+
+Selected [EL4CTEO Blender Skills](https://github.com/EL4CTEO/blender-skills)
+contribute time-of-day, weather and surface-texturing techniques under their
+[MIT license](skills/blender-effects/LICENSE). See [effects integration](docs/blender-effects.md)
+for the pinned sources, scene adapters and delivery limits.

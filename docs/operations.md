@@ -7,22 +7,38 @@ The [README](../README.md) covers the plugin and its scene workflow.
 
 ### Codex
 
-The repository contains `plugin.json`, `mcp.json`, and a marketplace definition
-at `.agents/plugins/marketplace.json`. Add this repository as a plugin source:
-
-```bash
-codex plugin marketplace add creativedswork/UniBlenderScene --ref main
-```
-
-If you already cloned the repository, you can add its absolute path instead:
+Extract the release ZIP and add the extracted directory as a plugin source.
+The ZIP includes the built viewer and Node dependencies for macOS and Linux
+on arm64 and x64. Install Node.js 22+ and Blender 4.5+ on the machine running Codex.
+For a source checkout, run `npm ci` and `npm run build` before adding it as a
+local marketplace.
 
 ```bash
 codex plugin marketplace add /absolute/path/to/UniBlenderScene
+codex plugin add uni-blender-scene@uni-blender-scene
 ```
 
-Install **UniBlenderScene** from the **UniBlenderScene** source in the Plugins
-Directory. The bundled `mcp.json` points to `http://127.0.0.1:4312/mcp`; install
-does not start the service. A private repository requires GitHub access.
+Open a local Codex chat. Codex launches the plugin's stdio entry when it
+connects to MCP, and the entry starts or reuses one local HTTP service and its
+dedicated Blender bridge. Connected clients share the task queue. Closing a
+chat leaves submitted jobs running. After ten minutes without requests or
+queued Blender work, the service exits and stops its bridge. The next Codex
+tool call can start them again.
+
+The launcher keeps scene data in `~/.canova/runs` by default. Set `RUNS_ROOT`
+in `~/.canova/.env` to use an existing absolute run directory. That file also
+supports `BLENDER_BIN`, `LOCAL_REFERENCE_ROOTS`, `THREERT_BIN`, `PORT` (default
+4312) and `BLENDER_MCP_PORT` (default 9877). The launcher uses loopback port
+4311 to serialize startup. It keeps logs and a versioned runtime copy under
+`RUNS_ROOT/.service/` so a Codex update can remove the old plugin files while
+the old service finishes its work.
+
+When upgrading from a manually started release, first let its jobs finish and
+stop the old MCP service and dedicated bridge. Then reconnect Codex with the
+original `RUNS_ROOT`. Later plugin-managed upgrades wait for work accepted
+by the older service to finish before the new version opens the same scene
+directory. If Codex times out while waiting, reconnect after the old service
+stops.
 
 ### Claude Code
 
@@ -52,9 +68,9 @@ the scene project:
 
 Invoke `/uni-blender-scene:blender-setup` for setup or
 `/uni-blender-scene:blender-scene` to create a scene. The native manifest uses
-`harnesses/claude-code/mcp.json` with Claude's `http` transport; root `mcp.json`
-uses the portable `streamable-http` transport. Both connect to the same service
-and load the shared root `skills/`. No model is pinned in the plugin.
+`harnesses/claude-code/mcp.json` with Claude's `http` transport. It can reach
+the same running service as Codex. Start the service manually for a
+Claude-only workflow. Both clients load the shared root `skills/`.
 See the official [Claude plugin manifest reference](https://code.claude.com/docs/en/plugins-reference)
 and [portable plugin packaging](https://developers.openai.com/plugins/build/plugins).
 
@@ -166,8 +182,11 @@ This launcher requires `lsof` and `ps`. It binds the service to `127.0.0.1` with
 the unauthenticated connection used by the bundled local plugin manifest. It
 uses `RUNS_ROOT` when supplied; set it to the existing scene's parent directory
 when resuming a scene. Optionally set `SCENE_ID` to require that scene to be
-readable before startup reports success. It checks HTTP health and MCP tool
-discovery without submitting scene creation or edit jobs.
+readable before startup reports success. It checks HTTP health, the full MCP
+tool catalog, homogeneous array schemas, and agreement between the checkout,
+MCP initialization and health versions without submitting scene creation or edit jobs.
+Startup fails with the affected tool/field or version mismatch instead of reporting
+ready for an incompatible service. Reused processes undergo the same checks.
 
 Logs and PID files are stored in `RUNS_ROOT/.service/`. Repeated launches reuse
 only processes recorded there whose listener PID and command match. An occupied
@@ -177,7 +196,30 @@ processes remain running after the launcher or Claude exits. This launcher is
 for local use; use the separate authenticated deployment procedure for a remote
 service.
 
+The host must also expose the workflow tools before scene creation. If
+`scene_plan`, `scene_review` and `scene_export` are absent while other tools are
+available, run the launcher against the service checkout: older tuple-style
+array schemas can prevent those three tools from loading in the host. After
+fixing the reported problem, restart the owned MCP service when it has no active
+scene jobs, preserve `RUNS_ROOT`, and refresh the host's MCP connection or start
+a new chat. Verify the host tool list before resuming the saved scene with
+`scene_get` and `images: "none"`. A passing server check alone does not prove the
+host has loaded the tools.
+
 ## Open the interactive preview
+
+For new scenes with multiple references, pass the images in upload order. If
+original attachment numbers are available, pass them as `attachmentNumber` for
+every image in each upload batch. The service uses those numbers to recover
+the order. `scene_get.referenceCameras` pairs every reference with a named
+Blender camera. Camera 1 is active by default. Build and compare those
+cameras in one scene so shared landmarks and occlusion agree.
+
+`scene_get` with `images: "camera"` and a `referenceName` returns a single
+matched render. The reference dialog also shows it alongside the input when
+available. The editable Blender file and GLB retain the reference cameras.
+Earlier scenes keep their stored reference order and existing camera setup.
+
 
 Poll progress with `scene_get` and `images: "none"`. Only call `scene_view`
 when its snapshot has a non-null `renderUrl`, in a client that supports MCP Apps.
@@ -288,6 +330,34 @@ active. `previewAppearance.renderMode: "raster"` also enables this rendering
 mode without lightmaps. Existing appearance bakes and unbaked path-traced
 exports remain supported. ThreeRT exports use the source materials.
 
+### Effects read from Blender
+
+`scene_export` reads the reviewed Blender checkpoint. The export profile and
+`manifest.json` report effects the viewers approximate or omit. A missing effect
+in Three.js marks the interactive export as degraded.
+
+Objects that share a mesh and use mesh-local procedural textures reuse a bake.
+The report flags the potential difference in bump detail when instances have
+different scales. It also reports GLBs above the embedded viewer's asset limit.
+Raster rendering prioritizes the sun and strongest lights for shadow maps when
+the GPU has limited texture slots. The remaining lights still illuminate the scene.
+
+- For a visible sun, set `codex_sun_disc = true` on the Blender Sun object.
+  The exporter uses that light's world direction. It also recognizes the legacy
+  procedural solar disk from the forest scene.
+- For sunlight shafts, set `codex_effect = "sun_shaft_v1"` on a shader node group
+  used by a Principled Volume material. Expose `Start`, `End`, `Start Radius`,
+  `End Radius`, `Density`, and `Emission Strength` as inputs. Use Blender world
+  coordinates for the endpoints and scene units for radii. The viewer preserves
+  the end and length, and sets the axis parallel to the visible sun direction.
+- Local fog supports axis-aligned boxes with constant density or up to two
+  clamped linear ramps of world position. The report flags unsupported world
+  volume graphs and volume grids.
+- Procedural water normals go through material baking. Three.js automatically
+  adds a planar reflection for one thin horizontal water surface with water IOR
+  and transmission. Set `codex_planar_reflection = true` on a mesh to choose the
+  receiver explicitly, or select path tracing to use the scene lighting instead.
+
 ## Image history and recovery
 
 Version 0.3.1 adds image selection to `scene_get`. Use `images: "references"`
@@ -318,8 +388,8 @@ their count. Updating the plugin does not remove images already in a conversatio
 
 ## Connect a remote service
 
-A remote plugin connection needs a reachable HTTPS service; the bundled local
-`127.0.0.1` endpoint is only for a client on the same machine. Run Node and a
+A remote plugin connection needs a reachable HTTPS service. The desktop
+launcher runs its backend on loopback for clients on the same machine. Run Node and a
 dedicated Blender process with a shared persistent run directory behind an HTTPS
 reverse proxy. Set `HOST=0.0.0.0`, `MCP_API_KEY`, and
 `PUBLIC_BASE_URL=https://YOUR_SERVICE_ORIGIN`; forward `Host` and
@@ -329,7 +399,8 @@ reverse proxy. Set `HOST=0.0.0.0`, `MCP_API_KEY`, and
 npm run configure -- https://YOUR_SERVICE_ORIGIN
 ```
 
-This updates both root `mcp.json` and `harnesses/claude-code/mcp.json`.
+This switches root `mcp.json` to the remote HTTP transport and updates
+`harnesses/claude-code/mcp.json` to the same endpoint.
 Keep the key in connection settings, outside manifests. The service supports
 fixed bearer-key authentication for private connections. It does not implement
 OAuth or public-directory submission, which needs a supported authentication
@@ -347,13 +418,15 @@ permissions, so use a dedicated account or container when hosting it.
 Scene metadata and reviewed checkpoints survive service restarts. An interrupted
 edit restores the pre-edit checkpoint when recovery succeeds. If a timed-out
 Blender operation continues or recovery fails, restart the dedicated bridge and
-service before resuming. This release has no multi-tenant isolation, job
-cancellation, or process supervisor.
+service before resuming. Run each deployment for a single trusted operator.
 
 The optional templates in [`harnesses/codex/agents/`](../harnesses/codex/agents/) can be copied into
 a Codex project's `.codex/agents/`; plugin installation does not register them.
-[`AGENTS.md`](../AGENTS.md) applies only when this repository is the working
-directory. The packaged Skills provide the reusable plugin instructions.
+Add the [scene project instructions](../harnesses/codex/scene-project/AGENTS.md)
+to the scene project's `AGENTS.md` so Codex sees the reference rules before its
+first update. Merge the rules into an existing file if the project has one.
+The repository's [contributor instructions](../AGENTS.md) apply to development
+in this checkout.
 
 ## Verify and package
 
@@ -381,6 +454,6 @@ To build a distributable archive:
 npm run pack:plugin
 ```
 
-The ZIP is written to `../UniBlenderScene.zip`. It excludes `.git`,
-`node_modules`, `.env`, and `.canova`. See the [validation results](validation.md)
-for checks performed on this release.
+The ZIP is written to `../UniBlenderScene.zip`. It includes the built viewer and
+production Node dependencies. The packaging step excludes `.git`, local
+environment files, and `.canova`.

@@ -8,6 +8,7 @@ import io
 import json
 import types
 import unittest
+import inspect
 
 _request = json.loads(__SKILL_REQUEST__)
 _results = []
@@ -18,6 +19,8 @@ for _fixture in _request['fixtures']:
     _tests.skill = _skill
     try:
         exec(compile(_request['code'], '<learned-skill>', 'exec'), _skill.__dict__)
+        if _request.get('kind') == 'spatial_score':
+            inspect.signature(_skill.score).bind({}, {})
         exec(compile(_fixture['code'], '<skill-fixture>', 'exec'), _tests.__dict__)
         _suite = unittest.defaultTestLoader.loadTestsFromModule(_tests)
         _report = unittest.TextTestRunner(stream=io.StringIO()).run(_suite)

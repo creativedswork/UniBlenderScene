@@ -5,6 +5,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { build } from "esbuild";
+import { PNG } from "pngjs";
 import { FloatType, Matrix4, Quaternion, Vector3 } from "three";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import type { ThreeRTInput } from "../../runtime/threert/scene.js";
@@ -71,7 +72,7 @@ export function cameraFromGLB(bytes: Buffer, cameraName?: string): ThreeRTInput[
     aspect: view.perspective.aspectRatio ?? 1, near: view.perspective.znear, far: view.perspective.zfar ?? 10000 };
 }
 
-/** ThreeRT reads geometry from glTF; the profile supplies its lights separately. */
+/** Native-only copy: profile lights replace glTF lights; unsupported 16-bit PNGs become RGBA8. */
 export function modelWithoutPunctualLights(bytes: Buffer): Buffer {
   const length = bytes.readUInt32LE(12);
   const gltf = JSON.parse(bytes.toString("utf8", 20, 20 + length));
@@ -85,9 +86,32 @@ export function modelWithoutPunctualLights(bytes: Buffer): Buffer {
     gltf[field] = gltf[field].filter((name: string) => name !== "KHR_lights_punctual");
     if (!gltf[field].length) delete gltf[field];
   }
+  let tail = bytes.subarray(20 + length);
+  const additions: Buffer[] = [];
+  let binaryLength = gltf.buffers?.[0]?.byteLength ?? 0;
+  for (const image of gltf.images ?? []) {
+    const view = gltf.bufferViews?.[image.bufferView];
+    if (!view || view.buffer !== 0 || tail.toString("ascii", 4, 8) !== "BIN\0") continue;
+    const png = tail.subarray(8 + (view.byteOffset ?? 0), 8 + (view.byteOffset ?? 0) + view.byteLength);
+    if (!png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || png[24] !== 16) continue;
+    // pngjs rescales samples without applying gamma; glTF texture semantics still set the color space.
+    const converted = PNG.sync.write(PNG.sync.read(png), { bitDepth: 8, colorType: 6 });
+    const padding = (4 - binaryLength % 4) % 4;
+    additions.push(Buffer.alloc(padding), converted);
+    image.bufferView = gltf.bufferViews.length;
+    gltf.bufferViews.push({ buffer: 0, byteOffset: binaryLength + padding, byteLength: converted.length });
+    binaryLength += padding + converted.length;
+  }
+  if (additions.length) {
+    const binary = Buffer.concat([tail.subarray(8, 8 + gltf.buffers[0].byteLength), ...additions,
+      Buffer.alloc((4 - binaryLength % 4) % 4)]);
+    const chunk = Buffer.alloc(8); chunk.writeUInt32LE(binary.length); chunk.write("BIN\0", 4);
+    tail = Buffer.concat([chunk, binary, tail.subarray(8 + tail.readUInt32LE(0))]);
+    gltf.buffers[0].byteLength = binaryLength;
+  }
   const text = Buffer.from(JSON.stringify(gltf)), json = Buffer.alloc(Math.ceil(text.length / 4) * 4, 0x20);
   text.copy(json);
-  const header = Buffer.from(bytes.subarray(0, 20)), tail = bytes.subarray(20 + length);
+  const header = Buffer.from(bytes.subarray(0, 20));
   header.writeUInt32LE(20 + json.length + tail.length, 8); header.writeUInt32LE(json.length, 12);
   return Buffer.concat([header, json, tail]);
 }
@@ -97,7 +121,27 @@ export async function renderThreeRT(directory: string, binary: string) {
   const profile = JSON.parse(await readFile(join(directory, "render-profile.json"), "utf8"));
   const glb = await readFile(join(directory, "final.glb"));
   const input: ThreeRTInput = { profile, camera: cameraFromGLB(glb, profile.camera?.name) };
-  const warnings: string[] = [];
+  const warnings: string[] = (Array.isArray(profile.warnings) ? profile.warnings : []).filter((warning: unknown): warning is string =>
+    typeof warning === "string" && !warning.startsWith("WebGL ") && !warning.startsWith("Three.js "));
+  const vfx = input.profile.vfx;
+  if (vfx?.volumes?.some(volume => volume.height || volume.noiseScale)) {
+    warnings.push("ThreeRT 使用原生雾近似 Blender 的逐层密度曲线和噪声。");
+  }
+  if (input.profile.postprocessing?.haze) {
+    const worldFog = vfx?.volumes?.some(volume => !volume.min || !volume.max);
+    warnings.push(worldFog ? "ThreeRT 优先使用世界雾，未叠加 Mist 深度合成。" : "ThreeRT 使用原生指数雾近似 Mist 深度合成。");
+  }
+  if (vfx?.precipitation?.some(effect => effect.kind === "rain")) {
+    warnings.push("ThreeRT 原生雨使用跟随相机的雨幕，Blender 的碰撞和飞溅未应用。");
+  }
+  if (vfx?.precipitation?.some(effect => effect.kind !== "rain") || vfx?.ripples?.length || vfx?.animation) {
+    warnings.push("当前 ThreeRT 预览保留静态材质和灯光，未重建非雨粒子、涟漪或采样动画。");
+  }
+  warnings.push(...(input.profile.effects?.issues ?? []).filter(issue => !issue.target || issue.target === "threeRT")
+    .map(issue => `${issue.object} · ${issue.effect}: ${issue.reason}`));
+  if (typeof profile.colorManagement.viewTransform === "string") {
+    warnings.push(`ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 ${profile.colorManagement.viewTransform} 显示 LUT。`);
+  }
   if (profile.world.environmentUri) {
     input.environment = environmentBands(await readFile(join(directory, "environment.exr")));
     warnings.push("环境贴图使用渐变天空近似。");

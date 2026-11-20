@@ -28,6 +28,49 @@ export function limitRasterLights(scene: THREE.Scene, camera: THREE.Camera, coun
   lights.sort((a, b) => b.score - a.score).slice(count).forEach(({ light }) => { light.visible = false; });
 }
 
+export function setPreviewLightEnergy(light: THREE.Light, energy: number) {
+  // Use the same source-energy conversion as the native preview. Three's
+  // SpotLight.power setter uses π, while the adapter uses 4π for local lamps.
+  if (light instanceof THREE.SpotLight) light.intensity = energy / (4 * Math.PI);
+  else if (light instanceof THREE.PointLight || light instanceof THREE.RectAreaLight) light.power = energy;
+  else light.intensity = energy;
+}
+
+/** Budget fragment samplers before the first WebGL draw, including offscreen captures. */
+export function limitPreviewShadows(scene: THREE.Scene, camera: THREE.Camera, maxSamplers: number, planarReflection: boolean) {
+  const eye = camera.getWorldPosition(new THREE.Vector3());
+  const position = new THREE.Vector3();
+  const shadows: { light: THREE.DirectionalLight | THREE.PointLight | THREE.SpotLight; score: number }[] = [];
+  const materials = new Set<THREE.MeshStandardMaterial>();
+  let areaLights = false, spotTextures = 0;
+  scene.traverseVisible(object => {
+    if (object instanceof THREE.Mesh && object.receiveShadow) {
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        if (material instanceof THREE.MeshStandardMaterial && material.visible) materials.add(material);
+      }
+    }
+    if (object instanceof THREE.RectAreaLight) areaLights = true;
+    if (object instanceof THREE.SpotLight && object.map) spotTextures++;
+    if (!(object instanceof THREE.DirectionalLight || object instanceof THREE.PointLight || object instanceof THREE.SpotLight) || !object.castShadow) return;
+    const distance = Math.max(1, object.getWorldPosition(position).distanceToSquared(eye));
+    const luminance = object.color.r * 0.2126 + object.color.g * 0.7152 + object.color.b * 0.0722;
+    shadows.push({ light: object, score: object instanceof THREE.DirectionalLight ? Infinity : object.intensity * luminance / distance });
+  });
+  let materialSamplers = 0;
+  for (const material of materials) {
+    // Packed glTF channels can use separate sampler uniforms for the same texture.
+    const maps = Object.values(material).filter(value => value instanceof THREE.Texture).length;
+    const environment = scene.environment && !material.envMap ? 1 : 0;
+    const transmission = material instanceof THREE.MeshPhysicalMaterial && material.transmission > 0 ? 1 : 0;
+    materialSamplers = Math.max(materialSamplers, maps + environment + transmission);
+  }
+  const reserved = materialSamplers + (areaLights ? 2 : 0) + spotTextures + (planarReflection ? 1 : 0);
+  const count = Math.min(shadows.length, Math.max(0, maxSamplers - reserved));
+  shadows.sort((a, b) => b.score - a.score);
+  for (const { light } of shadows.slice(count)) light.castShadow = false;
+  return count;
+}
+
 function belongsTo(mesh: THREE.Object3D, name: string): boolean {
   for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
     if (normalized(node.name) === normalized(name)) return true;

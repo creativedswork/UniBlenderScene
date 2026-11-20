@@ -11,6 +11,7 @@ const root = resolve(evidence);
 const snapshot = JSON.parse(await readFile(resolve(root, "scene.json"), "utf8"));
 const reviewSnapshot = JSON.parse(await readFile(resolve(root, "composition.json"), "utf8"));
 const workSnapshot = JSON.parse(await readFile(resolve(root, "geometry.json"), "utf8"));
+const cameraSnapshot = JSON.parse(await readFile(resolve(root, "reference-camera-scene.json"), "utf8"));
 const lightmapSnapshot = JSON.parse(await readFile(resolve(root, "lightmap-scene.json"), "utf8"));
 const files = new Map<string, string>();
 const include = (url: string | null) => {
@@ -28,6 +29,9 @@ include(workSnapshot.renderUrl); include(workSnapshot.bestRenderUrl);
 workSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
 include(lightmapSnapshot.renderUrl); include(lightmapSnapshot.bestRenderUrl);
 lightmapSnapshot.artifacts.forEach((item: {url: string}) => include(item.url));
+include(cameraSnapshot.renderUrl);
+cameraSnapshot.references.forEach((image: { url: string }) => include(image.url));
+cameraSnapshot.referenceCameras.forEach((view: { renderUrl: string }) => include(view.renderUrl));
 const host = await build({ entryPoints: ["tests/viewer-host.ts"], bundle: true, platform: "browser", format: "esm", write: false });
 const widget = await readFile("dist/widget.html");
 const nativeClient = await build({ stdin: { contents: `import { connectThreeRT } from './src/viewer/threert-live.ts';
@@ -65,13 +69,14 @@ const server = createServer(async (request, response) => {
       }).end(widget.toString().replace("<head>", `<head><script>window.openai={uploadFile:async(file)=>({fileId:file.name}),getFileDownloadUrl:async({fileId})=>({downloadUrl:'https://files.oaiusercontent.com/'+encodeURIComponent(fileId)})};</script>`));
     } else if (path === "/scene") {
       const query = new URL(request.url!, "http://localhost").searchParams;
-      const selected = query.has("lightmap") ? lightmapSnapshot : query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
+      const selected = query.has("cameras") ? cameraSnapshot : query.has("lightmap") ? lightmapSnapshot : query.has("review") ? reviewSnapshot : query.has("work") ? workSnapshot : snapshot;
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       const rewrite = (url: string | null) => url ? `${origin}${new URL(url).pathname}` : null;
       response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
         ...selected, renderUrl: rewrite(selected.renderUrl), bestRenderUrl: rewrite(selected.bestRenderUrl),
         reference: selected.reference ? { ...selected.reference, url: rewrite(selected.reference.url) } : null,
         references: selected.references?.map((image: { url: string }) => ({ ...image, url: rewrite(image.url) })),
+        referenceCameras: selected.referenceCameras?.map((view: { renderUrl: string | null }) => ({ ...view, renderUrl: rewrite(view.renderUrl) })),
         artifacts: selected.artifacts.map((item: { name: string; url: string }) => ({ ...item, url: rewrite(item.url) })),
       }));
     } else if (files.has(path)) {
@@ -88,9 +93,23 @@ try {
   const page = await browser.newPage({ viewport: { width: 960, height: 780 } });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (entry) => { if (entry.type() === "error") console.error(entry.text()); });
-  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
+  page.on("console", entry => {
+    if (entry.type() !== "error") return;
+    if (entry.text().includes("Shader Error")) errors.push(entry.text());
+    console.error(entry.text());
+  });
   const frame = page.frameLocator("#viewer");
+  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/?cameras=1`);
+  await frame.locator("#reference-select").selectOption("reference-5");
+  await frame.locator("#reference-open").click();
+  await frame.locator("#reference-match").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    const img = frame.contentDocument?.querySelector("#reference-match") as HTMLImageElement;
+    return img?.naturalWidth === 96 && img.naturalHeight === 64;
+  });
+  await page.screenshot({ path: resolve(root, "viewer-reference-camera.png") });
+  await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
   await frame.getByRole("button", { name: "3D", exact: true }).waitFor({ state: "visible" });
   try {
     await page.waitForFunction(() => {
@@ -155,7 +174,7 @@ try {
   }, undefined, { timeout: 60000 });
   assert.equal(await canvas.getAttribute("data-bounces"), "8");
   assert.equal(await canvas.getAttribute("data-display-transform"), "blender-lut");
-  assert.equal(await canvas.getAttribute("data-effects"), "bloom,haze,dust");
+  assert.equal(await canvas.getAttribute("data-effects"), "bloom,haze,dust,volumes,sun-shafts");
   assert.equal(await canvas.getAttribute("data-dust-lighting"), "sun-shadow");
   await canvas.screenshot({ path: resolve(root, "viewer-3d.png") });
   const first = await canvas.screenshot();
@@ -235,11 +254,11 @@ try {
   const inputBytes = await readFile(resolve(root, "render.png"));
   const imageFile = (name: string) => ({ name, mimeType: "image/png", buffer: inputBytes });
   await frame.locator("#file").setInputFiles([imageFile("front.png"), imageFile("side.png")]);
-  await frame.getByRole("combobox", { name: "Primary view for a new scene" }).selectOption("1");
   await frame.getByRole("button", { name: "Create scene", exact: true }).click();
   await page.waitForFunction(() => document.getElementById("sent")?.dataset.submission?.includes("scene_create"));
   const created = JSON.parse((await page.locator("#sent").getAttribute("data-submission"))!);
-  assert.deepEqual(created.arguments.references.map((image: { file_name: string }) => image.file_name), ["side.png", "front.png"]);
+  assert.deepEqual(created.arguments.references.map((image: { file_name: string; attachmentNumber: number }) =>
+    [image.file_name, image.attachmentNumber]), [["front.png", 1], ["side.png", 2]]);
   await frame.locator("#file").setInputFiles(Array.from({ length: 5 }, (_, index) => imageFile(`extra-${index}.png`)));
   await frame.getByRole("button", { name: "Add views to this scene" }).click();
   await frame.getByText("A scene can have at most 6 reference images in total.", { exact: true }).waitFor();
@@ -250,6 +269,7 @@ try {
   const appended = JSON.parse((await page.locator("#sent").getAttribute("data-submission"))!);
   assert.equal(appended.arguments.sceneId, snapshot.id);
   assert.equal(appended.arguments.references[0].file_name, "back.png");
+  assert.equal(appended.arguments.references[0].attachmentNumber, 1);
   await frame.locator("#file").setInputFiles(Array.from({ length: 7 }, (_, index) => imageFile(`image-${index}.png`)));
   await frame.getByText("Use up to 6 PNG, JPEG or WebP images, each at most 20 MB.", { exact: true }).waitFor();
   assert.equal(await frame.locator("#reference-upload").isVisible(), false);
@@ -295,7 +315,8 @@ try {
   await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?lightmap=1`);
   await page.waitForFunction(() => {
     const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("#canvas canvas");
-    return canvas?.getAttribute("data-renderer") === "raster" && Number(canvas.getAttribute("data-frame")) >= 1;
+    return canvas?.getAttribute("data-renderer") === "raster" &&
+      canvas.getAttribute("data-effects")?.includes("weather") && Number(canvas.getAttribute("data-frame")) >= 3;
   }, undefined, { timeout: 60000 });
   assert.equal(await frame.locator("#canvas canvas").getAttribute("data-samples"), "0");
   await frame.locator("#canvas canvas").screenshot({ path: resolve(root, "viewer-lightmap.png") });

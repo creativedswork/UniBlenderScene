@@ -3,7 +3,10 @@
 This plugin packages the same Scenario Blender knowledge revision used by the
 Canova runtime (`e24bc7d40be97b428e7b9fd467c415366e1dd974`). The original
 files, helper source, license, and checksums are in [scenario](../../scenario/source.json).
-Each Scenario domain is a top-level Skill installed beside `blender-scene`.
+Selected EL4CTEO Blender Skills add environment and surface effects, pinned in
+[their source manifest](../../blender-effects/source.json) under the
+[MIT license](../../blender-effects/LICENSE).
+Each domain is a top-level Skill installed beside `blender-scene`.
 Load the smallest relevant domain for the current task; its `SKILL.md` states
 the relationship to this plugin and selects the upstream technique references.
 
@@ -14,6 +17,9 @@ the relationship to this plugin and selects the upstream technique references.
 | Fabric, organic silhouettes, and soft forms | [sculpting](../../scenario-blender-sculpting/SKILL.md) |
 | PBR surfaces and texture color spaces | [texturing and shading](../../scenario-blender-texturing-shading/SKILL.md) |
 | Light direction, contact shadows, exposure, and color | [lighting and rendering](../../scenario-blender-lighting-rendering/SKILL.md) |
+| Day/night, sunset, fog, god rays or preset environment moods | [time of day](../../blender-time-of-day/SKILL.md) |
+| Rain/snow, wetness, puddles, ripples, snow cover or lightning | [weather effects](../../blender-weather-fx/SKILL.md) |
+| Repeatable wear, rust, grime, dust or decals on an existing base material | [surface texturing](../../blender-texturing/SKILL.md) |
 | Repeated structures and procedural geometry | [geometry nodes](../../scenario-blender-geometry-nodes/SKILL.md) |
 | UV layout and texture baking | [UV and baking](../../scenario-blender-uv-baking/SKILL.md) |
 | Imported mesh cleanup or polygon budget | [retopology](../../scenario-blender-retopology/SKILL.md) |
@@ -31,7 +37,7 @@ and check the active Blender version before using version-specific APIs.
 
 ## Adapter to this plugin
 
-Scenario files are production knowledge, not an alternative runtime. Keep scene
+Scenario and EL4CTEO files are production knowledge, not alternative runtimes. Keep scene
 creation, edits, checkpoints, rendering, review, and export inside this plugin's
 `scene_*` tools and dedicated Blender bridge. In particular:
 
@@ -44,9 +50,15 @@ creation, edits, checkpoints, rendering, review, and export inside this plugin's
 | Historical best and rollback | `SceneStore` review state |
 | Deliverable export | `scene_export` |
 
-Do not run Scenario's separate MCP tools, stage loops, background Blender
+Do not use upstream MCP tools, stage loops, background Blender
 processes, or helper scripts that save, render, or export. Helper source is
 included for provenance and technique inspection. If adapting a helper into
 `scene_edit`, use only the needed supported `bpy` operations and keep the edit
 within the task scene. Upstream Blender 5.2 advice must be checked against the
 actual Blender version before use.
+
+For EL4CTEO effects, read the [effects adapter](../../blender-effects/adapter.md)
+before construction. It assigns geometry, material and lighting changes to their
+stages and describes version checks and GLB limitations. Use Scenario for detailed
+lighting critique and custom shading; load the effect Skill only for the requested
+environment or surface operation.
