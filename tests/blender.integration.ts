@@ -119,7 +119,7 @@ try {
   const denied = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 401);
   await client.connect(transport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 24);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 25);
   const widget = await client.readResource({ uri: "ui://uni-blender-scene/viewer.html" });
   assert.ok("text" in widget.contents[0]! && widget.contents[0]!.text.includes("Blender scene"));
   const cameraInputs = await Promise.all([1, 2, 3, 4, 5].map(async attachmentNumber => {
@@ -605,11 +605,19 @@ bpy.context.object.name = "Test pool"
     assert.equal(chunk.isError, undefined);
     assert.ok((chunk.structuredContent as { size: number }).size > 1000);
   }
+  const roughness = { target: "materialInput", material: "Red", node: "Principled BSDF", socket: "Roughness", value: 0.7 };
+  const appearanceCandidates = [{ mode: "tweak", label: "Increase roughness", tweaks: [roughness] },
+    { mode: "leap", label: "Change output crop", code: "bpy.context.scene.render.use_border = True" }];
+  assert.equal((await call("scene_appearance_search", { sceneId: stagedId, candidates: appearanceCandidates })).isError, true);
   const approval = await call("scene_review_decision", { sceneId: stagedId, approved: true });
   assert.equal(approval.structuredContent?.stage, "edit");
   await call("scene_edit",{sceneId:stagedId,code:"bpy.context.scene.camera.location.x += 1"});
   assert.match((await poll(stagedId,"failed")).error,/frozen placement/);
-  await call("scene_edit", { sceneId: stagedId, code: `
+  await call("scene_edit", { sceneId: stagedId, tweaks: [{ ...roughness, value: [0.2, 0.3] }] });
+  assert.match((await poll(stagedId, "failed")).error, /match the property dimensions/);
+  const blendPath = join(root, ".canova/runs", stagedId, "current.blend");
+  const beforeAppearance = await readFile(blendPath);
+  const leap = { mode: "leap", label: "Add procedural ripples", code: `
 assert bpy.data.objects['RedCube'].data.materials[0].name == 'Red'
 assert bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value[0] > 0.5
 bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value = 0.45
@@ -626,9 +634,33 @@ bump = tree.nodes.new('ShaderNodeBump')
 bump.inputs['Distance'].default_value = 0.025
 tree.links.new(noise.outputs['Fac'], bump.inputs['Height'])
 tree.links.new(bump.outputs['Normal'], pbr.inputs['Normal'])
-` });
+` };
+  const searching = await call("scene_appearance_search", {
+    sceneId: stagedId, candidates: [...appearanceCandidates, leap],
+  });
+  assert.equal(searching.isError, undefined, JSON.stringify(searching.content));
+  const searched = await poll(stagedId);
+  assert.equal(searched.iteration, 2);
+  assert.equal(searched.stageAllowances.materials.spent, 0);
+  assert.deepEqual(await readFile(blendPath), beforeAppearance);
+  const search = searched.appearanceSearch;
+  assert.match(search.candidates[2].error, /preserve the active camera, frame, crop and render settings/);
+  assert.equal((await call("scene_appearance_search", { sceneId: stagedId, candidates: appearanceCandidates })).isError, true);
+  const previews = await call("scene_get", { sceneId: stagedId, images: "appearance" });
+  const previewImages = previews.content.filter(block => block.type === "image");
+  assert.equal(previewImages.length, 3);
+  assert.notEqual(previewImages[0]!.data, previewImages[1]!.data);
+  const selectAppearance = (candidateId: string) =>
+    call("scene_appearance_search", { sceneId: stagedId, selection: { searchId: search.id, candidateId } });
+  assert.equal((await selectAppearance("candidate-2")).isError, true);
+  assert.equal((await selectAppearance("candidate-3")).isError, undefined);
+  const applied = await poll(stagedId);
+  assert.equal(applied.stage, "review");
+  assert.equal(applied.stageAllowances.materials.spent, 1);
+  assert.equal(applied.appearanceSearch, undefined);
+  assert.ok(applied.summary.objects.some((object: { materials: string[] }) => object.materials.includes("Pool with procedural ripples")));
   await poll(stagedId);await reviewFixture(stagedReview(3));
-  await call("scene_edit",{sceneId:stagedId,code:"bpy.data.materials['Red'].node_tree.nodes.get('Principled BSDF').inputs['Roughness'].default_value=0.2"});
+  await call("scene_edit", { sceneId: stagedId, tweaks: [roughness] });
   assert.match((await poll(stagedId,"failed")).error,/frozen materials/);
   await call("scene_edit", { sceneId: stagedId, code: `
 key = bpy.data.objects["Key"].data

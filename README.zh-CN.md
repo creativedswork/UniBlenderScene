@@ -59,7 +59,7 @@ ThreeRT 图使用简化的树木几何，并按 Blender 的取景裁切。不同
 1. **规划：** 明确主要物体、空间关系和视觉目标。
 2. **构建：** 先搭建完整场景，再细化几何与构图。
 3. **确认：** 从多个视角检查灰模场景，确认构图后再开始制作材质和灯光。
-4. **细化：** 添加材质与灯光，每轮修改后渲染并复核。
+4. **细化：** 用 Leap 改结构，用 Tweak 调整已有参数。材质或灯光有多个可行方向时，从同一检查点渲染候选方案，与原版比较后再选一个进入正式复核。
 5. **交付：** 将复核后的最佳检查点导出为渲染图、`.blend` 和 GLB。
 
 Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存检查点并跟踪复核进度。详见[工作流设计](docs/scene-generation-preview.md)。
@@ -88,12 +88,15 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 
 想快速漫游、检查物体摆放时，在预览器中切换到 **Three.js · 网页交互**；选择 **Render** 可对照 Blender 渲染图。不同预览模式的外观可能有差异，确认最终效果时以 Blender 渲染图为准。
 
+本机场景的 3D 预览准备好后，点击 **在浏览器中打开**，就能在 Chrome 中查看同一场景。
+
 ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘焙天空全景时，原生客户端会用它显示背景。进展见[上游 HDRI 支持请求](https://github.com/meshy-dev/ThreeRT/issues/178)。
 
 对于静态场景，可以让 Agent 优化浏览器预览，让漫游更流畅。ThreeRT 不可用时，仍可通过 Three.js 浏览场景。启用方式见[预览配置](docs/operations.md#threert-setup-and-limits)。
 
 ## 相关研究
 
+- [BlenderAlchemy: Editing 3D Graphics with Vision-Language Models](https://arxiv.org/abs/2404.17672)（Huang 等，2024）为本插件的 Leap 和 Tweak 编辑方式以及材质和灯光阶段的候选搜索提供了参考。
 - [VIGA: Vision-as-Inverse-Graphics Agent via Interleaved Multimodal Reasoning](https://arxiv.org/abs/2601.11109)（Yin 等，2026）通过生成代码、渲染、观察和修正的循环，从图片重建可编辑场景。其视觉反馈方法与本插件的场景复核流程相关。
 - [SceneCraft: An LLM Agent for Synthesizing 3D Scene as Blender Code](https://arxiv.org/abs/2403.01248)（Hu 等，2024）通过场景规划、Blender Python 生成和渲染反馈来细化 3D 场景。
 

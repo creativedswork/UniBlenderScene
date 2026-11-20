@@ -173,8 +173,13 @@ evidence through the service or report that it is not ready.
    [asset workflow](references/assets.md#parallel-generation). Resolve every
    required asset before the first `scene_edit`; Blender assembly stays serial.
 5. Read [Blender code guidance](references/blender-code.md) and the selected
-   production domain's procedures before its edit. Call `scene_edit` with one
-   bounded, complete executable `bpy` change. Configure an active camera,
+   production domain's procedures before its edit. In `scene_edit`, supply
+   `code` for a Leap when the fix needs to change the structure. Use `tweaks`
+   when the structure works and the fix only needs numeric changes to an
+   existing object transform, unlinked material or world input, light setting,
+   or exposure. Use Blender units and radians. In materials or lighting, use
+   [appearance search](#appearance-search) when two or three distinct
+   corrections need a direct render comparison. Configure an active camera,
    lights, materials, and render settings. For a reference scene, match the
    reference aspect ratio before measuring anchors. Preserve unrelated geometry
    when refining a scene.
@@ -314,6 +319,24 @@ If file writing or context switching is unavailable, return the handoff text
 and ask the operator to save it and open a fresh conversation.
 Do not restart the scene, reset stage budgets, or record approval during a
 conversation handoff. Do not use `scene_continue` merely to change conversations.
+
+## Appearance search
+
+Use the current-stage evidence to propose two or three distinct candidates.
+Submit them together with `scene_appearance_search`, using a descriptive
+`label` and either `mode: "leap"` with `code` or `mode: "tweak"` with
+`tweaks`. The service renders each from the current checkpoint and includes
+the unchanged baseline. Keep the camera, frame, crop and render settings
+consistent. Use the existing material in a lighting trial and the existing
+lighting in a material trial.
+
+Poll `scene_get` with `images: "none"` until the search completes. Read
+`images: "appearance"` once, compare the valid previews with the baseline
+against the current criteria and reference, and choose the best supported result.
+Select `baseline` if none improve it. Call `scene_appearance_search` with
+`selection: { searchId, candidateId }` using `appearanceSearch.id` and the
+chosen ID. This spends one edit round. Inspect the full render and submit the
+normal `scene_review` before making another edit or searching again.
 
 ## Explicit finite revisions
 

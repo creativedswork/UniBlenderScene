@@ -75,7 +75,9 @@ The [scene Skill](skills/blender-scene/SKILL.md) guides a staged process:
 2. **Build:** establish the full scene, then refine geometry and composition.
 3. **Confirm:** review the gray scene from multiple views and approve composition
    before materials and lighting begin.
-4. **Refine:** add materials and lighting, rendering and checking each iteration.
+4. **Refine:** use Leap for structural changes and Tweak for existing parameters.
+   Compare material or lighting candidates against the same baseline when several
+   directions are plausible, then render and review the selected edit.
 5. **Deliver:** export the best reviewed checkpoint as a render, `.blend` and GLB.
 
 The agent supplies planning and visual judgment; the service executes Blender
@@ -127,6 +129,9 @@ See [preview setup](docs/operations.md#threert-setup-and-limits) to enable Three
 
 ## Related research
 
+- [BlenderAlchemy: Editing 3D Graphics with Vision-Language Models](https://arxiv.org/abs/2404.17672)
+  (Huang et al., 2024) inspired the plugin's Leap and Tweak edits and its
+  candidate search for materials and lighting.
 - [VIGA: Vision-as-Inverse-Graphics Agent via Interleaved Multimodal Reasoning](https://arxiv.org/abs/2601.11109)
   (Yin et al., 2026) describes a code, render, inspect, and revise loop for
   reconstructing editable scenes from images. Its visual feedback approach is
