@@ -96,7 +96,7 @@ ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘�
 
 ## 相关研究
 
-- 本插件的 Leap 和 Tweak 编辑方式，以及材质和灯光阶段的候选搜索，借鉴了 BlenderAlchemy（Huang 等，2024）。 [论文](https://arxiv.org/abs/2404.17672)
+- [BlenderAlchemy: Editing 3D Graphics with Vision-Language Models](https://arxiv.org/abs/2404.17672)（Huang 等，2024）为本插件的 Leap 和 Tweak 编辑方式以及材质和灯光阶段的候选搜索提供了参考。
 - [VIGA: Vision-as-Inverse-Graphics Agent via Interleaved Multimodal Reasoning](https://arxiv.org/abs/2601.11109)（Yin 等，2026）通过生成代码、渲染、观察和修正的循环，从图片重建可编辑场景。其视觉反馈方法与本插件的场景复核流程相关。
 - [SceneCraft: An LLM Agent for Synthesizing 3D Scene as Blender Code](https://arxiv.org/abs/2403.01248)（Hu 等，2024）通过场景规划、Blender Python 生成和渲染反馈来细化 3D 场景。
 
