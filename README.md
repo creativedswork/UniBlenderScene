@@ -129,6 +129,8 @@ See [preview setup](docs/operations.md#threert-setup-and-limits) to enable Three
 
 ## Related research
 
+- BlenderAlchemy (Huang et al., 2024) inspired the plugin's Leap and Tweak edits
+  and its candidate search for materials and lighting. [Paper](https://arxiv.org/abs/2404.17672)
 - [VIGA: Vision-as-Inverse-Graphics Agent via Interleaved Multimodal Reasoning](https://arxiv.org/abs/2601.11109)
   (Yin et al., 2026) describes a code, render, inspect, and revise loop for
   reconstructing editable scenes from images. Its visual feedback approach is
