@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { basename, delimiter, isAbsolute, relative, resolve, sep } from "node:path";
 import { open, readFile, realpath } from "node:fs/promises";
 import { BlenderClient, factorGuardCode, inspectObjectCode, referenceCamerasCode, referenceRendersCode, renderCode, sceneSummaryCode, structuralShadingCode } from "./blender.js";
+import { appearancePreviewCode, comparisonFrameCode, tweakCode, type AppearanceCandidate } from "./appearance.js";
 import { writeGraphExport } from "./graph-export.js";
 import { checkRelations, relationsForScope, validateRelations, verifyRelationReviews, type SceneRelation, type RelationCheck, type RelationReview, type SpatialScore } from "./relations.js";
 import { builtinSpatialSource, spatialEvaluationCode, spatialOptimizeCode, type SpatialLibrary, type SpatialRequest, type LayoutSearch } from "./spatial.js";
@@ -65,6 +66,10 @@ export type Review = {
   repairs?: string[];
 };
 type Job = { id: string; kind: string; status: "queued" | "running" | "done" | "failed"; error?: string };
+type AppearanceSearch = {
+  id: string; phase: "materials" | "lighting"; iteration: number; sourceHash: string;
+  candidates: { id: string; label: string; mode: "baseline" | AppearanceCandidate["mode"]; error?: string }[];
+};
 export type PreviewAppearance = {
   renderMode?: "pathtracing" | "raster";
   planarReflection?: string;
@@ -96,6 +101,7 @@ export type Scene = {
   compositionRevalidation?: boolean;
   assetStrategyHistory?: { revisionId?: string; strategy: AssetStrategy }[];
   pendingAttempt?: { revisionId?: string; phase?: StageName; previousContentIteration: number };
+  appearanceSearch?: AppearanceSearch;
   exportLighting?: LightingBake[];
   bake?: BakeResult & { iteration: number };
   exportVersion?: string;
@@ -757,8 +763,7 @@ ${sceneSummaryCode()}`);
     return this.edit(id, spatialOptimizeCode(request, { ...options, relationIds }));
   }
 
-  edit(id: string, code: string): Scene {
-    const scene = this.get(id);
+  private checkEdit(scene: Scene): StageName | undefined {
     this.idle(scene);
     if (scene.stage !== "edit" || !scene.plan) throw new Error("Plan and review must precede further edits.");
     if (!scene.graphReview?.checks.every((c) => c.passed)) throw new Error("A read-only Scene Graph review must pass before scene editing.");
@@ -774,8 +779,95 @@ ${sceneSummaryCode()}`);
     }
     const { spent, limit } = this.attemptLimit(scene);
     if (spent >= limit) throw new Error("Stage edit budget reached. An explicit scene_revise grant is required for additional rounds.");
+    return activeStage;
+  }
+
+  private activeAppearanceSearch(scene: Scene): AppearanceSearch | undefined {
+    const search = scene.appearanceSearch;
+    if (scene.stage === "edit" && search?.iteration === scene.iteration && search.phase === this.workflowState(scene).phase) {
+      return search;
+    }
+  }
+
+  appearanceImages(scene: Scene): { id: string; label: string; file: string }[] {
+    const search = this.activeAppearanceSearch(scene);
+    return search?.candidates.filter(candidate => !candidate.error).map(({ id, label }) => ({
+      id, label, file: `appearance/${search.id}/${id}.png`,
+    })) ?? [];
+  }
+
+  searchAppearance(id: string, candidates: AppearanceCandidate[]): Scene {
+    const scene = this.get(id);
+    const phase = this.checkEdit(scene);
+    if (phase !== "materials" && phase !== "lighting") throw new Error("Search appearance during the materials or lighting stage.");
+    if (this.activeAppearanceSearch(scene)) throw new Error("An appearance search is ready. Select a candidate or make a regular edit.");
+    const current = this.path(scene, "current.blend");
+    const search: AppearanceSearch = { id: randomUUID(), phase, iteration: scene.iteration, sourceHash: fileHash(current),
+      candidates: [{ id: "baseline", label: "Current scene", mode: "baseline" }] };
+    const directory = this.path(scene, `appearance/${search.id}`);
+    const loadSource = `bpy.ops.wm.open_mainfile(filepath=${py(current)})`;
+    const [beforeGuard, afterGuard] = factorGuardCode(phase);
+    this.enqueue(scene, "appearance_search", async () => {
+      mkdirSync(directory, { recursive: true });
+      try {
+        await this.blender.execute(`${loadSource}\n${appearancePreviewCode(resolve(directory, "baseline.png"))}`);
+        for (const [index, candidate] of candidates.entries()) {
+          const entry: AppearanceSearch["candidates"][number] = {
+            id: `candidate-${index + 1}`, label: candidate.label, mode: candidate.mode,
+          };
+          search.candidates.push(entry);
+          const code = candidate.mode === "leap" ? candidate.code : tweakCode(candidate.tweaks);
+          try {
+            await this.blender.execute(`
+${loadSource}
+${beforeGuard}
+${comparisonFrameCode()}
+_source_frame = _appearance_frame()
+${code}
+${afterGuard}
+if _appearance_frame() != _source_frame:
+    raise RuntimeError('Appearance search must preserve the active camera, frame, crop and render settings')
+bpy.ops.wm.save_as_mainfile(filepath=${py(resolve(directory, entry.id + ".blend"))}, copy=True)
+${appearancePreviewCode(resolve(directory, entry.id + ".png"))}
+`);
+            writeFileSync(resolve(directory, entry.id + ".py"), code);
+          } catch (error) {
+            entry.error = error instanceof Error ? error.message : String(error);
+          }
+        }
+      } finally {
+        try {
+          await this.blender.execute(loadSource);
+        } catch {
+          this.recoveryRequired = true;
+          throw new Error("Blender recovery failed. Restart the dedicated bridge and service before continuing.");
+        }
+      }
+      scene.appearanceSearch = search;
+    });
+    return scene;
+  }
+
+  selectAppearance(id: string, searchId: string, candidateId: string): Scene {
+    const scene = this.get(id);
+    this.idle(scene);
+    const search = this.activeAppearanceSearch(scene);
+    if (!search || search.id !== searchId || search.sourceHash !== fileHash(this.path(scene, "current.blend"))) {
+      throw new Error("Appearance search does not match the current scene.");
+    }
+    if (!search.candidates.some(item => item.id === candidateId && !item.error)) {
+      throw new Error("The selected appearance candidate is unavailable.");
+    }
+    const code = candidateId === "baseline" ? "# Keep the appearance search baseline." :
+      `bpy.ops.wm.open_mainfile(filepath=${py(this.path(scene, `appearance/${search.id}/${candidateId}.blend`))})`;
+    return this.edit(id, code);
+  }
+
+  edit(id: string, code: string): Scene {
+    const scene = this.get(id);
+    const activeStage = this.checkEdit(scene);
     const revision = this.activeRevision(scene);
-    const scoring = scene.plan.relations?.length ? this.spatialRequest(scene) : undefined;
+    const scoring = scene.plan?.relations?.length ? this.spatialRequest(scene) : undefined;
     delete scene.previewedIteration;
     delete scene.reviewEvidence;
     this.enqueue(scene, "edit", async () => {
@@ -830,6 +922,7 @@ ${scoring ? spatialEvaluationCode(scoring) : ""}`);
           scene.stageAllowances[activeStage as StageName]!.spent!++;
         }
         scene.stage = "review";
+        delete scene.appearanceSearch;
         delete scene.pendingIteration;
         delete scene.pendingAttempt;
       } catch (error) {
@@ -1461,7 +1554,7 @@ result = {"reviewViews": 5}
     const workingRender = target.source === "current" && scene.renderMode === target.mode &&
       scene.render?.match(/iteration-(\d+)\.png$/)?.[1] === String(target.iteration) ? scene.render : undefined;
     const files = [...this.referenceImages(scene).map((reference) => reference.assetName), this.renderFile(scene),
-      workingRender, ...this.referenceCameraFiles(scene).map(view => view.file),
+      workingRender, ...this.referenceCameraFiles(scene).map(view => view.file), ...this.appearanceImages(scene).map(image => image.file),
       ...(this.reviewViewsReady(scene) ? scene.reviewViews ?? [] : []),
       scene.best && "best.blend", scene.best && "best.png"];
     const directory = scene.exportedIteration !== undefined && scene.exportedIteration === scene.best?.iteration ?

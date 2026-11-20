@@ -75,7 +75,9 @@ The [scene Skill](skills/blender-scene/SKILL.md) guides a staged process:
 2. **Build:** establish the full scene, then refine geometry and composition.
 3. **Confirm:** review the gray scene from multiple views and approve composition
    before materials and lighting begin.
-4. **Refine:** add materials and lighting, rendering and checking each iteration.
+4. **Refine:** use Leap for structural changes and Tweak for existing parameters.
+   Compare material or lighting candidates against the same baseline when several
+   directions are plausible, then render and review the selected edit.
 5. **Deliver:** export the best reviewed checkpoint as a render, `.blend` and GLB.
 
 The agent supplies planning and visual judgment; the service executes Blender
