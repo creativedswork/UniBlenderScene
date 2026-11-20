@@ -37,7 +37,7 @@
   </tr>
 </table>
 
-ThreeRT 图使用了简化后的树木几何。不同渲染器的雾、阴影和倒影表现有所差异。
+ThreeRT 图使用简化的树木几何，并按 Blender 的取景裁切。不同渲染器的雾、阴影和倒影表现有所差异。
 
 ## 插件包含什么
 
@@ -86,6 +86,8 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 通过 ThreeRT 从不同视角浏览完成的场景，检查灯光、材质和空间层次。ThreeRT 可用时，完成的场景会默认打开这一预览模式。
 
 想快速漫游、检查物体摆放时，在预览器中切换到 **Three.js · 网页交互**；选择 **Render** 可对照 Blender 渲染图。不同预览模式的外观可能有差异，确认最终效果时以 Blender 渲染图为准。
+
+ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘焙天空全景时，原生客户端会用它显示背景。进展见[上游 HDRI 支持请求](https://github.com/meshy-dev/ThreeRT/issues/178)。
 
 对于静态场景，可以让 Agent 优化浏览器预览，让漫游更流畅。ThreeRT 不可用时，仍可通过 Three.js 浏览场景。启用方式见[预览配置](docs/operations.md#threert-setup-and-limits)。
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BlenderClient } from "../src/service/blender.js";
@@ -9,6 +9,8 @@ import { cameraFromGLB, modelWithoutPunctualLights, renderThreeRT } from "../src
 import { buildThreeRTScene, type ThreeRTInput } from "../runtime/threert/scene.js";
 import { DirectionalLight, FogVolume, HomogeneousVolume, RainCurtain, VolumeMesh } from "@threert/scene";
 import { PNG } from "pngjs";
+import { DataTexture, FloatType, RGBAFormat } from "three";
+import { EXRExporter, NO_COMPRESSION } from "three/addons/exporters/EXRExporter.js";
 
 function glb(cameraType = "perspective") {
   const text = JSON.stringify({ nodes: [{ translation: [10, 0, 0], children: [1] },
@@ -23,6 +25,40 @@ function glb(cameraType = "perspective") {
 const profile = { colorManagement: { exposure: 0.65 }, render: { resolutionX: 1280, resolutionY: 640 },
   camera: { name: "Main" }, world: { color: [0.1, 0.1, 0.1], strength: 1 }, lights: [],
   previewAppearance: { dust: { color: [0.8, 0.7, 0.6], volumes: [{ center: [2, 3, 4], radius: [5, 6, 7], density: 0.1 }] } } };
+
+test("native visible sky preserves panorama orientation and radiance separately from ambient lighting", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "threert-sky-"));
+  const cli = join(directory, "threert");
+  const data = new Float32Array([
+    0.25, 0, 0, 1, 0.5, 0, 0, 1,
+    0, 0.25, 0, 1, 0, 0.5, 0, 1,
+    0, 0, 1, 1, 0, 0, 2, 1,
+  ]);
+  const sky = new DataTexture(data, 2, 3, RGBAFormat, FloatType);
+  const exr = Buffer.from(await new EXRExporter().parse(sky, { compression: NO_COMPRESSION, type: FloatType }));
+  const stubImage = PNG.sync.write(new PNG({ width: 1, height: 1 })).toString("base64");
+  writeFileSync(cli, `#!/usr/bin/env node
+require("node:fs").writeFileSync(process.argv[process.argv.indexOf("-o") + 1], Buffer.from("${stubImage}", "base64"));
+`, { mode: 0o755 });
+  try {
+    writeFileSync(join(directory, "final.glb"), glb());
+    writeFileSync(join(directory, "environment.exr"), exr);
+    writeFileSync(join(directory, "render-profile.json"), JSON.stringify({ ...profile, world: { ...profile.world,
+      environmentUri: "environment.exr", backgroundEnvironmentUri: `data:application/octet-stream;base64,${exr.toString("base64")}`,
+      environmentRotationY: Math.PI / 2 } }));
+    await renderThreeRT(directory, cli);
+    const input: ThreeRTInput = JSON.parse(readFileSync(join(directory, "input.json"), "utf8"));
+    assert.deepEqual(input.environment, { zenith: [0, 0, 1.5], horizon: [0, 0.375, 0], ground: [0.375, 0, 0] });
+    assert.equal(input.skyRadianceScale, 2);
+    const png = PNG.sync.read(readFileSync(join(directory, "assets", "sky.png")));
+    assert.deepEqual([...png.data.subarray(0, 8)], [0, 0, 255, 255, 0, 0, 188, 255]);
+    assert.deepEqual([...png.data.subarray(16, 20)], [137, 0, 0, 255]);
+    const { scene } = buildThreeRTScene(input);
+    assert.equal(scene.children.find(child => child.name === "Sky panorama")?.rotation.y, Math.PI / 2);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("native models normalize RGB16 and RGBA16 PNGs without changing source, mesh bytes or 8-bit textures", () => {
   const pixel = (data: Buffer) => Object.assign(new PNG({ width: 1, height: 1 }), { data });
@@ -103,6 +139,23 @@ test("native sunlight and volume shaders use the exported sun and shaft axis", (
   assert.deepEqual(shaft.volume.params.Start, [1, 2, 6, 0.2]);
   assert.deepEqual(shaft.volume.params.End, [1, 2, 4, 0.4]);
   assert.ok(shaft.majorant >= 0.02);
+
+  input.profile.effects.fog = [
+    { name: "air", min: [-20, 0, -30], max: [20, 20, 10], density: 1,
+      ramps: [{ axis: 2, range: [-15, -5], density: [0.02, 0.005] }, { axis: 1, range: [0, 10], density: [1, 0.5] }],
+      emission: [0, 0, 0], albedo: [1, 0.9, 0.8], anisotropy: 0.6 },
+  ];
+  input.skyRadianceScale = 1;
+  const fittedScene = buildThreeRTScene(input).scene;
+  assert.ok(fittedScene.fog?.volumetric);
+  assert.equal(fittedScene.fog.startDistance, 11.25);
+  assert.equal(fittedScene.fog.volumetric.distance, 35);
+  assert.deepEqual(fittedScene.fog.volumetric.albedo, [1, 0.9, 0.8]);
+  assert.ok(fittedScene.children.some(child => child.name === "Sky panorama"));
+  assert.ok(!fittedScene.children.some(child => child.name === "Solar disk"), "The panorama already contains the sun");
+  assert.ok(!fittedScene.children.some(child => child.name === "air"), "Avoid counting both haze approximations");
+  input.camera.position[1] = 30;
+  assert.ok(buildThreeRTScene(input).scene.children.some(child => child.name === "air"), "Preserve a local volume viewed from outside");
 });
 
 test("ThreeRT preserves a parented camera and converts local dust from Z-up to Y-up", () => {

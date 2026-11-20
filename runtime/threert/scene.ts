@@ -2,14 +2,15 @@ import type { VfxProfile } from "../../src/shared/vfx.js";
 import {
   Scene, GLTFModel, PerspectiveCamera, DirectionalLight, PointLight, SpotLight, RectAreaLight,
   SkyGradient, SkyColor, Color, FogVolume, VolumeFunction, HomogeneousVolume, ExponentialHeightFog, RainCurtain,
-  VolumeMesh, Mesh, CircleGeometry, MeshBasicMaterial,
+  VolumeMesh, Mesh, CircleGeometry, MeshBasicMaterial, SphereGeometry, Texture, Vector3,
 } from "@threert/scene";
-import type { ExportEffects } from "../../src/render-effects.js";
+import type { ExportEffects, FogVolume as ExportedFog } from "../../src/render-effects.js";
 
 export type ThreeRTInput = {
   assetPrefix?: string;
   environment?: { zenith: number[]; horizon: number[]; ground: number[] };
   background?: number[];
+  skyRadianceScale?: number;
   camera: { position: number[]; quaternion: number[]; fov: number; aspect: number; near: number; far: number };
   profile: {
     vfx?: VfxProfile;
@@ -74,8 +75,38 @@ const gradientFog = new VolumeFunction("blender_gradient_fog", {
   `,
 });
 
+// Fit large atmospheric envelopes to the native lit height fog used by the live renderer.
+function heightFogFromRamps(volume: ExportedFog, eye: number[], forward: number[], ambient: Color) {
+  if (volume.ramps.length !== 2 || volume.density <= 0 || volume.emission.some(value => value !== 0) ||
+    !eye.every((value, axis) => value > volume.min[axis]! && value < volume.max[axis]!)) return;
+  const vertical = volume.ramps.find(ramp => ramp.axis === 1);
+  const horizontal = volume.ramps.find(ramp => ramp.axis !== 1);
+  if (!vertical || !horizontal || vertical.range[1] <= vertical.range[0] ||
+    vertical.density[1] <= 0 || vertical.density[0] <= vertical.density[1]) return;
+  const axis = horizontal.axis, heading = forward[axis]!;
+  if (Math.abs(heading) < 1e-6) return;
+  const times = horizontal.range.map(coordinate => (coordinate - eye[axis]!) / heading);
+  const nearDensity = horizontal.density[heading > 0 ? 0 : 1];
+  const farDensity = horizontal.density[heading > 0 ? 1 : 0];
+  const end = Math.min(...forward.map((direction, i) => Math.abs(direction) < 1e-6 ? Infinity :
+    ((direction > 0 ? volume.max[i]! : volume.min[i]!) - eye[i]!) / direction));
+  if (nearDensity >= farDensity || Math.min(...times) < 0 || Math.max(...times) > end) return;
+  // The area missing from the increasing horizontal ramp is an equivalent clear starting distance.
+  const start = (1 - nearDensity / farDensity) * (times[0]! + times[1]!) / 2;
+  const falloff = Math.log(vertical.density[0] / vertical.density[1]) / (vertical.range[1] - vertical.range[0]);
+  const density = volume.density * farDensity * vertical.density[0];
+  const fog = new ExponentialHeightFog(density, falloff, ambient.clone().multiply(color(volume.albedo)));
+  fog.height = vertical.range[0];
+  fog.startDistance = start;
+  fog.maxOpacity = -Math.expm1(-density * Math.exp(-falloff * (eye[1]! - fog.height)) * (end - start));
+  fog.setVolumetric(1, volume.anisotropy);
+  fog.volumetric!.albedo = volume.albedo;
+  fog.volumetric!.distance = end;
+  return fog;
+}
+
 /** Import the saved camera and source lighting; the input GLB contains unbaked PBR materials. */
-export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", environment, background }: ThreeRTInput) {
+export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", environment, background, skyRadianceScale }: ThreeRTInput) {
   const scene = new Scene();
   scene.add(new GLTFModel(`${assetPrefix}model.glb`));
   scene.environment = environment ? new SkyGradient({ zenith: color(environment.zenith), horizon: color(environment.horizon),
@@ -101,9 +132,24 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
   }
   const solar = profile.effects?.sun;
   const solarDistance = Math.max(view.far * 2, 100000);
+  const skyDistance = solarDistance * 1.02;
+  const showPanorama = skyRadianceScale !== undefined && !profile.render.filmTransparent;
+  if (showPanorama) {
+    const material = new MeshBasicMaterial({
+      map: new Texture(`${assetPrefix}sky.png`), color: new Color().setRGB(skyRadianceScale, skyRadianceScale, skyRadianceScale),
+      side: "double", transparent: true,
+    });
+    // Put the panorama behind the solar disk and use the native translucency pass for the visible sky.
+    const sky = new Mesh(new SphereGeometry(skyDistance, 64, 32), material);
+    sky.name = "Sky panorama";
+    sky.castShadow = false;
+    sky.position.set(view.position[0]!, view.position[1]!, view.position[2]!);
+    sky.rotation.y = profile.world.environmentRotationY ?? 0;
+    scene.add(sky);
+  }
   if (sun && solar) {
     sun.angularDiameter = solar.angularRadius * 360 / Math.PI;
-    if (!profile.render.filmTransparent) {
+    if (!profile.render.filmTransparent && !(showPanorama && solar.inBackground)) {
       const { angularRadius, direction, radiance } = solar;
       const disk = new Mesh(new CircleGeometry(solarDistance * Math.tan(angularRadius), 48), new MeshBasicMaterial({ color: color(radiance) }));
       disk.name = "Solar disk";
@@ -127,8 +173,23 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
     volume.scale.set(...size);
     scene.add(volume);
   }
+  const far = showPanorama ? skyDistance * 1.01 : solar ? solarDistance * 1.01 : view.far;
+  const camera = new PerspectiveCamera(view.fov, view.aspect, view.near, far);
+  camera.position.set(view.position[0]!, view.position[1]!, view.position[2]!);
+  camera.quaternion.set(view.quaternion[0]!, view.quaternion[1]!, view.quaternion[2]!, view.quaternion[3]!);
+  const worldVolume = profile.vfx?.volumes?.find(volume => !volume.min || !volume.max);
+  const mist = profile.postprocessing?.haze;
+  const forward = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion).toArray();
+  const ambient = color(environment?.horizon ?? profile.world.color).multiplyScalar(profile.world.strength);
   for (const fog of profile.effects?.fog ?? []) {
     if (profile.vfx?.volumes?.some(volume => volume.name === fog.name)) continue;
+    if (sun && !worldVolume && !mist && !scene.fog) {
+      const heightFog = heightFogFromRamps(fog, view.position, forward, ambient);
+      if (heightFog) {
+        scene.fog = heightFog;
+        continue;
+      }
+    }
     const { min, max, density, ramps, emission, albedo, anisotropy } = fog;
     const ramp = (index: number): [number, number, number, number] =>
       ramps[index] ? [...ramps[index]!.range, ...ramps[index]!.density] : [0, 1, 1, 1];
@@ -156,8 +217,6 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
     fog.scale.set(volume.radius[0]! * 2, volume.radius[2]! * 2, volume.radius[1]! * 2);
     scene.add(fog);
   }
-  const worldVolume = profile.vfx?.volumes?.find(volume => !volume.min || !volume.max);
-  const mist = profile.postprocessing?.haze;
   if (worldVolume) {
     const height = worldVolume.height;
     const fog = new ExponentialHeightFog(worldVolume.density, height ? 1 / height.depth : 0, color(worldVolume.color));
@@ -194,16 +253,12 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
       speed: Math.abs(precipitation.velocity[1]), wind: [precipitation.velocity[0], precipitation.velocity[2]],
       width: precipitation.radius * 2, length: precipitation.streak, color: precipitation.color, emissive: precipitation.emission }));
   }
-  const camera = new PerspectiveCamera(view.fov, view.aspect, view.near, solar ? solarDistance * 1.01 : view.far);
-  camera.position.set(view.position[0]!, view.position[1]!, view.position[2]!);
-  camera.quaternion.set(view.quaternion[0]!, view.quaternion[1]!, view.quaternion[2]!, view.quaternion[3]!);
   camera.setManualExposure(-profile.colorManagement.exposure);
   scene.add(camera);
   return { scene, camera, options: { name: "Blender scene · ThreeRT", preset: "cinematic" as const,
     width: profile.render.resolutionX, height: profile.render.resolutionY,
-    // Do not add the cinematic preset's gamut expansion / blue correction to Blender's linear colors.
-    // ThreeRT still uses its native Filmic curve; this does not reproduce the exported AgX display LUT.
-    overrides: { post: { colorGrading: { expandGamut: 0, blueCorrection: 0 },
+    // Keep ThreeRT's native Filmic display curve and turn off the preset's extra grading and vignette.
+    overrides: { post: { vignette: 0, colorGrading: { expandGamut: 0, blueCorrection: 0 },
       bloom: { intensity: profile.postprocessing?.bloom?.strength ?? 0,
       threshold: profile.postprocessing?.bloom?.threshold ?? 1.2 } } } } };
 }

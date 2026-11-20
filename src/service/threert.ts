@@ -12,12 +12,16 @@ import type { ThreeRTInput } from "../../runtime/threert/scene.js";
 
 const execute = promisify(execFile);
 
-function environmentBands(bytes: Buffer): NonNullable<ThreeRTInput["environment"]> {
-  const exr = new EXRLoader().setDataType(FloatType).parse(new Uint8Array(bytes).buffer);
+function readPanorama(bytes: Buffer) {
+  return new EXRLoader().setDataType(FloatType).parse(new Uint8Array(bytes).buffer);
+}
+
+function environmentBands(exr: ReturnType<typeof readPanorama>): NonNullable<ThreeRTInput["environment"]> {
   const bands = { zenith: [0, 0, 0], horizon: [0, 0, 0], ground: [0, 0, 0] }, counts = { zenith: 0, horizon: 0, ground: 0 };
   const stride = exr.data.length / (exr.width * exr.height);
   for (let y = 0; y < exr.height; y++) {
-    const band = y < exr.height * 0.2 ? "zenith" : y > exr.height * 0.8 ? "ground" : Math.abs(y / exr.height - 0.5) < 0.1 ? "horizon" : undefined;
+    const latitude = (y + 0.5) / exr.height;
+    const band = latitude < 0.2 ? "ground" : latitude > 0.8 ? "zenith" : Math.abs(latitude - 0.5) < 0.1 ? "horizon" : undefined;
     if (!band) continue;
     for (let x = 0; x < exr.width; x++) {
       const offset = (y * exr.width + x) * stride;
@@ -27,6 +31,29 @@ function environmentBands(bytes: Buffer): NonNullable<ThreeRTInput["environment"
   }
   for (const band of ["zenith", "horizon", "ground"] as const) bands[band] = bands[band].map(value => value / Math.max(1, counts[band]));
   return bands;
+}
+
+function encodeSkyPanorama({ width, height, data }: ReturnType<typeof readPanorama>) {
+  const stride = data.length / (width * height);
+  let radianceScale = 1;
+  for (let i = 0; i < data.length; i += stride) {
+    radianceScale = Math.max(radianceScale, data[i]!, data[i + 1]!, data[i + 2]!);
+  }
+  const png = new PNG({ width, height });
+  // EXRLoader stores rows bottom-up. The native sphere reverses the equirectangular longitude.
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const source = ((height - 1 - y) * width + width - 1 - x) * stride;
+      const target = (y * width + x) * 4;
+      for (let channel = 0; channel < 3; channel++) {
+        const linear = Math.max(0, data[source + channel]!) / radianceScale;
+        const srgb = linear <= 0.0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - 0.055;
+        png.data[target + channel] = Math.round(255 * srgb);
+      }
+      png.data[target + 3] = 255;
+    }
+  }
+  return { bytes: PNG.sync.write(png), radianceScale };
 }
 
 export function threeRTCapability() {
@@ -143,14 +170,12 @@ export async function renderThreeRT(directory: string, binary: string) {
     warnings.push(`ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 ${profile.colorManagement.viewTransform} 显示 LUT。`);
   }
   if (profile.world.environmentUri) {
-    input.environment = environmentBands(await readFile(join(directory, "environment.exr")));
-    warnings.push("环境贴图使用渐变天空近似。");
+    input.environment = environmentBands(readPanorama(await readFile(join(directory, "environment.exr"))));
+    warnings.push("ThreeRT 使用渐变天空近似环境照明。");
   }
   const background = profile.world.backgroundEnvironmentUri;
-  if (typeof background === "string" && background.startsWith("data:")) {
-    const bands = environmentBands(Buffer.from(background.split(",")[1]!, "base64"));
-    input.background = bands.horizon;
-  }
+  const panorama = !profile.render.filmTransparent && typeof background === "string" && background.startsWith("data:")
+    ? readPanorama(Buffer.from(background.split(",")[1]!, "base64")) : undefined;
   await writeFile(join(directory, "model.glb"), modelWithoutPunctualLights(glb));
   input.camera.aspect = profile.render.resolutionX / profile.render.resolutionY;
   const adapter = fileURLToPath(new URL("../../runtime/threert/scene.ts", import.meta.url));
@@ -160,6 +185,13 @@ export async function renderThreeRT(directory: string, binary: string) {
     await mkdir(join(directory, "assets"), { recursive: true });
     await copyFile(join(directory, "model.glb"), join(directory, "assets/model.glb"));
     if (profile.world.environmentUri) await copyFile(join(directory, "environment.exr"), join(directory, "assets/environment.exr"));
+    if (panorama) {
+      const { bytes, radianceScale } = encodeSkyPanorama(panorama);
+      await writeFile(join(directory, "assets/sky.png"), bytes);
+      input.skyRadianceScale = radianceScale;
+    }
+  } else if (panorama) {
+    input.background = environmentBands(panorama).horizon;
   }
   // The macOS CLI's host uses its bundled SDK. Resolve scene classes to that same SDK to preserve instanceof checks.
   const bundledScene = resolve(dirname(realpathSync(binary)), "../Resources/sdk/engine/packages/scene/src/index.ts");
