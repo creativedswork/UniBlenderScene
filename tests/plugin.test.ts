@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const json = async (path: string) => JSON.parse(await readFile(path, "utf8"));
@@ -29,8 +29,11 @@ test("Codex launches the local package and configure switches both hosts to HTTP
     ];
     const before = await connections();
     assert.deepEqual(before.map((server) => server.type), ["stdio", "http"]);
-    assert.equal(before[0].command, "node");
+    assert.equal(before[0].command, "./scripts/codex-mcp.sh");
     assert.equal(before[0].args.at(-1), "${PLUGIN_ROOT}/scripts/codex-mcp.ts");
+    assert.equal(execFileSync(resolve(before[0].command), ["--version"], {
+      encoding: "utf8", env: { PATH: dirname(process.execPath) },
+    }).trim(), process.version);
     assert.equal(before[1].url, "http://127.0.0.1:4312/mcp");
     const script = resolve("scripts/configure.ts");
     execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), script, "https://blender.example.test"], { cwd: root });

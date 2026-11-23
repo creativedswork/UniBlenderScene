@@ -3,7 +3,7 @@
   "mcpServers": {
     "uni-blender-scene": {
       "type": "stdio",
-      "command": "node",
+      "command": "./scripts/codex-mcp.sh",
       "args": [
         "--import",
         "${PLUGIN_ROOT}/node_modules/tsx/dist/loader.mjs",
