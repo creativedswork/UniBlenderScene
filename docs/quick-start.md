@@ -32,6 +32,18 @@ the missing dependency and the exact next step.
 | Agent host | Check `codex --version` or `claude --version` for the current host and confirm the user is signed in. |
 | `lsof` and `ps` | `command -v lsof` and `command -v ps`; install missing commands with the system package manager. |
 
+On Codex Desktop, the MCP process can inherit a shorter PATH than the terminal.
+If plugin startup reports `No such file or directory (os error 2)` on macOS, run
+this command from the plugin root. It tests the launcher with a minimal desktop PATH.
+
+```bash
+env PATH=/usr/bin:/bin:/usr/sbin:/sbin ./scripts/codex-mcp.sh --version
+```
+
+The launcher should print Node.js 22 or later. If it cannot find Node, make
+Node available to the desktop process using the search paths in the
+[setup Skill](../skills/blender-setup/SKILL.md).
+
 ## 2. Prepare the local service
 
 For desktop Codex, prefer the release ZIP with its built viewer and runtime
@@ -62,8 +74,9 @@ mkdir -p ../UniBlenderScenes
 
 - **Codex:** from the plugin root, run `codex plugin marketplace add "$PWD"`.
   Install it with `codex plugin add uni-blender-scene@uni-blender-scene`.
-  Open the separate scene directory as a project and start a new local chat
-  to load the plugin and check its tools.
+  Open the separate scene directory as a project and start a new local chat.
+  Use the chat's MCP tool discovery to verify that UniBlenderScene exposes
+  `scene_get` and `scene_view` before starting production.
 - **Claude Code:** from the scene project, launch
   `claude --plugin-dir /absolute/path/to/UniBlenderScene`, using the actual plugin
   root. Check `/mcp` for the connection and available `scene_*` tools. For
@@ -90,7 +103,9 @@ If they only asked for setup, provide this starter prompt:
 
 Follow the [scene Skill](../skills/blender-scene/SKILL.md) for scene work, including
 the user's composition approval before materials and lighting. Interactive
-preview requires an MCP Apps host.
+preview requires an MCP Apps host. Once export completes and `scene_get` returns
+a non-null `renderUrl`, call `scene_view` through the chat's MCP connection and
+verify that the interactive 3D preview appears in the chat.
 
 For optional asset providers, reference images, ThreeRT, or remote deployment,
 read the relevant sections of [service setup and deployment](operations.md) and

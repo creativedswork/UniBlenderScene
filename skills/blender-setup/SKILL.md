@@ -11,7 +11,10 @@ Check Node.js 22 or later and a dedicated Blender 4.5 or later installation.
 
 On desktop Codex, install the release ZIP as a local marketplace source and
 start a local chat. The stdio entry starts or reuses the dedicated Blender
-bridge and service. Preserve an existing `RUNS_ROOT` by setting it in
+bridge and service. It looks for Node on the desktop process's PATH and in
+`/opt/homebrew/bin` and `/usr/local/bin`. If Node is installed only through an
+interactive shell, make Node.js 22+ available to the desktop process.
+Preserve an existing `RUNS_ROOT` by setting it in
 `~/.canova/.env` before reconnecting. Follow the migration instructions in
 `docs/operations.md` if a manually started service owns the port.
 

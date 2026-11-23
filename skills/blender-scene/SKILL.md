@@ -18,11 +18,12 @@ service owns scenes, checkpoints, convergence decisions, rendering, and export.
 Before creating or resuming a scene, verify the host exposes the workflow tools,
 including `scene_plan`, `scene_plan_review`, `scene_edit`, `scene_get`,
 `scene_review`, `scene_preview`, `scene_review_decision`, `scene_export` and
-`scene_view`. Use the host's tool discovery when available; a connected service
-or a partial `scene_*` list does not establish availability. If tools are absent,
-follow [Blender setup](../blender-setup/SKILL.md) to diagnose and recover the
-connection before importing references or creating another scene. Once tools
-are available, resume an existing scene with `scene_get` and `images: "none"`.
+`scene_view`. Use the host's tool discovery when available. In Codex Desktop,
+check that `scene_view` is callable through the chat's MCP connection. If tools
+are absent, follow [Blender setup](../blender-setup/SKILL.md) to diagnose and
+recover the connection before importing references or creating another scene.
+Once tools are available, resume an existing scene with `scene_get` and
+`images: "none"`.
 
 At task start, inspect `learning.skills` and retrieve relevant active entries
 with `scene_library_search` before planning. After export and actual viewer
@@ -231,8 +232,13 @@ evidence through the service or report that it is not ready.
    the render/review loop. In `completed` or `best_effort`, optionally run
    `scene_bake` for static surface lightmaps (see [Blender code guidance](references/blender-code.md))
    and poll `scene_get` until it completes. Then call `scene_export`,
-   poll `scene_get` with `images: "none"` for completion, and provide the returned GLB, Blender file,
-   and render links. In an MCP Apps host, open the bundled `scene_view` viewer.
+   poll `scene_get` with `images: "none"` for export completion and a non-null
+   `renderUrl`. In an MCP Apps host, call `scene_view` through the chat's MCP
+   connection and verify that the interactive preview opens in the chat before
+   reporting it in the final reply. If the card fails to open, follow
+   [Blender setup](../blender-setup/SKILL.md) and retry with the same `sceneId`.
+   Include the returned GLB, Blender file and render links in the final reply.
+   If the chat preview still fails, report the error with those links.
    Delivered appearance defaults to ThreeRT when the native client is available;
    Three.js supplies the browser fallback and gray structural review.
    Verify the active backend, reset its camera and compare a 3D screenshot with
