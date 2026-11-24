@@ -620,11 +620,13 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   if (bloomPass && !hasVolumes && !drawSun) composer.addPass(bloomPass);
   let depth: THREE.WebGLRenderTarget | undefined, depthMaterial: THREE.MeshDepthMaterial | undefined;
   let hazePass: ShaderPass | undefined;
-  const atmosphere = volumeUniforms(volumes, scene, camera);
+  const atmosphere = volumeUniforms(volumes, scene, camera, Boolean(dust?.volumes.length));
   if (settings?.haze || appearance || hasVolumes || drawSun) {
     const haze = settings?.haze;
+    const hazeScale = appearance?.hazeScale ?? 1;
     const centers = Array.from({ length: 6 }, (_, i) => {
-      const v = dust?.volumes[i]; return v ? new THREE.Vector4(v.center[0], v.center[2], -v.center[1]!, v.density) : new THREE.Vector4();
+      const v = dust?.volumes[i];
+      return v ? new THREE.Vector4(v.center[0], v.center[2], -v.center[1]!, v.density * hazeScale) : new THREE.Vector4();
     });
     const radii = Array.from({ length: 6 }, (_, i) => {
       const v = dust?.volumes[i]; return v ? new THREE.Vector3(v.radius[0], v.radius[2], v.radius[1]) : new THREE.Vector3(1, 1, 1);
@@ -638,10 +640,11 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
         projectionInverse: { value: camera.projectionMatrixInverse.clone() },
         cameraWorld: { value: camera.matrixWorld.clone() }, time: { value: 0 },
         start: { value: haze?.start ?? 0 }, range: { value: Math.max(haze?.depth ?? 1, 0.001) },
-        strength: { value: (haze?.strength ?? 0) * (appearance?.hazeScale ?? 1) }, quadratic: { value: haze?.falloff === "QUADRATIC" },
+        strength: { value: (haze?.strength ?? 0) * hazeScale }, quadratic: { value: haze?.falloff === "QUADRATIC" },
         hazeColor: { value: new THREE.Color().setRGB(...(haze?.color ?? [0, 0, 0]).slice(0, 3) as [number, number, number], THREE.LinearSRGBColorSpace) },
         dustCenters: { value: centers }, dustRadii: { value: radii }, dustCount: { value: dust?.volumes.length ?? 0 },
-        dustColor: { value: new THREE.Vector3(...(dust?.color ?? [0, 0, 0]) as [number, number, number]) },
+        dustColor: { value: new THREE.Vector3(...(dust?.color ?? [0, 0, 0]) as [number, number, number])
+          .multiplyScalar(Math.max(1, hazeScale)) },
         wind: { value: new THREE.Vector3(dust?.wind[0] ?? 0, dust?.wind[2] ?? 0, -(dust?.wind[1] ?? 0)) },
         exposureGain: { value: 2 ** (appearance?.exposureEV ?? 0) }, saturation: { value: appearance?.saturation ?? 1 },
         whiteBalance: { value: new THREE.Vector3(...(appearance?.whiteBalance ?? [1, 1, 1]) as [number, number, number]) },
@@ -713,9 +716,7 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
             if(exit<=entry)continue;
             entries[cloud]=entry;exits[cloud]=exit;
           }
-          // ponytail: single scattering from one sun; thick smoke needs multiple scattering.
-          float g=0.45,mu=dot(direction,sunDirection);
-          float phase=(1.0-g*g)/pow(1.0+g*g-2.0*g*mu,1.5);
+          float g=0.45;
           for(int pass=0;pass<6;pass++){
             int cloud=-1;float entry=1e19;
             for(int i=0;i<6;i++)if(entries[i]<entry){entry=entries[i];cloud=i;}
@@ -726,12 +727,12 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
             for(int j=0;j<32;j++){
               float t=entry+(float(j)+jitter)*stepLength;
               vec3 world=origin+direction*t,q=(world-dustCenters[cloud].xyz)/radius;
-              float envelope=pow(max(0.0,1.0-dot(q,q)),1.2);
-              vec3 drift=world*vec3(0.32,1.1,0.32)-wind*time*0.3;
+              float envelope=pow(max(0.0,1.0-length(q)),0.82);
+              vec3 drift=(world-wind*time*0.3)*vec3(0.32,1.1,0.32);
               float billow=0.57*noise(drift)+0.28*noise(drift*2.1)+0.15*noise(drift*4.3);
-              float tau=stepLength*dustCenters[cloud].w*envelope*smoothstep(0.26,0.72,billow);
+              float tau=stepLength*dustCenters[cloud].w*envelope*mix(0.2,1.0,smoothstep(0.26,0.72,billow));
               if(tau<=0.00001)continue;
-              vec3 illumination=vec3(0.045,0.055,0.075)+sunColor*sunlight(world)*phase;
+              vec3 illumination=volumeLight(world,direction,g);
               scatter+=exp(-optical)*(1.0-exp(-tau))*dustColor*illumination;
               optical+=tau;
             }
@@ -759,7 +760,8 @@ function previewEffects(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camer
   if (bloomPass && (hasVolumes || drawSun)) composer.addPass(bloomPass);
   return {
     animated: Boolean(dust?.volumes.length),
-    shadowedDust: Boolean((dust || hasVolumes) && sun?.castShadow),
+    dustLighting: (dust || hasVolumes) && sun?.castShadow ? "sun-shadow" :
+      dust?.volumes.length && atmosphere.hasLocalLights ? "local-lights" : "ambient",
     depthDirty: true,
     resize(width: number, height: number) {
       composer.setSize(width, height); depth?.setSize(width, height); this.depthDirty = true;
@@ -1053,6 +1055,7 @@ async function loadModel(url: string) {
       }
       if (tracer && tracer.samples >= 512 && !effects?.animated) return;
       if (!tracer && !rasterDirty && !effects?.animated) return;
+      if (viewer.reflection && rasterDirty) viewer.reflection.capture(renderer, camera);
       if (tracer && tracer.samples < 512) tracer.renderSample();
       if (tracer && tracer.samples >= 4) {
         (denoise.material as DenoiseMaterial).map = tracer.target.texture;
@@ -1093,7 +1096,7 @@ async function loadModel(url: string) {
     renderer.domElement.title = (profile.warnings ?? []).join("\n");
     if (profile.effects?.shafts.length) renderer.domElement.dataset.effects += ",sun-shafts";
     if (profile.effects?.fog?.some(fog => !profile.vfx?.volumes?.some(volume => volume.name === fog.name))) renderer.domElement.dataset.effects += ",local-fog";
-    renderer.domElement.dataset.dustLighting = effects?.shadowedDust ? "sun-shadow" : "ambient";
+    renderer.domElement.dataset.dustLighting = effects?.dustLighting ?? "ambient";
     loadedURL = url;
     el<HTMLButtonElement>("mode-3d").disabled = false;
     el("empty").style.display = "none";

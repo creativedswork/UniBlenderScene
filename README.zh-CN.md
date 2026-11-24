@@ -40,6 +40,29 @@
 Three.js 预览在部分建筑表面使用了烘焙的漫反射照明。
 ThreeRT 图使用简化的树木几何，并按 Blender 的取景裁切。不同渲染器的雾、阴影和倒影表现有所差异。
 
+## 效果展示 · 雨夜城市赛道
+
+在 Blender 中制作的雨夜街道赛道，包含湿沥青、发光招牌和轮胎水雾。Blender 成片使用默认低机位，Three.js 和 ThreeRT 使用同一个较高的检查机位。
+
+<table>
+  <tr>
+    <th colspan="2">Blender · 默认机位</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 低机位成片，白色跑车倒映在雨夜赛道上" width="960" /></td>
+  </tr>
+  <tr>
+    <th width="50%">Three.js</th>
+    <th width="50%">ThreeRT</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js 较高机位预览，湿沥青上可见车身和街边招牌倒影" width="480" /></td>
+    <td align="center" valign="top"><img src="docs/rainy-city-circuit-threert.webp" alt="同机位的 ThreeRT 渲染，可见湿地倒影和蓝色街雾" width="480" /></td>
+  </tr>
+</table>
+
+Three.js 用光照贴图显示道路、护栏和临街店面的静态光照。湿路倒影随视角更新，车灯和街灯在雾中产生散射。
+
 ## 插件包含什么
 
 ![UniBlenderScene 模块的三层结构示意图](docs/plugin-modules.svg)

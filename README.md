@@ -47,6 +47,32 @@ The Three.js preview uses baked diffuse lighting on selected building surfaces.
 The ThreeRT image uses simplified tree geometry and is cropped to match the Blender framing.
 Fog, shadows and reflections vary between renderers.
 
+## Showcase · Rainy city circuit
+
+A street circuit with wet asphalt, illuminated signs and tire spray, built in
+Blender. The Blender render uses the default low camera. The Three.js and
+ThreeRT previews share a higher inspection camera.
+
+<table>
+  <tr>
+    <th colspan="2">Blender · Default camera</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/rainy-city-circuit-blender.webp" alt="Low-angle Blender render of a white sports car reflected in a wet city circuit at night" width="960" /></td>
+  </tr>
+  <tr>
+    <th width="50%">Three.js</th>
+    <th width="50%">ThreeRT</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js preview from a raised angle, with car and storefront reflections on the wet asphalt" width="480" /></td>
+    <td align="center" valign="top"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT render of the same raised view, with wet-road reflections and blue street haze" width="480" /></td>
+  </tr>
+</table>
+
+Three.js uses lightmaps for the road, barriers and storefronts. Wet-road
+reflections update with the camera, and local lights scatter through the fog.
+
 ## What's in the plugin
 
 ![Three color-coded layers of UniBlenderScene modules](docs/plugin-modules.svg)
