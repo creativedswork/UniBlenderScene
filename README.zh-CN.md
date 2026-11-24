@@ -24,20 +24,20 @@
   <tr>
     <th scope="col">参考图</th>
     <th scope="col">Blender</th>
-    <th scope="col">Blender · 低机位</th>
-    <th scope="col">Three.js · 低机位</th>
+    <th scope="col">参考图</th>
+    <th scope="col">Blender</th>
   </tr>
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="夕阳下的玻璃住宅、池水和松林参考图" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的室内暖光和穿林光束" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-reference.webp"><img src="docs/rainy-city-circuit-reference.webp" alt="雨夜赛道低机位参考图，白色跑车和街边霓虹倒映在路面上" width="214" /></a></td>
     <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 低机位成片，白色跑车倒映在湿路上" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs-low.webp"><img src="docs/rainy-city-circuit-threejs-low.webp" alt="Three.js 默认低机位下的车身和湿路倒影" width="214" /></a></td>
   </tr>
   <tr>
     <th scope="col">Three.js</th>
     <th scope="col">ThreeRT</th>
-    <th scope="col">Three.js · 高机位</th>
-    <th scope="col">ThreeRT · 高机位</th>
+    <th scope="col">Three.js</th>
+    <th scope="col">ThreeRT</th>
   </tr>
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js 预览中的林间住宅、光束和水池" width="180" /></a></td>
@@ -49,7 +49,7 @@
 
 林间住宅根据一张参考图制作。Three.js 在部分建筑表面使用烘焙的漫反射光照。ThreeRT 图采用简化的树木几何，并按 Blender 的取景裁切。
 
-雨夜赛道的 Blender 与 Three.js 低机位共用默认相机，Three.js 与 ThreeRT 高机位共用另一个视角。Three.js 用光照贴图显示道路、护栏和店面的静态光照，实时计算湿路倒影和局部灯光在雾中的散射。
+雨夜赛道的 Blender 成片采用参考图的低机位，Three.js 和 ThreeRT 共用较高机位。Three.js 用光照贴图显示道路、护栏和店面的静态光照，实时计算湿路倒影和局部灯光在雾中的散射。
 
 ## 插件包含什么
 

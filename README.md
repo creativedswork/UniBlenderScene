@@ -29,20 +29,20 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
   <tr>
     <th scope="col">Reference</th>
     <th scope="col">Blender</th>
-    <th scope="col">Blender · Low</th>
-    <th scope="col">Three.js · Low</th>
+    <th scope="col">Reference</th>
+    <th scope="col">Blender</th>
   </tr>
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="Reference of a glass house and pool among pines at sunset" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender render with warm interiors and sunlight through the pines" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-reference.webp"><img src="docs/rainy-city-circuit-reference.webp" alt="Low-angle reference of a white sports car and neon reflections on a rainy city street" width="214" /></a></td>
     <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Low-angle Blender render of a white sports car and its wet-road reflection" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs-low.webp"><img src="docs/rainy-city-circuit-threejs-low.webp" alt="Three.js preview of the car and its reflection from the default camera" width="214" /></a></td>
   </tr>
   <tr>
     <th scope="col">Three.js</th>
     <th scope="col">ThreeRT</th>
-    <th scope="col">Three.js · Raised</th>
-    <th scope="col">ThreeRT · Raised</th>
+    <th scope="col">Three.js</th>
+    <th scope="col">ThreeRT</th>
   </tr>
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js preview of the forest house, sunbeams and pool" width="180" /></a></td>
@@ -54,7 +54,7 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
 
 The forest house was built from one reference. Three.js uses baked diffuse lighting on selected building surfaces. The ThreeRT image uses simplified tree geometry and is cropped to match the Blender framing.
 
-For the rainy circuit, Blender and Three.js share the default low camera. The raised Three.js and ThreeRT views share a second camera. Three.js uses lightmaps for the road, barriers and storefronts, with real-time reflections and fog lit by local lights.
+For the rainy circuit, the Blender render follows the low-angle reference. The Three.js and ThreeRT views share a higher camera. Three.js uses lightmaps for the road, barriers and storefronts, with real-time reflections and fog lit by local lights.
 
 ## What's in the plugin
 
