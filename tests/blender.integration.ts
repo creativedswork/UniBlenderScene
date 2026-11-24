@@ -135,6 +135,8 @@ try {
   const cameraScene = await poll(multiCamera.structuredContent!.id as string);
   const cameraId = cameraScene.id;
   const cameraNames = cameraInputs.map((_, index) => `Reference Camera ${index + 1}`);
+  const cameraAnchors = [{ id: "left", description: "Left edge", targetBox: [0.2, 0.3, 0.3, 0.7] },
+    { id: "right", description: "Right edge", targetBox: [0.65, 0.3, 0.8, 0.7] }];
   assert.deepEqual(cameraScene.references.map((ref: { fileId: string }) => ref.fileId), cameraInputs.map(ref => ref.file_id));
   assert.equal(cameraScene.reference.fileId, "attached-1");
   assert.deepEqual(cameraScene.referenceCameras.map((view: { cameraName: string }) => view.cameraName), cameraNames);
@@ -143,8 +145,13 @@ try {
   await planFixture({ sceneId: cameraId, summary: "Fit five cameras to the same cube", steps: ["Build a shared cube and fit five views"],
     criteria: [{ id: "cube", description: "The same landmark is visible across views", severity: "blocker" }],
     workflow: { stages: ["geometry", "composition", "final"].map(name => ({ name, criterionIds: ["cube"], budget: 2 })) },
-    referenceAnchors: [{ id: "left", description: "Left edge", targetBox: [0.2, 0.3, 0.3, 0.7] },
-      { id: "right", description: "Right edge", targetBox: [0.65, 0.3, 0.8, 0.7] }] });
+    referenceAnchors: cameraAnchors,
+    referenceChecks: [
+      { id: "front-center", kind: "point", reference: "reference", nodeId: "cube",
+        landmarkId: "front-center", target: [0.5, 0.5], tolerance: 0.01 },
+      { id: "top-edge", kind: "edge", reference: "reference-5", nodeId: "cube", side: "right",
+        target: [[0.98, 0.45], [0.98, 0.55]], tolerance: 0.01 },
+    ] });
   await call("scene_edit", { sceneId: cameraId, code: "pass" });
   assert.match((await poll(cameraId, "failed")).job.error, /Create a camera for each reference/);
   const cameraEdit = await call("scene_edit", { sceneId: cameraId, code: `
@@ -157,6 +164,11 @@ cube = bpy.context.object
 cube.name = "RedCube"
 cube["scene_node_id"] = "cube"
 cube.scale = (1.5, 0.75, 0.5)
+marker = bpy.data.objects.new("Front center", None)
+scene.collection.objects.link(marker)
+marker.parent = cube
+marker.location = (0.25, -1, 0.5)
+marker["scene_landmark_id"] = "front-center"
 for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)), 1):
     data = bpy.data.cameras.new(f"Reference Camera {index}")
     camera = bpy.data.objects.new(data.name, data)
@@ -192,6 +204,25 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   assert.deepEqual(cameraJSON.nodes.filter((node: { camera?: number }) => node.camera !== undefined)
     .map((node: { name: string }) => node.name).sort(), [...cameraNames].sort());
   assert.equal(cameraPreview.compositionApproved ?? false, false);
+  const cameraCriteria = [{ id: "cube", passed: true, evidence: "The shared fixture is visible" }];
+  await reviewFixture({ sceneId: cameraId, iteration: paired.iteration, criteria: cameraCriteria,
+    visualScore: 99, regressions: [], repairable: true, nextAction: "Check projected reference landmarks" });
+  await call("scene_edit", { sceneId: cameraId, code: "pass" });
+  const composition = await poll(cameraId);
+  const measurements = composition.inspection.summary.referenceMeasurements;
+  assert.deepEqual(measurements.map((item: { camera: string; status: string }) => [item.camera, item.status]),
+    [["Reference Camera 1", "passed"], ["Reference Camera 5", "failed"]], JSON.stringify(measurements));
+  assert.ok(measurements[0].maxError < 0.00001);
+  assert.ok(measurements[1].samples.every((sample: { objectName: string }) => sample.objectName === "RedCube"));
+  const alignmentOverlay = await call("scene_get", { sceneId: cameraId, images: "alignment", referenceName: "reference-5" });
+  const overlayImage = alignmentOverlay.content.find(item => item.type === "image");
+  assert.ok(overlayImage, JSON.stringify(alignmentOverlay.content));
+  const overlayPNG = PNG.sync.read(Buffer.from(overlayImage.data as string, "base64"));
+  assert.deepEqual([overlayPNG.width, overlayPNG.height], [96, 64]);
+  const mismatch = await reviewFixture({ sceneId: cameraId, iteration: composition.iteration, criteria: cameraCriteria,
+    referenceAlignment: cameraAnchors.map(anchor => ({ id: anchor.id, renderBox: anchor.targetBox, evidence: "Fixture box" })),
+    visualScore: 100, regressions: [], repairable: true, nextAction: "Move the paired camera to align the visible edge" });
+  assert.equal(mismatch.structuredContent!.stage, "edit");
 
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
   const id = created.structuredContent!.id as string; await poll(id);

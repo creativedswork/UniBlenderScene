@@ -138,9 +138,12 @@ evidence through the service or report that it is not ready.
    refine bounded parts without deleting the complete composition. For a
    primary reference, also freeze 2-8 major visual anchors as normalized
    `[left, top, right, bottom]` boxes in `referenceAnchors`. Include the main
-   subject and significant foreground or background regions. When auxiliary
-   views are supplied, include observable spatial criteria for their shared
-   objects and planes; verify these using object transforms and the orbitable
+   subject and significant foreground or background regions. For reconstruction
+   with identifiable landmarks or silhouette edges, follow
+   [reference checks](references/reference-checks.md) to annotate and bind them
+   to the paired cameras and Scene Graph before freezing `referenceChecks`.
+   When auxiliary views are supplied, include observable spatial criteria for
+   their shared objects and planes. Verify these using object transforms and the orbitable
    scene as well as the primary render. Verify GLB loading
    and, when the host supports MCP Apps, viewer interaction after export,
    outside `scene_review`.
@@ -215,7 +218,13 @@ evidence through the service or report that it is not ready.
    `referenceAlignment` box. The service computes the largest edge displacement
    and does not complete the request when it exceeds 8% of the frame. Measure
    from the actual render; do not infer boxes from scene coordinates. The visual
-   score is your judgment; it is not a measured image-similarity score.
+   score is your judgment. For frozen `referenceChecks`, read the current
+   `inspection.summary.referenceMeasurements`. Inspect `images: "alignment"`
+   for a discrepant paired view when it helps locate a repair. Cite the failed
+   measurement and the corresponding Blender object in your correction.
+   Recheck the same measurements and previously passing views after editing.
+   Failed or unmeasurable reference checks block a passing composition or final
+   review regardless of the visual score.
    Submit one `referenceEvidence` observation per supplied reference, keyed by
    its stored asset name. In a staged workflow, provide one `observations` entry per criterion with
    its graph node ID, target, actual observation, visual evidence and

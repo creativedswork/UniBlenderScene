@@ -12,9 +12,11 @@ import { allowedDownloadURL, requestsImageReference, SceneStore, validateSceneGr
 import { createMcpServer } from "../src/service/server.js";
 import { writeGraphExport } from "../src/service/graph-export.js";
 import { checkSceneTools } from "../scripts/check-mcp-tools.js";
+import type { ReferenceCapture } from "../src/service/reference-checks.js";
 
 class FakeBlender extends BlenderClient {
   relationBounds?: Record<string, { min: number[]; max: number[] }>;
+  referenceCaptures?: ReferenceCapture[];
   bakeExecutions = 0;
   failNext = false;
   failMessage = "Invalid Python edit";
@@ -44,7 +46,8 @@ class FakeBlender extends BlenderClient {
       const render = line.match(/render\.filepath = (".*")/);
       if (render) writeFileSync(JSON.parse(render[1]!), Buffer.from(code.includes('result = {"reviewViews": 5}') ? "review" : "render"));
     }
-    return { objects: [], camera: "Camera", ...(this.relationBounds ? { relationBounds: this.relationBounds } : {}) };
+    return { objects: [], camera: "Camera", ...(this.relationBounds ? { relationBounds: this.relationBounds } : {}),
+      ...(code.includes('result["referenceCaptures"]') ? { referenceCaptures: this.referenceCaptures } : {}) };
   }
 }
 const plan: Plan = {
@@ -737,6 +740,66 @@ test("reference alignment blocks a high-scoring review until major regions match
   });
   assert.equal(scene.stage, "awaiting_review");
   assert.ok(scene.best!.alignmentMaxError! < 0.08);
+});
+
+test("checkpoint reference checks gate acceptance and survive a continuation", async () => {
+  const { store, root, blender } = setup();
+  const scene = store.create("Rebuild a room");
+  await store.settled();
+  scene.reference = { fileId: "photo", name: "Room", mime: "image/png" };
+  const referencePlan: Plan = {
+    ...plan, workflow: referenceWorkflow,
+    referenceAnchors: [
+      { id: "desk", description: "Main desk", targetBox: [0.1, 0.4, 0.8, 0.75] },
+      { id: "chair", description: "Foreground chair", targetBox: [0.55, 0.45, 0.9, 0.95] },
+    ],
+    referenceChecks: [
+      { id: "edge", kind: "edge", side: "right", reference: "reference", nodeId: "cube", target: [[0.65, 0.4], [0.65, 0.6]], tolerance: 0.02 },
+      { id: "point", kind: "point", landmarkId: "center", reference: "reference", nodeId: "cube", target: [0.5, 0.5], tolerance: 0.02 },
+    ],
+  };
+  const alignment = referencePlan.referenceAnchors!.map(anchor => ({
+    id: anchor.id, renderBox: anchor.targetBox, evidence: "Matched reference box",
+  }));
+  const capture = (x: number): ReferenceCapture[] => [
+    { id: "edge", samples: [{ point: [x, 0.4], objectName: "Cube" }, { point: [x, 0.6], objectName: "Cube" }] },
+    { id: "point", samples: [{ point: [0.5, 0.5], objectName: "Cube" }] },
+  ];
+  preparePlan(store, scene, referencePlan);
+  blender.referenceCaptures = capture(0.8);
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, { ...review(scene, 1, 100, true), referenceAlignment: alignment });
+  assert.equal(scene.stage, "edit");
+  assert.deepEqual(scene.best!.referenceMeasurements!.map(item => item.status), ["failed", "passed"]);
+
+  blender.referenceCaptures = capture(0.65);
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, { ...review(scene, 2, 80, true), referenceAlignment: alignment });
+  assert.equal(scene.stage, "edit");
+  assert.equal(scene.best!.iteration, 2);
+
+  blender.referenceCaptures = capture(0.66);
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, { ...review(scene, 3, 90, true), referenceAlignment: alignment });
+  await store.settled();
+  assert.equal(scene.stage, "awaiting_review");
+  assert.equal(scene.best!.iteration, 3);
+  assert.equal(store.referenceAlignmentEvidence(scene, "reference")?.file, "renders/iteration-3.png");
+  store.reviewDecision(scene.id, true);
+
+  blender.referenceCaptures = undefined;
+  store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, { ...review(scene, 4, 100, true), referenceAlignment: alignment });
+  assert.equal(scene.stage, "best_effort");
+  assert.deepEqual(scene.remainingGaps, ["reference_check:edge", "reference_check:point"]);
+
+  const resumed = new SceneStore(root, blender);
+  resumed.continue(scene.id, "Adjust only the light");
+  const changed = { ...referencePlan, referenceChecks: referencePlan.referenceChecks!.map(item => ({ ...item, tolerance: 1 })) };
+  assert.throws(() => resumed.plan(scene.id, changed), /Frozen reference check/);
+  const nextPlan = { ...referencePlan, referenceChecks: undefined };
+  resumed.plan(scene.id, nextPlan);
+  assert.deepEqual(resumed.get(scene.id).plan?.referenceChecks, referencePlan.referenceChecks);
 });
 
 test("reference requests cannot silently create a text-only scene", () => {

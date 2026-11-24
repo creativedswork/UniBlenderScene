@@ -1,6 +1,6 @@
 {
   "name": "uni-blender-scene",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP.",
   "private": true,
   "type": "module",

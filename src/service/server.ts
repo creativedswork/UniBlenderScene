@@ -11,6 +11,7 @@ import { z } from "zod";
 import { REFERENCE_ASSETS, SceneStore, type ImageBox, type Scene } from "./store.js";
 import { proposalSchema, replaySchema, retrospectiveSchema } from "./experience.js";
 import { appearanceCandidateSchema, leapCodeSchema, tweakCode, tweaksSchema } from "./appearance.js";
+import { referenceOverlay, type ImagePoint } from "./reference-checks.js";
 
 const referenceInstructions = "Before the first user-facing update, keep image 1 as the primary reference and default camera. " +
   "A request such as ‘俯瞰视角和第五张图一致’ only applies to Camera 5. Keep all attachments in their original order and keep Camera 1 as the default. " +
@@ -40,6 +41,14 @@ const relationNode = z.object({
 });
 // Homogeneous array schemas let Codex discover tools that accept fixed-length vectors.
 const imageBox = z.array(z.number()).length(4).transform(value => value as ImageBox);
+const imagePoint = z.array(z.number().min(0).max(1)).length(2).transform(value => value as ImagePoint);
+const referenceCheck = z.object({
+  id: z.string().trim().min(1).max(80), reference: z.enum(REFERENCE_ASSETS),
+  nodeId: z.string().min(1).max(100), tolerance: z.number().positive().max(1),
+}).and(z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("point"), landmarkId: z.string().trim().min(1).max(100), target: imagePoint }),
+  z.object({ kind: z.literal("edge"), side: z.enum(["left", "right"]), target: z.array(imagePoint).min(2).max(16) }),
+]));
 const referenceEvidence = z.array(z.object({ reference: z.enum(REFERENCE_ASSETS), observation: z.string().min(1).max(4000) })).max(6);
 const referenceFile = z.object({
   download_url: z.string().url().optional(), file_id: z.string().min(1).optional(),
@@ -122,13 +131,14 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
         compositionApproval: z.boolean().optional(),
       }).optional(),
       referenceAnchors: z.array(z.object({ id: z.string().min(1).max(80), description: z.string().min(1).max(2000), targetBox: imageBox })).min(2).max(8).optional().describe("Camera/composition boxes in the stored primary reference only, even when appearance criteria target an auxiliary image."),
+      referenceChecks: z.array(referenceCheck).max(48).optional().describe("Frozen point and visible edge checks per paired reference. Use normalized [x,y] from the top left and a graph node ID. Points project a mapped Empty with scene_landmark_id. Edges measure the stated side of the node mask at increasing reference y values. The service gates composition and final acceptance. Existing checks carry across refinements."),
       steps: z.array(z.string().min(1).max(3000)).min(1).max(8),
       visualThreshold: z.number().min(0).max(100).default(85),
     }, annotations: write,
   }, ({ sceneId, ...plan }) => guarded(() => result(store.plan(sceneId, plan))));
   server.registerTool("scene_plan_review", {
     title: "Review planned spatial layout",
-    description: "Read-only graph verification before construction. Review coverage, hierarchy, independent relation nodes (participants, roles, axes, tolerances and criterion bindings), legacy spatial relations and stage_checklists against every reference. Failures return to planning. Use a separate verification pass from generation.",
+    description: "Read-only graph verification before construction. Review coverage, hierarchy, spatial relations, planned reference-check bindings and stage_checklists against every reference. Failures return to planning. Passing freezes the reference checks. Use a separate verification pass from generation.",
     inputSchema: { ...idSchema,
       checks: z.array(z.object({ id: z.enum(["coverage", "hierarchy", "spatial", "stage_checklists"]), passed: z.boolean(), evidence: z.string().min(1).max(4000) })).length(4),
       referenceEvidence,
@@ -177,14 +187,16 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }, ({ sceneId, ...options }) => guarded(() => result(store.optimize(sceneId, options))));
   server.registerTool("scene_get", {
     title: "Inspect scene and rendered evidence",
-    description: "Read authoritative workflowState (phase, status, approval and presentation). Set images=render for the current evidence, references for inputs, appearance for the baseline and valid candidates in the active appearance search, none for metadata, or all for render and references (legacy default). Use images=camera with referenceName for a matched camera render. referenceName selects one reference with images=references; objectName returns object data alone or with images=none. Poll scene_get with images=none during jobs. Inspect each new render once.",
+    description: "Read authoritative workflowState and current inspection. Use images=render for the main render, references for inputs, appearance for active candidates, none for metadata, or all for render and references. Use images=camera with referenceName for a paired render or images=alignment for the reference-check overlay (primary by default). objectName inspects one Blender object alone or with images=none. Poll with images=none during jobs.",
     inputSchema: {
       ...idSchema, objectName: z.string().min(1).max(256).optional(), referenceName: z.enum(REFERENCE_ASSETS).optional(),
-      images: z.enum(["none", "render", "references", "camera", "appearance", "all"]).optional(),
+      images: z.enum(["none", "render", "references", "camera", "alignment", "appearance", "all"]).optional(),
     }, annotations: read, _meta: { "openai/widgetAccessible": true },
   }, ({ sceneId, objectName, referenceName, images }) => guarded(async () => {
     if (objectName && (referenceName || images && images !== "none")) throw new Error("Inspect an object alone or with images=none.");
-    if (referenceName && images && images !== "references" && images !== "camera") throw new Error("Select a reference with images=references or images=camera.");
+    if (referenceName && images && !["references", "camera", "alignment"].includes(images)) {
+      throw new Error("Select a reference with images=references, images=camera, or images=alignment.");
+    }
     if (images === "camera" && !referenceName) throw new Error("Select referenceName for the matched camera render.");
     const scene = store.get(sceneId);
     const output = result(scene);
@@ -197,6 +209,17 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
     const references = store.referenceImages(scene);
     if (referenceName && !references.some((image) => image.assetName === referenceName)) throw new Error("Reference image is unavailable.");
     const selection = images ?? "all";
+    if (selection === "alignment") {
+      const reference = referenceName ?? REFERENCE_ASSETS[0];
+      const evidence = store.referenceAlignmentEvidence(scene, reference);
+      if (!evidence) throw new Error("Reference-check evidence is unavailable for the selected checkpoint and view.");
+      const overlay = referenceOverlay(await readFile(store.path(scene, evidence.file)), evidence.measurements);
+      output.content.push(
+        { type: "text", text: `Alignment for ${reference}. Cyan marks the frozen target. Amber marks the Blender measurement.` },
+        { type: "image", mimeType: "image/png", data: overlay.toString("base64") },
+      );
+      return output;
+    }
     if (selection === "appearance") {
       const candidates = store.appearanceImages(scene);
       if (!candidates.length) throw new Error("No appearance search is ready for comparison.");
@@ -232,7 +255,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }));
   server.registerTool("scene_review", {
     title: "Review scene evidence",
-    description: "Review the latest Blender render against every criterion for the current stage; final stage reviews all global criteria. Staged reviews require one structured observation per criterion with a real graph node ID; failed criteria need reason, correction and rerender acceptance check. Rank at most three repairs. Reference anchors are measured during composition and final stages. Service selects the best checkpoint and enforces per-stage budgets and two-round non-improvement stop. Visual score is host judgment.",
+    description: "Review the latest Blender render against current-stage criteria. Final reviews cover all global criteria. Provide a structured observation per staged criterion with a graph node ID. Failed criteria need a reason, correction and rerender acceptance check. Rank at most three repairs. In composition and final, submit reference box alignment and read service-measured reference points and edges in inspection.summary.referenceMeasurements. The service applies these checks independently of the host visual score.",
     inputSchema: {
       ...idSchema, iteration: z.number().int().min(1),
       inspectionId: z.string().min(1),
@@ -400,6 +423,7 @@ Read workflowState in every response: phase is the production stage, status is t
 Use scene_create with every supplied image in references (up to 6). The first is the primary camera/composition; auxiliary images show the same scene and calibrate depth, occlusion and placement. Keep original attachment order and pass attachmentNumber for each image when known. Image 1 stays primary and supplies the default composition. For a new multi-reference scene build one named Blender camera per reference using scene_get.referenceCameras. A fifth-image overhead request constrains the fifth camera. Fit all cameras against shared world-space landmarks, object placement and occlusion in one scene. Preserve original attachment numbers for existing scenes. When reviewing, retrieve each matched camera image once with scene_get images=camera and referenceName. Record shared-landmark evidence and inconsistencies per reference. Primary-view anchors stay bound to image 1; each other camera is compared against its paired image. Poll scene_get with images=none, then inspect every reference once with scene_get images=references; use referenceName to revisit a specific view only when needed. For an existing delivered scene, scene_continue can append auxiliary references. Discover 3D API Providers in connected tools and available Skills, including CLI APIs, for every standalone object; follow the scene Skill's asset workflow and obtain authorization before paid generation. Blender fallback requires evidence from both inventories in discovery.tools and discovery.skills; missing access or pending prerequisites is not provider absence.
 Read the bundled Blender production guidance in the scene Skill. Reconcile every supplied view into one layout before planning. Freeze 1-12 global criteria and 1-8 bounded steps with scene_plan, including spatial relationships established by auxiliary views. Every plan needs a Scene Graph and asset requirements. For new multi-object plans, include independent relations with stable IDs, participant roles and criterionIds (or [] when none apply). Read the scene Skill spatial relations reference for world-axis measurements and visual checks; keep object hierarchy in parentId. For full reconstruction, use ordered workflow stages: geometry, composition, materials, lighting, final. Composition approval is mandatory and cannot be disabled. Classify every non-group node in assets. Perform scene_plan_review against all references before generation or editing. Then resolve independent object assets concurrently under the scene Skill's asset workflow, respecting Provider dependencies, concurrency limits, required choices and authorization. Providers requiring one asset per session or immediate waiting need isolated user-authorized asset workers; otherwise use their supported serial workflow. Only the coordinator records pending verified task IDs and completed local GLBs with scene_asset_strategy. Resolve every standalone object through Provider discovery and generation, or record that no applicable Provider exists, before serial Blender assembly. The first edit must build every major subject, camera, ground, and basic lighting. If a reference is attached, plan 2-8 normalized image-space boxes in the primary view and measure them during composition and final review. Check auxiliary-view depth and occlusion using object transforms and the orbitable scene.
 Use scene_edit with code for a structural Leap or tweaks for numeric changes to existing parameters. In materials or lighting, use scene_appearance_search if distinct corrections merit a comparison. Inspect scene_get images=appearance, compare each valid candidate with the baseline and pick one using selection; keep the baseline if no candidate improves it. Review the selected full render as a regular edit. After each edit inspect inspection.summary.relationChecks and visually verify active relations. Include relationReviews for every relation bound to a current-stage criterion; final covers all relations. Failed or unmeasurable numeric checks cannot pass, and failed relations require corrections and failed linked criteria. Recheck affectedRelations during scoped revisions without expanding the authorized edit scope. Set scene_node_id on directly mapped Blender objects. Update graph mappings and statuses through scene_graph. Set an active camera, lighting, materials, and render settings.
+For reconstruction with identifiable points or silhouette edges, follow the scene Skill's reference checks workflow. Freeze referenceChecks per paired view before editing and map point landmarks to Blender Empties. During composition and final, read inspection.summary.referenceMeasurements. Use images=alignment for a discrepant view when the overlay helps identify the repair. Give the measured deviation and affected Blender object, then recheck the same view after editing.
 Poll scene_get with images=none until done; inspect the new render once with scene_get images=render and every current-stage criterion before submitting scene_review. Bind the runtime inspection.id as inspectionId. Submit referenceEvidence for every input view and sceneEvidence for each staged criterion. Use a separate read-only verification pass with at most three ranked repairs. A procedural proxy is not automatically high fidelity.
 Follow the returned stage. At awaiting_review, present the neutral gray main image and five structural views; use scene_preview and poll scene_get with images=none for interactive checkpoint inspection, preserving pending approval. Wait for the user's explicit scene_review_decision before advancing. When completed or best_effort, call scene_export, poll scene_get with images=none, then return render and artifact links. In an MCP Apps host, call scene_view only after scene_get images=none returns a non-null renderUrl, then verify the bundled viewer and Scene Graph selection. In a CLI without MCP Apps, use the inspected render and report that interactive viewing needs an MCP Apps host; do not claim viewer verification.
 Count all image blocks entering this conversation, including Read, screenshots, Provider tools and scene_get. Do not reread an unchanged render through Read after scene_get. Respect the active model/provider image limit and reserve room for the next review batch. Before approaching that limit, save a text handoff under the scene run directory with sceneId, stage/iteration, plan, reference labels, observed differences, approval state and next step; start a fresh conversation if history cannot be reduced. If the limit is unknown, checkpoint around 35 image blocks as a conservative workflow default, not a claimed provider limit. Keep required visual inspections and user approval; never claim unseen evidence. The service cannot remove images already stored by the host.
