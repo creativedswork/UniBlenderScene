@@ -36,7 +36,7 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
     <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="Reference of a glass house and pool among pines at sunset" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender render with warm interiors and sunlight through the pines" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/rainy-city-circuit-reference.webp"><img src="docs/rainy-city-circuit-reference.webp" alt="Low-angle reference of a white sports car and neon reflections on a rainy city street" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Low-angle Blender render of a white sports car and its wet-road reflection" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender render with headlight beams, broken reflections on wet asphalt and rows of lit tower windows" width="214" /></a></td>
   </tr>
   <tr>
     <th scope="col">Three.js</th>
@@ -47,14 +47,14 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js preview of the forest house, sunbeams and pool" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT render of the house and sunbeams with simplified trees" width="180" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Low-angle Three.js view with headlight reflections on wet asphalt and mist behind the car" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="Low-angle ThreeRT render with headlights, street mist and a car reflection on wet asphalt" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Low-angle Three.js view with lit office towers and reflections on wet asphalt" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="Low-angle ThreeRT render with staggered towers, street mist and the car's reflection" width="214" /></a></td>
   </tr>
 </table>
 
 The forest house was built from one reference. Three.js uses baked diffuse lighting on selected building surfaces. The ThreeRT image uses simplified tree geometry and is cropped to match the Blender framing.
 
-The three rainy circuit renders use the scene's low-angle camera to compare the headlight beams, mist and wet-road reflections with the original reference. Three.js uses lightmaps for the road, barriers and storefronts, with real-time reflections and fog lit by local lights.
+The three rainy circuit renders use the same low-angle camera. The headlights illuminate thin mist ahead of the car, with broken white highlights on the wet road. Rows of lit office windows rise behind the storefronts. Three.js uses baked lightmaps for the road, barriers and storefronts and renders wet-road reflections in real time. Three.js and ThreeRT both apply the preview haze scale to the local dust and mist effects.
 
 ## What's in the plugin
 

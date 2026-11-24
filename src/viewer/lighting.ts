@@ -44,7 +44,8 @@ export function limitPreviewShadows(scene: THREE.Scene, camera: THREE.Camera, ma
   const materials = new Set<THREE.MeshStandardMaterial>();
   let areaLights = false, spotTextures = 0;
   scene.traverseVisible(object => {
-    if (object instanceof THREE.Mesh && object.receiveShadow) {
+    // Shadow samplers are allocated by the scene shader even for baked receivers.
+    if (object instanceof THREE.Mesh) {
       for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
         if (material instanceof THREE.MeshStandardMaterial && material.visible) materials.add(material);
       }

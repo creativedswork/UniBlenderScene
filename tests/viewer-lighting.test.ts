@@ -85,7 +85,7 @@ test("planar reflection preserves physical receiver materials and rejects a tall
   assert.throws(() => addPlanarReflection(scene, tower, "Tower"), /horizontal surface/);
 });
 
-test("raster shadow maps share the GPU sampler budget with the most textured visible receiver", () => {
+test("raster shadow maps reserve samplers for textured baked receivers", () => {
   const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera();
   scene.environment = new THREE.Texture();
   scene.add(new THREE.RectAreaLight());
@@ -96,7 +96,7 @@ test("raster shadow maps share the GPU sampler budget with the most textured vis
     transmission: 1, transmissionMap: new THREE.Texture(),
   });
   const receiver = new THREE.Mesh(new THREE.BoxGeometry(), material);
-  receiver.receiveShadow = true;
+  receiver.receiveShadow = false;
   scene.add(receiver);
   const sun = new THREE.DirectionalLight();
   sun.castShadow = true;

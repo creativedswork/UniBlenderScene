@@ -19,7 +19,7 @@ export type ThreeRTInput = {
     world: { color: number[]; strength: number; environmentUri?: string | null; environmentRotationY?: number };
     lights: { name: string; type: string; color: number[]; energy: number; useShadow: boolean;
       size: number; sizeY: number; shape: string; spotSize: number; spotBlend: number; worldMatrix: number[] }[];
-    previewAppearance?: { dust?: { color: number[]; wind?: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
+    previewAppearance?: { hazeScale?: number; dust?: { color: number[]; wind?: number[]; volumes: { center: number[]; radius: number[]; density: number }[] } };
     postprocessing?: { bloom?: { strength?: number; threshold?: number }; haze?: {
       color: number[]; strength: number; start: number; depth: number; falloff: string };
     };
@@ -204,10 +204,13 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
     scene.add(fogBox);
   }
   const dust = profile.previewAppearance?.dust;
+  const hazeScale = profile.previewAppearance?.hazeScale ?? 1;
   for (const volume of dust?.volumes ?? []) {
+    const density = volume.density * hazeScale;
+    if (density <= 0) continue;
     // FogVolume combines coverages, rather than adding extinction. A saturated height
     // term preserves the profile's radial density; two small terms nearly erase thin air.
-    const fog = new FogVolume({ radialExtinction: volume.density, heightExtinction: 20,
+    const fog = new FogVolume({ radialExtinction: density, heightExtinction: 20,
       heightFalloff: 0, albedo: dust!.color.slice(0, 3) as [number, number, number], phaseG: 0.45 });
     fog.volume.fn = driftingDust;
     const wind = dust!.wind ?? [0, 0, 0];
@@ -224,7 +227,7 @@ export function buildThreeRTScene({ camera: view, profile, assetPrefix = "", env
     fog.setVolumetric(1, worldVolume.anisotropy);
     scene.fog = fog;
   } else if (mist) {
-    const opacity = Math.max(0, Math.min(0.98, mist.strength));
+    const opacity = Math.max(0, Math.min(0.98, mist.strength * hazeScale));
     const fog = new ExponentialHeightFog(-Math.log1p(-opacity) / Math.max(0.001, mist.depth), 0, color(mist.color));
     fog.startDistance = mist.start;
     fog.maxOpacity = opacity;

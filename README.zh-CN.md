@@ -31,7 +31,7 @@
     <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="夕阳下的玻璃住宅、池水和松林参考图" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的室内暖光和穿林光束" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/rainy-city-circuit-reference.webp"><img src="docs/rainy-city-circuit-reference.webp" alt="雨夜赛道低机位参考图，白色跑车和街边霓虹倒映在路面上" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 低机位成片，白色跑车倒映在湿路上" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 成片中的车灯光束、湿路上的断续反光和塔楼成排亮窗" width="214" /></a></td>
   </tr>
   <tr>
     <th scope="col">Three.js</th>
@@ -42,14 +42,14 @@
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js 预览中的林间住宅、光束和水池" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT 渲染中的林间住宅和光束，树木使用简化几何" width="180" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js 低机位预览中的湿路灯光和车后薄雾" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT 低机位渲染中的车灯、街雾和车身倒影" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js 低机位预览中的办公塔楼窗灯与湿路倒影" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT 低机位渲染中的错落塔楼、街雾和车身倒影" width="214" /></a></td>
   </tr>
 </table>
 
 林间住宅根据一张参考图制作。Three.js 在部分建筑表面使用烘焙的漫反射光照。ThreeRT 图采用简化的树木几何，并按 Blender 的取景裁切。
 
-雨夜赛道的三个渲染结果使用同一低机位，与原始参考图对照车灯光束、薄雾和湿路倒影。Three.js 用光照贴图显示道路、护栏和店面的静态光照，实时计算湿路倒影和局部灯光在雾中的散射。
+雨夜赛道的三个渲染结果使用同一低机位。车灯照亮车前薄雾，在湿路上留下断续的白色高光。沿街店面后方是成排亮窗的办公塔楼。Three.js 用烘焙光照贴图显示道路、护栏和店面的静态光照，并实时计算湿路反射。Three.js 和 ThreeRT 都将预览雾量应用到局部雾效和深度薄雾。
 
 ## 插件包含什么
 
