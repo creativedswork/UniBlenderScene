@@ -47,14 +47,14 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
   <tr>
     <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js preview of the forest house, sunbeams and pool" width="180" /></a></td>
     <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT render of the house and sunbeams with simplified trees" width="180" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Raised Three.js view of car and storefront reflections on wet asphalt" width="214" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT render of the same raised view with wet-road reflections and blue haze" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Low-angle Three.js view with headlight reflections on wet asphalt and mist behind the car" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="Low-angle ThreeRT render with headlights, street mist and a car reflection on wet asphalt" width="214" /></a></td>
   </tr>
 </table>
 
 The forest house was built from one reference. Three.js uses baked diffuse lighting on selected building surfaces. The ThreeRT image uses simplified tree geometry and is cropped to match the Blender framing.
 
-For the rainy circuit, the Blender render follows the low-angle reference. The Three.js and ThreeRT views share a higher camera. Three.js uses lightmaps for the road, barriers and storefronts, with real-time reflections and fog lit by local lights.
+The three rainy circuit renders use the scene's low-angle camera to compare the headlight beams, mist and wet-road reflections with the original reference. Three.js uses lightmaps for the road, barriers and storefronts, with real-time reflections and fog lit by local lights.
 
 ## What's in the plugin
 
@@ -87,6 +87,8 @@ The [scene Skill](skills/blender-scene/SKILL.md) guides a staged process:
 4. **Refine:** use Leap for structural changes and Tweak for existing parameters.
    Compare material or lighting candidates against the same baseline when several
    directions are plausible, then render and review the selected edit.
+   For reference-based scenes, compare every iteration with the original reference
+   for that camera, including changes limited to the interactive preview.
 5. **Deliver:** export the best reviewed checkpoint as a render, `.blend` and GLB.
 
 The agent supplies planning and visual judgment; the service executes Blender
@@ -127,6 +129,9 @@ Use the preview selector to switch to **Three.js · 网页交互** for quick
 navigation and layout checks. Select **Render** to compare with the Blender
 image. Appearance can differ between preview modes; use the Blender render
 when reviewing the final look.
+
+When the local 3D preview is ready, select **在浏览器中打开** to open it in your
+browser. If the client cannot open it, copy the address from **查看预览链接**.
 
 ThreeRT approximates Blender's HDR environment lighting with a gradient sky.
 The native client displays the baked sky panorama when the export includes one.

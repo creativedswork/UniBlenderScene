@@ -36,11 +36,10 @@ landmark or occlusion and keep one consistent layout.
 
 ## Match the lighting in the render
 
-- Set the camera and composition before lighting. Identify visible sources such
-  as windows, lamps, and emissive screens, then place and color lights to match
-  their apparent contribution in the plan's lighting reference. This may be an
-  auxiliary image selected for appearance; it does not replace the stored
-  primary camera/composition reference.
+- In the lighting stage, use the established camera and composition to place
+  and color lights according to their apparent contribution in the plan's
+  lighting reference. The lighting reference can be an auxiliary image. Use
+  the stored primary reference for the default camera and composition.
 - Compare primary-view composition at the same crop. When lighting comes from
   another view, compare the specified light direction, color and surface response
   without copying that view's camera or image-space anchors; otherwise use the
@@ -48,9 +47,12 @@ landmark or occlusion and keep one consistent layout.
   and dark regions first, including a desaturated view when color obscures value
   differences. Adjust one source at a time and inspect the next render; light
   settings alone do not show the final result.
-- Separate emissive surfaces from the lights that illuminate nearby geometry.
-  Check whether warm practicals and cooler ambient or window light still read
-  correctly after Blender color management and in the exported preview.
+- Check visible emissive surfaces and the illumination on nearby objects as
+  separate effects after Blender color management and in the exported preview.
+- For a headlight, check the visible lamp face and the beam's footprint on the
+  road. Check the reflection on wet pavement and the beam in mist when the
+  reference shows them. If other lights obscure the contribution, compare the
+  relevant region with the headlights on and off at the same camera and exposure.
 
 ## Check the deliverable
 
