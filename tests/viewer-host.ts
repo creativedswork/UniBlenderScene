@@ -1,13 +1,16 @@
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 
 const frame = document.getElementById("viewer") as HTMLIFrameElement;
-const bridge = new AppBridge(null, { name: "Integration host", version: "1.0.0" }, {
-  serverTools: {}, message: { text: {} }, openLinks: {},
-}, { hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] } });
 const query = new URLSearchParams(location.search);
+const browserMode = query.get("browser");
+const bridge = new AppBridge(null, { name: "Integration host", version: "1.0.0" }, {
+  serverTools: {}, message: { text: {} }, ...(browserMode === "unsupported" ? {} : { openLinks: {} }),
+}, { hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] } });
 bridge.onopenlink = async ({ url }) => {
   document.getElementById("sent")!.dataset.browserUrl = url;
-  return query.has("blockBrowser") ? { isError: true } : {};
+  if (browserMode === "silent") return new Promise(() => {});
+  if (browserMode === "open") window.open(url, "_blank");
+  return browserMode === "blocked" ? { isError: true } : {};
 };
 const snapshot = await (await fetch(query.has("cameras") ? "/scene?cameras=1" : query.has("lightmap") ? "/scene?lightmap=1" : query.has("review") ? "/scene?review=1" : query.has("work") ? "/scene?work=1" : "/scene")).json();
 const inaccessible = (url: string | null) => url ? `http://127.0.0.1:1${new URL(url).pathname}` : null;
@@ -55,6 +58,8 @@ bridge.oncalltool = async ({ name, arguments: args }) => {
     return { content: [{ type: "text", text: "Scene progress" }], structuredContent: widgetSnapshot };
   }
   const input = request.asset;
+  // Keep renderer startup out of the browser button checks.
+  if (browserMode && input.name === "render-profile.json") return new Promise(() => {});
   const reference = snapshot.references?.find((image: { assetName: string }) => image.assetName === input.name) ??
     (input.name === "reference" ? snapshot.reference : undefined);
   const url = input.name === "render" ? snapshot.renderUrl :

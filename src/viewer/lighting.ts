@@ -195,6 +195,32 @@ export function addPlanarReflection(scene: THREE.Scene, root: THREE.Object3D, na
           float planarDotNV = saturate(dot(geometryNormal, geometryViewDir));
           vec3 planarFresnel = F_Schlick(material.specularColor, material.specularF90, planarDotNV);
           reflectedLight.indirectSpecular = mix(reflectedLight.indirectSpecular, planarColor * planarFresnel, planarWeight);
+          #if NUM_SPOT_LIGHTS > 0
+            // Resolve low spotlights in the water film even when their emitters are too small for the capture.
+            float eyeHeight = max(0.0, dot(-geometryPosition, planarUp));
+            for (int i = 0; i < NUM_SPOT_LIGHTS; i++) {
+              SpotLight spot = spotLights[i];
+              vec3 toLamp = spot.position - geometryPosition;
+              float lampHeight = dot(toLamp, planarUp);
+              vec3 axis = spot.direction - planarUp * dot(spot.direction, planarUp);
+              float axisLength = length(axis);
+              if (axisLength < 0.3 || lampHeight <= 0.1 || lampHeight >= 1.8) continue;
+              vec3 along = axis / axisLength;
+              vec3 across = cross(planarUp, along);
+              // Intersect the reflected camera-to-light segment with the receiver.
+              vec3 offset = (eyeHeight * toLamp - lampHeight * geometryPosition) /
+                max(eyeHeight + lampHeight, 0.001);
+              float lengthwise = dot(offset, along) / mix(0.46, 0.72, 1.0 - planarDotNV);
+              float crosswise = dot(offset, across) / 0.105;
+              float film = exp(-dot(vec2(lengthwise, crosswise), vec2(lengthwise, crosswise)));
+              float forward = smoothstep(0.22, 0.68, dot(normalize(toLamp), spot.direction));
+              float low = smoothstep(0.1, 0.3, lampHeight) * (1.0 - smoothstep(1.0, 1.8, lampHeight));
+              float power = max(spot.color.r, max(spot.color.g, spot.color.b));
+              vec3 lampTint = spot.color * (1.0 - exp(-0.025 * power)) / max(power, 0.001);
+              reflectedLight.indirectSpecular +=
+                1.05 * planarWeight * low * forward * film * lampTint;
+            }
+          #endif
           #ifdef USE_CLEARCOAT
             float planarDotNVcc = saturate(dot(geometryClearcoatNormal, geometryViewDir));
             vec3 planarCoatFresnel = F_Schlick(material.clearcoatF0, material.clearcoatF90, planarDotNVcc);

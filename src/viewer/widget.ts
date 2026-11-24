@@ -1213,7 +1213,8 @@ function receive(data: unknown) {
   }
   if (next.error) message(next.job?.kind === "threert" ? next.threeRTRender?.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" : "The scene operation failed. Ask in the conversation to inspect it and retry.");
   const glb = artifact("final.glb");
-  el("open-browser").hidden = !next.browserUrl || !glb || !artifact("render-profile.json") || !artifact("scene-graph.json");
+  const canOpenInBrowser = !!(next.browserUrl && glb && artifact("render-profile.json") && artifact("scene-graph.json"));
+  el("open-browser").hidden = el("show-browser-link").hidden = !canOpenInBrowser;
   if (glb && glb !== loadedURL && glb !== loadingURL) void loadModel(glb);
   setMode(mode);
   if (!busy && !preferredBackend && !threeRTLiveUnavailableReason()) {
@@ -1262,18 +1263,34 @@ app.onhostcontextchanged = (context) => {
 };
 el("mode-render").onclick = () => setMode("render");
 el("mode-3d").onclick = showPreview;
-el("open-browser").onclick = async () => {
+
+function showBrowserPreviewLink() {
   const url = snapshot?.browserUrl;
   if (!url) return;
-  try {
-    if (!(await app.openLink({ url })).isError) return;
-  } catch { /* Offer the link when the host cannot open it. */ }
   const dialog = el<HTMLDialogElement>("browser-preview-dialog");
   const input = el<HTMLInputElement>("browser-preview-url");
   input.value = url;
   dialog.showModal();
   input.select();
+}
+
+const openBrowser = el<HTMLButtonElement>("open-browser");
+openBrowser.onclick = async () => {
+  const url = snapshot?.browserUrl;
+  if (!url) return;
+  if (app.getHostCapabilities()?.openLinks) {
+    openBrowser.disabled = true;
+    try {
+      if (!(await app.openLink({ url }, { timeout: 2000 })).isError) return;
+    } catch {
+      // Timeouts and transport failures use the same fallback as a rejected link.
+    } finally {
+      openBrowser.disabled = false;
+    }
+  }
+  if (snapshot?.browserUrl === url) showBrowserPreviewLink();
 };
+el("show-browser-link").onclick = showBrowserPreviewLink;
 el("browser-preview-close").onclick = () => el<HTMLDialogElement>("browser-preview-dialog").close();
 el<HTMLSelectElement>("render-backend").onchange = () => {
   preferredBackend = el<HTMLSelectElement>("render-backend").value === "threert" ? "threert" : "web";

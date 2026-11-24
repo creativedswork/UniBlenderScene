@@ -26,6 +26,7 @@
     <button id="mode-render" aria-pressed="true">Render</button>
     <button id="mode-3d" aria-pressed="false" disabled>3D</button>
     <button id="open-browser" hidden>在浏览器中打开</button>
+    <button id="show-browser-link" hidden>查看预览链接</button>
     <button id="reset" aria-label="Reset camera" title="Reset camera" disabled>↺</button>
     <button id="fullscreen" aria-label="Expand viewer" title="Expand viewer">⛶</button>
   </header>
@@ -92,8 +93,8 @@
       <img id="reference-match" alt="Matched camera render" hidden>
     </div>
   </dialog>
-  <dialog id="browser-preview-dialog">
-    <label for="browser-preview-url">复制预览链接，在浏览器中打开</label>
+  <dialog id="browser-preview-dialog" aria-labelledby="browser-preview-label">
+    <label id="browser-preview-label" for="browser-preview-url">复制预览链接，在浏览器中打开</label>
     <input id="browser-preview-url" readonly>
     <button id="browser-preview-close">关闭</button>
   </dialog>
