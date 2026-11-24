@@ -18,28 +18,32 @@
 
 <table>
   <tr>
-    <th colspan="4" scope="colgroup">夕阳下的林间住宅</th>
-    <th colspan="4" scope="colgroup">雨夜城市赛道</th>
+    <th colspan="2" scope="colgroup">夕阳下的林间住宅</th>
+    <th colspan="2" scope="colgroup">雨夜城市赛道</th>
   </tr>
   <tr>
     <th scope="col">参考图</th>
     <th scope="col">Blender</th>
-    <th scope="col">Three.js</th>
-    <th scope="col">ThreeRT</th>
     <th scope="col">Blender · 低机位</th>
     <th scope="col">Three.js · 低机位</th>
+  </tr>
+  <tr>
+    <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="夕阳下的玻璃住宅、池水和松林参考图" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的室内暖光和穿林光束" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 低机位成片，白色跑车倒映在湿路上" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs-low.webp"><img src="docs/rainy-city-circuit-threejs-low.webp" alt="Three.js 默认低机位下的车身和湿路倒影" width="214" /></a></td>
+  </tr>
+  <tr>
+    <th scope="col">Three.js</th>
+    <th scope="col">ThreeRT</th>
     <th scope="col">Three.js · 高机位</th>
     <th scope="col">ThreeRT · 高机位</th>
   </tr>
   <tr>
-    <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="夕阳下的玻璃住宅、池水和松林参考图" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的室内暖光和穿林光束" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js 预览中的林间住宅、光束和水池" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT 渲染中的林间住宅和光束，树木使用简化几何" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 低机位成片，白色跑车倒映在湿路上" width="107" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs-low.webp"><img src="docs/rainy-city-circuit-threejs-low.webp" alt="Three.js 默认低机位下的车身和湿路倒影" width="107" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js 较高机位下的车身和临街招牌倒影" width="107" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT 同机位渲染中的湿路倒影和蓝色街雾" width="107" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js 预览中的林间住宅、光束和水池" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT 渲染中的林间住宅和光束，树木使用简化几何" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js 较高机位下的车身和临街招牌倒影" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT 同机位渲染中的湿路倒影和蓝色街雾" width="214" /></a></td>
   </tr>
 </table>
 

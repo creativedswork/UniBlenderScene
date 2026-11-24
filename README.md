@@ -23,28 +23,32 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
 
 <table>
   <tr>
-    <th colspan="4" scope="colgroup">Forest house at sunset</th>
-    <th colspan="4" scope="colgroup">Rainy city circuit</th>
+    <th colspan="2" scope="colgroup">Forest house at sunset</th>
+    <th colspan="2" scope="colgroup">Rainy city circuit</th>
   </tr>
   <tr>
     <th scope="col">Reference</th>
     <th scope="col">Blender</th>
-    <th scope="col">Three.js</th>
-    <th scope="col">ThreeRT</th>
     <th scope="col">Blender · Low</th>
     <th scope="col">Three.js · Low</th>
+  </tr>
+  <tr>
+    <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="Reference of a glass house and pool among pines at sunset" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender render with warm interiors and sunlight through the pines" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Low-angle Blender render of a white sports car and its wet-road reflection" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs-low.webp"><img src="docs/rainy-city-circuit-threejs-low.webp" alt="Three.js preview of the car and its reflection from the default camera" width="214" /></a></td>
+  </tr>
+  <tr>
+    <th scope="col">Three.js</th>
+    <th scope="col">ThreeRT</th>
     <th scope="col">Three.js · Raised</th>
     <th scope="col">ThreeRT · Raised</th>
   </tr>
   <tr>
-    <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="Reference of a glass house and pool among pines at sunset" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender render with warm interiors and sunlight through the pines" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js preview of the forest house, sunbeams and pool" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT render of the house and sunbeams with simplified trees" width="90" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Low-angle Blender render of a white sports car and its wet-road reflection" width="107" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs-low.webp"><img src="docs/rainy-city-circuit-threejs-low.webp" alt="Three.js preview of the car and its reflection from the default camera" width="107" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Raised Three.js view of car and storefront reflections on wet asphalt" width="107" /></a></td>
-    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT render of the same raised view with wet-road reflections and blue haze" width="107" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js preview of the forest house, sunbeams and pool" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT render of the house and sunbeams with simplified trees" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Raised Three.js view of car and storefront reflections on wet asphalt" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT render of the same raised view with wet-road reflections and blue haze" width="214" /></a></td>
   </tr>
 </table>
 
