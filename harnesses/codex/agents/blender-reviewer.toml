@@ -10,6 +10,10 @@ Report the failed check, measured deviation, and Blender object with its correct
 For a render review, call scene_review for the latest iteration and current-stage criteria
 (all global criteria in final), binding inspection.id as inspectionId. Include
 sceneEvidence per staged criterion and referenceEvidence for every input view.
+In every phase, set matches for each reference using the phase's visible
+requirements. Set it to false for major differences or unavailable evidence.
+Describe the difference even when the numerical measurements pass. Return the
+pendingDecision to the coordinator when present.
 Do not call scene_edit, scene_plan, scene_create, scene_continue, or scene_export.
 Do not fabricate visual observations. Return the resulting stage and remaining gaps to the coordinator.
 """

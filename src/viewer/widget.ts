@@ -38,7 +38,8 @@ type Snapshot = {
   artifacts: { name: string; url: string }[];
   plan?: { graph?: GraphNode[]; workflow?: { stages: { name: string }[] } }; workflowIndex?: number;
   reviewViews?: string[]; remainingGaps?: string[];
-  workflowState?: { phase: string | null; status: string; compositionApproved: boolean; presentation: {
+  workflowState?: { phase: string | null; status: string; compositionApproved: boolean;
+    pendingDecision?: { nextPhase: string }; presentation: {
     mode: "structural" | "appearance"; purpose: "work" | "confirmation" | "delivery"; source: string; iteration: number;
   } };
 };
@@ -1137,14 +1138,19 @@ function receive(data: unknown) {
   }
   const busy = next.job && ["queued", "running"].includes(next.job.status);
   const state = next.workflowState, presentation = state?.presentation;
-  const structural = presentation?.mode === "structural", pending = next.stage === "awaiting_review";
+  const structural = presentation?.mode === "structural", pending = presentation?.purpose === "confirmation";
   el("status").textContent = busy ? next.job!.kind === "threert" ? "ThreeRT 渲染中" : next.job!.kind === "references" ? "Loading reference views" :
     next.job!.kind === "create" ? "Preparing scene" : next.job!.kind === "bake" ? "正在烘焙场景" : next.job!.kind === "preview" ? "Preparing 3D review preview" : `${next.job!.kind === "export" ? "Exporting" : "Rendering"} scene` :
     next.error ? next.job?.kind === "threert" ? "ThreeRT 渲染失败" : "Scene needs attention" : next.stage === "completed" ? "Ready" :
     next.stage === "best_effort" ? "Best version" : next.stage === "awaiting_review" ? "Confirm composition" :
     next.stage === "review" ? "Awaiting review" :
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
-  if (!busy && !next.error && presentation) el("status").textContent = `${state!.phase ?? "Planning"} / ${state!.status} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  if (!busy && !next.error && presentation) {
+    const reviewNeedsChanges = presentation.purpose === "work" && ["awaiting_review", "best_effort"].includes(next.stage);
+    const reviewStatus = state!.pendingDecision ? `decision needed · next phase ${state!.pendingDecision.nextPhase}` :
+      reviewNeedsChanges ? "changes needed" : state!.status;
+    el("status").textContent = `${state!.phase ?? "Planning"} / ${reviewStatus} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  }
   const webIssues = next.exportAlignment?.issues.filter(issue => !issue.target || issue.target === "threejs") ?? [];
   el("status").title = webIssues.map(issue => `${issue.object} · ${issue.effect} — ${issue.reason}`).join("\n");
   if (!busy && !next.error && next.exportAlignment?.status === "degraded") el("status").textContent += " · 3D export is missing effects";

@@ -94,7 +94,7 @@ async function planFixture(args: Record<string, any>) {
 async function reviewFixture(args: Record<string,any>) {
   const s=(await call("scene_get",{sceneId:args.sceneId,images:"none"})).structuredContent as Record<string,any>;
   const observations=s.plan.workflow ? (args.observations ?? args.criteria.map((c:any)=>({criterionId:c.id,nodeId:"cube",target:"Visible cube",actual:"Cube shown",evidence:"Rendered fixture",reason:"Mismatch",correction:"Fix cube",acceptance:"Visible cube"}))).map((o:any)=>({...o,sceneEvidence:"Runtime inventory contains RedCube",...(s.references.length?{referenceView:s.references[0].assetName}:{})})) : undefined;
-  const r=await call("scene_review",{...args,inspectionId:s.inspection.id,observations,referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture spatial evidence checked"}))});
+  const r=await call("scene_review",{...args,inspectionId:s.inspection.id,observations,referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture spatial evidence checked",matches:true}))});
   assert.equal(r.isError,undefined,JSON.stringify(r.content));return r;
 }
 async function poll(id: string, expectedStatus = "done"): Promise<Record<string, any>> {
@@ -222,7 +222,12 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   const mismatch = await reviewFixture({ sceneId: cameraId, iteration: composition.iteration, criteria: cameraCriteria,
     referenceAlignment: cameraAnchors.map(anchor => ({ id: anchor.id, renderBox: anchor.targetBox, evidence: "Fixture box" })),
     visualScore: 100, regressions: [], repairable: true, nextAction: "Move the paired camera to align the visible edge" });
-  assert.equal(mismatch.structuredContent!.stage, "edit");
+  assert.equal(mismatch.structuredContent!.stage, "awaiting_review");
+  const pendingCameraReview = (await poll(cameraId)).workflowState.pendingDecision;
+  assert.equal(pendingCameraReview.nextPhase, "final");
+  assert.ok(pendingCameraReview.issues.some((issue: { id: string }) => issue.id.startsWith("reference_check:")));
+  const continueCamera = await call("scene_review_decision", { sceneId: cameraId, approved: false, reviewId: pendingCameraReview.reviewId });
+  assert.equal(continueCamera.structuredContent?.stage, "edit");
 
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
   const id = created.structuredContent!.id as string; await poll(id);

@@ -26,6 +26,10 @@ segmentation-assisted contour when the exact positions are hard to locate.
    is the maximum horizontal error as a fraction of frame width. For a street
    gap, use separate nodes for the two contributing sides. Measure the right
    edge of the left group and the left edge of the right group on the same rows.
+   When the width of a subject defines the composition, check both edges at
+   rows where the outline shows that width. Use points for identifiable
+   landmarks elsewhere on the subject. A single point leaves its width and
+   silhouette unchecked.
 
 Compose and render each paired camera at the reference aspect ratio, with
 square pixels and the render border disabled. Use perspective or orthographic
@@ -46,6 +50,5 @@ current checkpoint when the candidate fails to improve it.
 The service freezes the checks after graph approval, carries them across
 `scene_continue`, and measures them again on composition revalidation and final
 review. Missing visibility or incompatible framing produces an unmeasurable
-result. After budget exhaustion, report failed or unmeasurable checks from
-`remainingGaps` when showing the selected checkpoint. The existing composition
-approval and best-effort delivery rules still apply.
+result. For a paused review, explain failed or unmeasurable checks from
+`workflowState.pendingDecision` before asking whether to repair or advance.

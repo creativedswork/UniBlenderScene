@@ -28,6 +28,13 @@ export type Plan = {
   workflow?: { stages: { name: StageName; criterionIds: string[]; budget: number }[]; compositionApproval?: boolean };
 };
 export type StageName = "geometry" | "composition" | "materials" | "lighting" | "final";
+type ReviewIssue = { id: string; evidence: string };
+type PendingStageDecision = {
+  reviewId: string; reviewedIteration: number; nextPhase: StageName | "delivery";
+  issues: ReviewIssue[]; checkpointIssues: ReviewIssue[]; nextAction: string;
+  remainingRounds: number; scopedRevisionRequired: boolean;
+};
+type StageDecisionOptions = { reviewId?: string; acceptGaps?: boolean; additionalBudget?: number };
 export type Presentation = {
   mode: "structural" | "appearance"; purpose: "work" | "confirmation" | "delivery";
   source: "current" | "checkpoint" | "best"; iteration: number;
@@ -55,7 +62,7 @@ export type Review = {
   relationReviews?: RelationReview[];
   spatialReport?: string;
   inspectionId?: string; phase?: StageName; revisionId?: string;
-  referenceEvidence?: { reference: string; observation: string }[];
+  referenceEvidence?: { reference: string; observation: string; matches?: boolean }[];
   iteration: number;
   criteria: { id: string; passed: boolean; evidence: string }[];
   referenceAlignment?: { id: string; renderBox: ImageBox; evidence: string }[];
@@ -97,6 +104,8 @@ export type Scene = {
   spatialLibrary?: SpatialLibrary;
   inspection?: { id: string; iteration: number; stage: string; summary: Record<string, unknown>; spatialReport?: string };
   compositionApproved?: boolean;
+  acceptedStageGaps?: { phase: StageName; reviewId: string; checkpointReviewId?: string;
+    checkpointIteration: number; issues: ReviewIssue[] }[];
   pendingIteration?: number;
   renderMode?: Presentation["mode"]; bestRenderMode?: Presentation["mode"];
   reviewEvidence?: Pick<Presentation, "source" | "iteration" | "contentIteration" | "revisionId"> & { phase?: StageName | null };
@@ -140,12 +149,28 @@ function validImageBox(box: ImageBox): boolean {
     box[0] < box[2] && box[1] < box[3];
 }
 
-function reviewGaps(review: Review): string[] {
+function reviewIssues(review: Review, visualThreshold?: number): ReviewIssue[] {
   return [
-    ...review.criteria.filter(item => !item.passed).map(item => item.id),
-    ...((review.alignmentMaxError ?? 0) > MAX_ANCHOR_ERROR ? ["reference_alignment"] : []),
-    ...(review.referenceMeasurements ?? []).filter(item => item.status !== "passed").map(item => `reference_check:${item.id}`),
+    ...review.criteria.filter(item => !item.passed).map(item => ({ id: item.id, evidence: item.evidence })),
+    ...(review.referenceEvidence ?? []).filter(item => item.matches === false)
+      .map(item => ({ id: `reference_view:${item.reference}`, evidence: item.observation })),
+    ...((review.alignmentMaxError ?? 0) > MAX_ANCHOR_ERROR ? [{ id: "reference_alignment",
+      evidence: `Anchor error ${(review.alignmentMaxError! * 100).toFixed(1)}% exceeds ${MAX_ANCHOR_ERROR * 100}% of the frame.` }] : []),
+    ...(review.referenceMeasurements ?? []).filter(item => item.status !== "passed")
+      .map(item => ({ id: `reference_check:${item.id}`, evidence: item.reason ??
+        `Measured error ${item.maxError?.toFixed(3)} with tolerance ${item.tolerance} in ${item.reference}.` })),
+    ...(visualThreshold === undefined ? [] : review.regressions.map((evidence, index) => ({ id: `regression:${index + 1}`, evidence }))),
+    ...(visualThreshold !== undefined && review.visualScore < visualThreshold ? [{ id: "visual_score",
+      evidence: `Visual score ${review.visualScore} is below the required ${visualThreshold}.` }] : []),
   ];
+}
+
+function reviewGaps(review: Review): string[] {
+  return reviewIssues(review).map(item => item.id);
+}
+
+function passesReview(review: Review, visualThreshold: number): boolean {
+  return reviewIssues(review, visualThreshold).length === 0;
 }
 
 export function validateSceneGraph(nodes: SceneNode[]): void {
@@ -244,14 +269,30 @@ export class SceneStore {
     if (!scene) throw new Error("Unknown scene ID.");
     return scene;
   }
-  workflowState(scene: Scene): { phase: StageName | null; status: Scene["stage"]; compositionApproved: boolean; presentation: Presentation } {
+  workflowState(scene: Scene): { phase: StageName | null; status: Scene["stage"]; compositionApproved: boolean;
+      presentation: Presentation; pendingDecision?: PendingStageDecision } {
     const phase = scene.plan?.workflow?.stages[scene.workflowIndex ?? 0]?.name ?? (scene.plan ? "final" : null);
     const pending = scene.stage === "awaiting_review", finished = ["completed", "best_effort"].includes(scene.stage);
+    const threshold = scene.plan?.visualThreshold ?? 0;
+    const latest = pending && scene.plan?.workflow ? scene.reviews.at(-1) ?? scene.best : undefined;
+    const issues = latest && reviewIssues(latest, threshold);
+    const revision = this.activeRevision(scene);
+    const allowance = latest && this.attemptLimit(scene);
+    const pendingDecision = latest && issues?.length && allowance ? {
+      reviewId: latest.inspectionId ?? String(latest.iteration), reviewedIteration: latest.iteration,
+      nextPhase: revision ? "composition" as const : scene.plan?.workflow?.stages[(scene.workflowIndex ?? 0) + 1]?.name ?? "delivery" as const,
+      issues, checkpointIssues: scene.best ? reviewIssues(scene.best, threshold) : issues, nextAction: latest.nextAction,
+      remainingRounds: Math.max(0, allowance.limit - allowance.spent), scopedRevisionRequired: scene.compositionRevalidation === true,
+    } : undefined;
+    const acceptedFinal = scene.best?.inspectionId && scene.acceptedStageGaps?.some(decision =>
+      decision.phase === "final" && decision.checkpointReviewId === scene.best!.inspectionId);
+    const referenceDraft = scene.stage === "best_effort" && this.referenceImages(scene).length > 0 && !acceptedFinal;
     return {
       phase, status: scene.stage, compositionApproved: scene.compositionApproved === true,
+      ...(pendingDecision ? { pendingDecision } : {}),
       presentation: {
-        mode: pending || phase === "geometry" || phase === "composition" ? "structural" : "appearance",
-        purpose: pending ? "confirmation" : finished ? "delivery" : "work",
+        mode: phase === "geometry" || phase === "composition" ? "structural" : "appearance",
+        purpose: referenceDraft || pendingDecision ? "work" : pending ? "confirmation" : finished ? "delivery" : "work",
         source: pending ? "checkpoint" : finished ? "best" : "current",
         iteration: pending || finished ? scene.best?.iteration ?? scene.iteration : scene.iteration,
         ...(scene.currentContentIteration !== undefined ? { contentIteration: pending || finished ?
@@ -316,7 +357,7 @@ export class SceneStore {
     const revision = this.activeRevision(scene);
     if (revision) return { spent: revision.spent, limit: revision.additionalBudget };
     if (scene.compositionRevalidation) return { spent: 0, limit: 0 };
-    const phase = this.workflowState(scene).phase;
+    const phase = scene.plan?.workflow?.stages[scene.workflowIndex ?? 0]?.name;
     if (scene.plan?.workflow && phase) {
       const allowance = scene.stageAllowances?.[phase];
       if (allowance) return { spent: allowance.spent ?? allowance.budget, limit: allowance.budget };
@@ -1040,6 +1081,9 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
         referenceNames.some((name) => !input.referenceEvidence?.some((r) => r.reference === name && r.observation.trim())))) {
       throw new Error("Review needs spatial evidence for every supplied reference, including auxiliary views.");
     }
+    if (referenceNames.length && input.referenceEvidence?.some(item => typeof item.matches !== "boolean")) {
+      throw new Error("Scene review requires an explicit match verdict for every supplied reference.");
+    }
     if (input.observations) for (const observation of input.observations) {
       if (!expectedIds.includes(observation.criterionId) ||
         !scene.plan.graph?.some((node) => node.id === observation.nodeId)) {
@@ -1081,11 +1125,11 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       phase: workflowStage?.name, revisionId: revision?.id ?? scene.confirmationRevisionId,
       ...(anchors ? { alignmentMaxError } : {}),
       ...(checks.length ? { referenceMeasurements } : {}) };
-    const passesReview = (review: Review): boolean => !reviewGaps(review).length &&
-      review.regressions.length === 0 && review.visualScore >= scene.plan!.visualThreshold;
+    const passes = (review: Review): boolean => passesReview(review, scene.plan!.visualThreshold);
     const quality = (review: Review): number[] => [
-      Number(passesReview(review)),
+      Number(passes(review)),
       -(Number((review.alignmentMaxError ?? 0) > MAX_ANCHOR_ERROR)),
+      -(review.referenceEvidence ?? []).filter(item => item.matches === false).length,
       -(review.referenceMeasurements ?? []).filter(item => item.status !== "passed").length,
       ...(["blocker", "major"] as const).map((severity) => -scene.plan!.criteria.filter((criterion) =>
         expectedIds.includes(criterion.id) &&
@@ -1113,20 +1157,22 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
       copyFileSync(this.path(scene, "current.blend"), this.path(scene, "best.blend"));
       copyFileSync(this.path(scene, scene.render!), this.path(scene, "best.png"));
     } else scene.noImprovement++;
-    const accepted = passesReview(reviewed);
+    const accepted = passes(reviewed);
     const { spent: attempts, limit } = this.attemptLimit(scene);
     if (!workflowStage && attempts === 5 && better && input.repairable) scene.extended = true;
     const stop = scene.compositionRevalidation || scene.noImprovement >= 2 || attempts >= limit ||
       (!workflowStage && attempts >= 5 && !scene.extended);
-    if (revision && (accepted || stop)) {
+    if (revision && accepted) {
       this.finishRevision(scene, revision);
-    } else if (workflowStage && (accepted || stop) && workflowStage.name !== "final") {
-      copyFileSync(this.path(scene, "best.blend"), this.path(scene, "current.blend"));
-      scene.currentContentIteration = scene.bestContentIteration ?? scene.best!.iteration;
-      if (workflowStage.name === "composition" && scene.plan.workflow?.compositionApproval) {
-        scene.remainingGaps = reviewGaps(scene.best!);
+    } else if (workflowStage) {
+      if (!better) this.restoreBest(scene);
+      if (!accepted || workflowStage.name === "composition") {
+        scene.remainingGaps = reviewIssues(scene.best!, scene.plan.visualThreshold).map(item => item.id);
         scene.stage = "awaiting_review";
-        this.enqueueReviewViews(scene);
+        if (workflowStage.name === "composition") this.enqueueReviewViews(scene);
+      } else if (workflowStage.name === "final") {
+        delete scene.remainingGaps;
+        scene.stage = "completed";
       } else this.advanceWorkflow(scene);
     } else {
       scene.stage = accepted ? "completed" : stop ? "best_effort" : "edit";
@@ -1138,13 +1184,17 @@ bpy.ops.wm.open_mainfile(filepath=${py(current)})`);
     return scene;
   }
 
+  private restoreBest(scene: Scene): void {
+    copyFileSync(this.path(scene, "best.blend"), this.path(scene, "current.blend"));
+    scene.currentContentIteration = scene.bestContentIteration ?? scene.best!.iteration;
+  }
+
   private finishRevision(scene: Scene, revision: Revision): void {
     revision.status = "closed";
     revision.remainingGaps = scene.best ? reviewGaps(scene.best) : [];
     const checkpoint = revision.archive;
     if (scene.best) {
-      copyFileSync(this.path(scene, "best.blend"), this.path(scene, "current.blend"));
-      scene.currentContentIteration = scene.bestContentIteration ?? scene.best.iteration;
+      this.restoreBest(scene);
       copyFileSync(this.path(scene, "best.blend"), this.path(scene, `${checkpoint}/selected.blend`));
       copyFileSync(this.path(scene, "best.png"), this.path(scene, `${checkpoint}/selected.png`));
     } else {
@@ -1200,6 +1250,7 @@ ${this.referenceMeasurementCode(scene, render)}`);
     delete scene.reviewEvidence;
     delete scene.previewedIteration;
     delete scene.reviewFeedback;
+    delete scene.remainingGaps;
     delete scene.inspection;
     delete scene.compositionRevalidation;
     delete scene.confirmationRevisionId;
@@ -1300,23 +1351,64 @@ result = {"reviewViews": 5}
       ...(target.revisionId ? { revisionId: target.revisionId } : {}), phase: this.workflowState(scene).phase };
   }
 
-  reviewDecision(id: string, approved: boolean, feedback?: string, returnTo?: "geometry" | "composition"): Scene {
+  reviewDecision(id: string, approved: boolean, feedback?: string, returnTo?: "geometry" | "composition",
+      options: StageDecisionOptions = {}): Scene {
     const scene = this.get(id);
     this.idle(scene);
-    if (scene.stage !== "awaiting_review" || !scene.plan?.workflow?.compositionApproval) {
-      throw new Error("Scene is not awaiting composition approval.");
+    const { phase, pendingDecision } = this.workflowState(scene);
+    if (scene.stage !== "awaiting_review" || !phase || !scene.plan?.workflow || !scene.best) {
+      throw new Error("Scene is not awaiting a stage review decision.");
     }
-    if (scene.job?.kind === "review_views" && scene.job.status !== "done" ||
-      !this.reviewViewsReady(scene)) {
+    if (phase === "composition" && !this.reviewViewsReady(scene)) {
       throw new Error("Composition review views are not ready. Retry view generation first.");
     }
-    if (approved) { scene.compositionApproved = true; this.advanceWorkflow(scene); }
-    else {
+    const revision = this.activeRevision(scene);
+    if (pendingDecision) {
+      if (options.reviewId !== pendingDecision.reviewId) throw new Error("Confirm the current reviewId before deciding.");
+      if (approved) {
+        if (!options.acceptGaps) throw new Error("Explicitly accept the listed review gaps before advancing.");
+        (scene.acceptedStageGaps ??= []).push({ phase, reviewId: pendingDecision.reviewId,
+          checkpointReviewId: scene.best.inspectionId, checkpointIteration: scene.best.iteration, issues: pendingDecision.checkpointIssues });
+      } else {
+        if (pendingDecision.scopedRevisionRequired || returnTo && returnTo !== phase) {
+          throw new Error("Use scene_revise to authorize the requested scoped structural revision.");
+        }
+        if (pendingDecision.remainingRounds === 0) {
+          const grant = options.additionalBudget;
+          if (!Number.isInteger(grant) || grant! < 1 || grant! > 8) {
+            throw new Error("The stage budget is exhausted. Confirm a finite grant of 1-8 additional rounds.");
+          }
+          if (revision) revision.additionalBudget += grant!;
+          else {
+            scene.stageAllowances ??= this.observedAllowances(scene);
+            const allowance = scene.stageAllowances[phase]!;
+            if (allowance.spent === null) {
+              scene.stageAllowances[phase] = { budget: grant!, spent: 0, source: "legacy-window", openedAtIteration: scene.iteration };
+            } else allowance.budget = allowance.spent + grant!;
+          }
+        } else if (options.additionalBudget !== undefined) {
+          throw new Error("Use the remaining stage rounds before granting more.");
+        }
+        scene.reviewFeedback = feedback?.trim() || scene.best.nextAction;
+        scene.stage = "edit";
+        this.invalidateEvidence(scene);
+        this.save(scene);
+        return scene;
+      }
+    } else if (!approved) {
       if (!feedback?.trim()) throw new Error("Describe the requested geometry or composition change.");
       const index = scene.plan.workflow.stages.findIndex((stage) => stage.name === (returnTo ?? "composition"));
       if (index < 0 || index > (scene.workflowIndex ?? 0)) throw new Error("Requested return stage is unavailable.");
       scene.compositionApproved = false;
       scene.reviewFeedback = `${feedback}\nAdditional edits require an explicitly authorized scene_revise grant; rejection does not refill a stage budget.`;
+    }
+    if (approved) {
+      if (revision) this.finishRevision(scene, revision);
+      else if (phase === "final") scene.stage = "best_effort";
+      else {
+        if (phase === "composition") scene.compositionApproved = true;
+        this.advanceWorkflow(scene);
+      }
     }
     this.save(scene);
     return scene;
@@ -1384,7 +1476,7 @@ result = {"reviewViews": 5}
     const scene = this.get(id);
     this.idle(scene);
     const target = this.workflowState(scene).presentation;
-    if (!["completed", "best_effort"].includes(scene.stage) || target.mode !== "appearance" || !scene.best) {
+    if (target.purpose !== "delivery" || target.mode !== "appearance" || !scene.best) {
       throw new Error("Complete scene review before baking the delivery checkpoint.");
     }
     const requests = lightingBakeRequests(lightingBakes?.map(bake => ({ ...bake, mode: bake.mode ?? "lightmap" })) ??
@@ -1399,10 +1491,10 @@ result = {"reviewViews": 5}
   export(id: string, preview = false, lightingBakes?: LightingBake[], previewAppearance?: PreviewAppearance): Scene {
     const scene = this.get(id);
     this.idle(scene);
-    if (preview ? !this.canPreviewStructure(scene) : !scene.best || !["completed", "best_effort"].includes(scene.stage)) {
+    const state = this.workflowState(scene), target = state.presentation;
+    if (preview ? !this.canPreviewStructure(scene) : !scene.best || target.purpose !== "delivery") {
       throw new Error(preview ? "A saved geometry/composition scene or composition checkpoint is required for a structural preview." : "Complete scene review before exporting the best version.");
     }
-    const state = this.workflowState(scene), target = state.presentation;
     const bakes = lightingBakeRequests(lightingBakes ?? (preview ? [] : scene.bake?.lightingBakes ?? scene.exportLighting ?? []));
     if (preview && bakes.length) throw new Error("Lighting bakes require a final export.");
     const marker = preview ? "previewedIteration" : "exportedIteration";
@@ -1578,15 +1670,17 @@ result = {"reviewViews": 5}
   }
 
   renderFile(scene: Scene): string | undefined {
-    const { presentation } = this.workflowState(scene);
+    const { presentation, phase } = this.workflowState(scene);
     if (presentation.mode === "structural") {
       if (this.reviewViewsReady(scene)) return "review-main.png";
+      if (presentation.source === "checkpoint" && phase === "geometry" &&
+          scene.bestRenderMode === "structural") return "best.png";
       if (presentation.source === "current" && scene.renderMode === "structural" &&
           (scene.render?.match(/iteration-(\d+)\.png$/)?.[1] === String(presentation.iteration) ||
             scene.compositionRevalidation && scene.render?.startsWith("renders/revision-"))) return scene.render;
       return undefined;
     }
-    if (presentation.source === "best") return scene.best && scene.bestRenderMode !== "structural" ? "best.png" : undefined;
+    if (presentation.source !== "current") return scene.best && scene.bestRenderMode !== "structural" ? "best.png" : undefined;
     return scene.renderMode !== "structural" && scene.render?.match(/iteration-(\d+)\.png$/)?.[1] === String(presentation.iteration) ? scene.render : undefined;
   }
 

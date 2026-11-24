@@ -232,19 +232,22 @@ user's decision through `scene_review_decision`. Completed, exported scenes defa
 ThreeRT when its client is available; structural review uses Three.js. A manual
 backend choice is retained during scene updates. See the
 [ThreeRT setup and limits](#threert-setup-and-limits).
-For geometry/composition work or a scene in `awaiting_review`, first call
-`scene_preview` with its `sceneId` and poll `scene_get` with `images: "none"` until the job finishes.
-This prepares review assets without approving composition or enabling final
-export. Completed scenes use `scene_export` before opening the viewer.
+For geometry and composition, call `scene_preview` with its `sceneId` and poll
+`scene_get` with `images: "none"` until the job finishes. For materials,
+lighting and final review, use the appearance render. When
+`workflowState.pendingDecision` is present, report the review differences and
+the named next phase. The host records the user's choice to continue the phase
+or accept the differences and advance. Call `scene_export` when
+`workflowState.presentation.purpose` is `delivery`.
 
 Version 0.3.3 selects presentation from the per-scene `workflowState`. `phase`
 names the production stage and `status` names the operation state. During
 geometry/composition, edits automatically produce gray work images and
 `scene_preview` can generate the current iteration's five views and GLB even
-when geometry checks have not passed. These remain work drafts: no approval or
-final export is allowed. During `awaiting_review`, the source becomes the
-preserved composition checkpoint. This state is reconstructed from persisted
-scene fields on restart, independently for every scene.
+when geometry checks have not passed. Preview generation leaves the review
+state unchanged. During `awaiting_review`, the source becomes the preserved
+checkpoint. The service reconstructs the state from its saved scene fields
+on restart.
 
 The service displays neutral gray structural evidence during those phases:
 `scene_get`, the main image, five review views and the interactive review GLB.

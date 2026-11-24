@@ -128,6 +128,11 @@ test("finite revision preserves legacy content/history and grants exactly three 
     store.edit(scene.id, "pass"); await store.settled();
     assert.equal(scene.iteration, 22 + index); assert.equal(grant.spent, index + 1);
     store.review(scene.id, review(scene, scene.iteration, 74 + index)); await store.settled();
+    const decision = store.workflowState(scene).pendingDecision!;
+    assert.equal(decision.nextPhase, "composition");
+    store.reviewDecision(scene.id, index === 2, undefined, undefined,
+      { reviewId: decision.reviewId, ...(index === 2 ? { acceptGaps: true } : {}) });
+    await store.settled();
   }
   assert.equal(grant.status, "closed"); assert.equal(scene.workflowIndex, 1);
   assert.equal(scene.stage, "review"); assert.equal(scene.inspection!.stage, "composition");
@@ -164,8 +169,11 @@ test("failed revision composition inspection retries without spending edits or a
   };
   store.revise(scene.id, { ...request, additionalBudget: 1 });
   store.edit(scene.id, "pass"); await store.settled();
+  store.review(scene.id, review(scene, scene.iteration, 75));
   blender.failNext = true;
-  store.review(scene.id, review(scene, scene.iteration, 75)); await store.settled();
+  const decision = store.workflowState(scene).pendingDecision!;
+  store.reviewDecision(scene.id, true, undefined, undefined, { reviewId: decision.reviewId, acceptGaps: true });
+  await store.settled();
   assert.equal(scene.job?.kind, "revision_revalidation");
   assert.equal(scene.job?.status, "failed");
   assert.equal(scene.inspection, undefined);
@@ -288,7 +296,7 @@ test("composition preview uses structural evidence, rebuilds legacy previews and
 function review(scene: Scene, iteration: number, score: number, passed = false) {
   return {
     inspectionId: scene.inspection?.id,
-    referenceEvidence: (scene.references ?? (scene.reference ? [{ assetName: "reference" }] : [])).map((r) => ({ reference: r.assetName, observation: "Fixture reference inspected" })),
+    referenceEvidence: (scene.references ?? (scene.reference ? [{ assetName: "reference" }] : [])).map((r) => ({ reference: r.assetName, observation: "Fixture reference inspected", matches: true })),
     ...(scene.plan?.workflow ? { observations: [{ criterionId: "cube", nodeId: "cube", target: "Visible cube", actual: "Fixture render", evidence: "Render", sceneEvidence: "Fixture inventory", referenceView: "reference", reason: "Mismatch", correction: "Fix cube", acceptance: "Cube visible" }] } : {}),
     iteration, criteria: [{ id: "cube", passed, evidence: "Rendered image inspected" }],
     visualScore: score, regressions: [], repairable: true, nextAction: "Improve lighting",
@@ -527,10 +535,11 @@ test("composition approval cannot be disabled and exhausted failed composition s
   preparePlan(store,scene,{...plan,workflow});
   assert.equal(scene.plan!.workflow!.compositionApproval,true);
   store.edit(scene.id,"pass");await store.settled();store.review(scene.id,review(scene,1,0,false));await store.settled();
-  assert.equal(scene.stage,"awaiting_review");assert.equal(scene.workflowIndex,0);assert.deepEqual(scene.remainingGaps,["cube"]);
+  assert.equal(scene.stage,"awaiting_review");assert.equal(scene.workflowIndex,0);assert.deepEqual(scene.remainingGaps,["cube","visual_score"]);
   const restart=new SceneStore(root,blender);assert.equal(restart.get(scene.id).stage,"awaiting_review");
   assert.throws(()=>restart.edit(scene.id,"pass"),/review/);assert.throws(()=>restart.export(scene.id),/review/);
-  restart.reviewDecision(scene.id,true);assert.equal(restart.get(scene.id).compositionApproved,true);
+  const pending = restart.workflowState(restart.get(scene.id)).pendingDecision!;
+  restart.reviewDecision(scene.id,true,undefined,undefined,{reviewId:pending.reviewId,acceptGaps:true});assert.equal(restart.get(scene.id).compositionApproved,true);
   assert.equal(restart.get(scene.id).plan!.workflow!.stages[restart.get(scene.id).workflowIndex!]?.name,"materials");
 });
 
@@ -551,7 +560,97 @@ test("multi-view reviews reject omitted auxiliary evidence and unknown reference
   preparePlan(store,scene,{...plan,workflow:referenceWorkflow});store.edit(scene.id,"pass");await store.settled();
   const r=review(scene,1,95,true);
   assert.throws(()=>store.review(scene.id,{...r,referenceEvidence:r.referenceEvidence.slice(0,1)}),/every supplied reference/);
+  assert.throws(()=>store.review(scene.id,{...r,referenceEvidence:r.referenceEvidence.map(({reference,observation})=>({reference,observation}))}),/explicit match verdict/);
   assert.throws(()=>store.review(scene.id,{...r,observations:r.observations!.map(o=>({...o,referenceView:"not-a-view"}))}),/supplied reference asset/);
+});
+
+test("a visible mismatch keeps a reference checkpoint as work after composition budget exhaustion", async () => {
+  const { store, root, blender } = setup();
+  const scene = store.create("Rebuild the landscape");
+  await store.settled();
+  scene.reference = { fileId: "photo", name: "Landscape", mime: "image/png" };
+  const anchors: Plan["referenceAnchors"] = [
+    { id: "subject", description: "Castle occupies half the frame", targetBox: [0.16, 0.16, 0.66, 0.55] },
+    { id: "foreground", description: "Foreground wildflowers", targetBox: [0, 0.69, 1, 1] },
+  ];
+  const workflow = { stages: referenceWorkflow!.stages.map(stage => ({ ...stage, budget: 1 })) };
+  preparePlan(store, scene, { ...plan, referenceAnchors: anchors, workflow });
+  store.edit(scene.id, "pass");
+  await store.settled();
+  store.review(scene.id, {
+    ...review(scene, 1, 95, true),
+    referenceAlignment: anchors.map(anchor => ({ id: anchor.id, renderBox: anchor.targetBox, evidence: "Broad bounds align" })),
+    referenceEvidence: [{ reference: "reference", matches: false, observation: "Grass occupies the foreground box, but the prominent flowers are absent." }],
+  });
+  await store.settled();
+  const restarted = new SceneStore(root, blender);
+  const saved = restarted.get(scene.id);
+  assert.equal(saved.stage, "awaiting_review");
+  assert.equal(restarted.workflowState(saved).presentation.purpose, "work");
+  assert.deepEqual(saved.remainingGaps, ["reference_view:reference"]);
+  assert.equal(restarted.renderFile(saved), "review-main.png");
+  const decision = restarted.workflowState(saved).pendingDecision!;
+  assert.equal(decision.nextPhase, "final");
+  assert.throws(() => restarted.reviewDecision(scene.id, true), /reviewId/);
+  assert.throws(() => restarted.reviewDecision(scene.id, true, undefined, undefined, { reviewId: decision.reviewId }), /accept the listed/);
+  assert.equal(saved.compositionApproved, false);
+});
+
+test("failed geometry, material and lighting reviews wait for the user's stage decision", async () => {
+  const { store } = setup();
+  const scene = store.create("A room");
+  await store.settled();
+  scene.reference = { fileId: "photo", name: "Room", mime: "image/png" };
+  const referenceAnchors: NonNullable<Plan["referenceAnchors"]> = [
+    { id: "cube", description: "Cube silhouette", targetBox: [0.2, 0.25, 0.8, 0.75] },
+    { id: "floor", description: "Visible floor", targetBox: [0, 0.6, 1, 1] },
+  ];
+  preparePlan(store, scene, { ...plan, referenceAnchors, workflow: { stages: (["geometry", "composition", "materials", "lighting", "final"] as const)
+    .map(name => ({ name, criterionIds: ["cube"], budget: name === "geometry" ? 2 : 1 })) } });
+
+  const runReview = async (passed: boolean, matches = true) => {
+    store.edit(scene.id, "pass");
+    await store.settled();
+    const phase = store.workflowState(scene).phase;
+    store.review(scene.id, { ...review(scene, scene.iteration, 95, passed),
+      referenceEvidence: [{ reference: "reference", matches, observation: "The foreground finish loses the visible grain." }],
+      ...(["composition", "final"].includes(phase!) ? { referenceAlignment: referenceAnchors.map(anchor => ({
+        id: anchor.id, renderBox: anchor.targetBox, evidence: "The bounds align",
+      })) } : {}),
+    });
+    await store.settled();
+    return store.workflowState(scene);
+  };
+  const geometry = await runReview(false);
+  assert.equal(geometry.status, "awaiting_review");
+  assert.equal(geometry.pendingDecision?.nextPhase, "composition");
+  assert.equal(geometry.pendingDecision?.remainingRounds, 1);
+  assert.deepEqual(geometry.pendingDecision?.issues, [{ id: "cube", evidence: "Rendered image inspected" }]);
+  assert.throws(() => store.edit(scene.id, "pass"), /review/);
+  assert.throws(() => store.reviewDecision(scene.id, false, undefined, undefined, { reviewId: "stale" }), /reviewId/);
+  store.reviewDecision(scene.id, false, "Refine the cube silhouette", undefined, { reviewId: geometry.pendingDecision!.reviewId });
+  assert.equal(scene.stageAllowances!.geometry!.spent, 1);
+  assert.equal(scene.reviewFeedback, "Refine the cube silhouette");
+  assert.equal((await runReview(true)).phase, "composition");
+  assert.equal((await runReview(true)).presentation.purpose, "confirmation");
+  store.reviewDecision(scene.id, true);
+
+  const materials = await runReview(true, false);
+  assert.equal(materials.pendingDecision?.nextPhase, "lighting");
+  assert.equal(materials.pendingDecision?.issues[0]?.id, "reference_view:reference");
+  assert.equal(materials.presentation.mode, "appearance");
+  assert.equal(store.renderFile(scene), "best.png");
+  assert.throws(() => store.reviewDecision(scene.id, false, undefined, undefined, { reviewId: materials.pendingDecision!.reviewId }), /additional rounds/);
+  store.reviewDecision(scene.id, false, undefined, undefined, { reviewId: materials.pendingDecision!.reviewId, additionalBudget: 1 });
+  assert.deepEqual({ spent: scene.stageAllowances!.materials!.spent, limit: scene.stageAllowances!.materials!.budget }, { spent: 1, limit: 2 });
+  assert.equal((await runReview(true)).phase, "lighting");
+
+  const lighting = await runReview(false);
+  assert.equal(lighting.pendingDecision?.nextPhase, "final");
+  store.reviewDecision(scene.id, true, undefined, undefined, { reviewId: lighting.pendingDecision!.reviewId, acceptGaps: true });
+  assert.equal(scene.reviews.at(-1)?.criteria[0]?.passed, false);
+  assert.equal(scene.acceptedStageGaps?.at(-1)?.phase, "lighting");
+  assert.equal((await runReview(true)).status, "completed");
 });
 
 test("legacy active workflows replan from the saved checkpoint after upgrade", async()=>{
@@ -728,8 +827,10 @@ test("reference alignment blocks a high-scoring review until major regions match
   };
   assert.throws(() => store.review(scene.id, review(scene, 1, 95, true)), /every reference anchor/);
   store.review(scene.id, mismatch);
-  assert.equal(scene.stage, "edit");
+  await store.settled();
+  assert.equal(scene.stage, "awaiting_review");
   assert.equal(scene.best?.alignmentMaxError, 0.2);
+  store.reviewDecision(scene.id, false, undefined, undefined, { reviewId: store.workflowState(scene).pendingDecision!.reviewId });
   store.edit(scene.id, "result = {}"); await store.settled();
   store.review(scene.id, {
     ...review(scene, 2, 95, true),
@@ -769,14 +870,18 @@ test("checkpoint reference checks gate acceptance and survive a continuation", a
   blender.referenceCaptures = capture(0.8);
   store.edit(scene.id, "pass"); await store.settled();
   store.review(scene.id, { ...review(scene, 1, 100, true), referenceAlignment: alignment });
-  assert.equal(scene.stage, "edit");
+  await store.settled();
+  assert.equal(scene.stage, "awaiting_review");
   assert.deepEqual(scene.best!.referenceMeasurements!.map(item => item.status), ["failed", "passed"]);
+  store.reviewDecision(scene.id, false, undefined, undefined, { reviewId: store.workflowState(scene).pendingDecision!.reviewId });
 
   blender.referenceCaptures = capture(0.65);
   store.edit(scene.id, "pass"); await store.settled();
   store.review(scene.id, { ...review(scene, 2, 80, true), referenceAlignment: alignment });
-  assert.equal(scene.stage, "edit");
+  await store.settled();
+  assert.equal(scene.stage, "awaiting_review");
   assert.equal(scene.best!.iteration, 2);
+  store.reviewDecision(scene.id, false, undefined, undefined, { reviewId: store.workflowState(scene).pendingDecision!.reviewId });
 
   blender.referenceCaptures = capture(0.66);
   store.edit(scene.id, "pass"); await store.settled();
@@ -790,10 +895,19 @@ test("checkpoint reference checks gate acceptance and survive a continuation", a
   blender.referenceCaptures = undefined;
   store.edit(scene.id, "pass"); await store.settled();
   store.review(scene.id, { ...review(scene, 4, 100, true), referenceAlignment: alignment });
-  assert.equal(scene.stage, "best_effort");
+  assert.equal(scene.stage, "awaiting_review");
   assert.deepEqual(scene.remainingGaps, ["reference_check:edge", "reference_check:point"]);
+  assert.equal(store.workflowState(scene).presentation.purpose, "work");
+  assert.throws(() => store.export(scene.id), /Complete scene review/);
+  assert.throws(() => store.bake(scene.id), /Complete scene review/);
 
   const resumed = new SceneStore(root, blender);
+  const pending = resumed.workflowState(resumed.get(scene.id)).pendingDecision!;
+  assert.equal(pending.nextPhase, "delivery");
+  resumed.reviewDecision(scene.id, true, undefined, undefined, { reviewId: pending.reviewId, acceptGaps: true });
+  assert.equal(resumed.get(scene.id).stage, "best_effort");
+  assert.equal(resumed.workflowState(resumed.get(scene.id)).presentation.purpose, "delivery");
+  assert.deepEqual(resumed.get(scene.id).acceptedStageGaps?.at(-1)?.issues.map(item => item.id), scene.remainingGaps);
   resumed.continue(scene.id, "Adjust only the light");
   const changed = { ...referencePlan, referenceChecks: referencePlan.referenceChecks!.map(item => ({ ...item, tolerance: 1 })) };
   assert.throws(() => resumed.plan(scene.id, changed), /Frozen reference check/);
