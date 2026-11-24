@@ -44,7 +44,8 @@ export function limitPreviewShadows(scene: THREE.Scene, camera: THREE.Camera, ma
   const materials = new Set<THREE.MeshStandardMaterial>();
   let areaLights = false, spotTextures = 0;
   scene.traverseVisible(object => {
-    if (object instanceof THREE.Mesh && object.receiveShadow) {
+    // Shadow samplers are allocated by the scene shader even for baked receivers.
+    if (object instanceof THREE.Mesh) {
       for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
         if (material instanceof THREE.MeshStandardMaterial && material.visible) materials.add(material);
       }
@@ -158,14 +159,16 @@ export function addPlanarReflection(scene: THREE.Scene, root: THREE.Object3D, na
   reflection.rotation.x = -Math.PI / 2;
   reflection.position.set(center.x, bounds.max.y + 0.001, center.z);
   const reflectionMaterial = reflection.material as THREE.ShaderMaterial;
-  reflectionMaterial.colorWrite = false;
-  reflectionMaterial.depthWrite = false;
+  const target = reflection.getRenderTarget();
+  target.texture.generateMipmaps = true;
+  target.texture.minFilter = THREE.LinearMipmapLinearFilter;
   reflection.updateMatrixWorld(true);
   const inverse = reflection.matrixWorld.clone().invert();
   const uniforms = {
-    planarTexture: { value: reflection.getRenderTarget().texture as THREE.Texture | null },
+    planarTexture: { value: target.texture },
     planarMatrix: reflectionMaterial.uniforms.textureMatrix!,
     planarInverse: { value: inverse },
+    planarActive: { value: 0 },
   };
   for (const object of receivers) {
     const materials = (Array.isArray(object.material) ? object.material : [object.material]).map(source => {
@@ -179,19 +182,50 @@ export function addPlanarReflection(scene: THREE.Scene, root: THREE.Object3D, na
         shader.vertexShader = "uniform mat4 planarMatrix, planarInverse; varying vec4 vPlanar;\n" + shader.vertexShader;
         shader.vertexShader = shader.vertexShader.replace("#include <project_vertex>",
           "#include <project_vertex>\nvPlanar = planarMatrix * planarInverse * modelMatrix * vec4(transformed, 1.0);");
-        shader.fragmentShader = "uniform sampler2D planarTexture; varying vec4 vPlanar;\n" + shader.fragmentShader;
+        shader.fragmentShader = "uniform sampler2D planarTexture; uniform float planarActive; varying vec4 vPlanar;\n" + shader.fragmentShader;
         shader.fragmentShader = shader.fragmentShader.replace("#include <lights_fragment_end>", `
           #include <lights_fragment_end>
-          vec2 planarUv = vPlanar.xy / vPlanar.w;
-          vec2 blur = vec2(0.001, 0.003) * roughnessFactor;
-          vec3 planarColor = (texture2D(planarTexture, planarUv + blur).rgb
-            + texture2D(planarTexture, planarUv - blur).rgb
-            + texture2D(planarTexture, planarUv + vec2(blur.x, -blur.y)).rgb
-            + texture2D(planarTexture, planarUv + vec2(-blur.x, blur.y)).rgb) * 0.25;
-          float planarFresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 5.0);
-          reflectedLight.indirectSpecular = planarColor * planarFresnel;
+          vec2 planarUv = vPlanar.xy / max(vPlanar.w, 0.0001);
+          vec2 planarEdge = min(planarUv, 1.0 - planarUv);
+          float planarCoverage = planarActive * smoothstep(0.0, 0.015, min(planarEdge.x, planarEdge.y));
+          vec3 planarUp = mat3(viewMatrix) * vec3(0.0, 1.0, 0.0);
+          planarCoverage *= smoothstep(0.5, 0.95, dot(nonPerturbedNormal, planarUp));
+          float planarRoughness = smoothstep(0.035, 0.22, roughnessFactor);
+          float planarWeight = planarCoverage * (1.0 - planarRoughness);
+          vec3 planarColor = textureLod(planarTexture, planarUv, mix(0.75, 5.0, planarRoughness)).rgb;
+          float planarDotNV = saturate(dot(geometryNormal, geometryViewDir));
+          vec3 planarFresnel = F_Schlick(material.specularColor, material.specularF90, planarDotNV);
+          reflectedLight.indirectSpecular = mix(reflectedLight.indirectSpecular, planarColor * planarFresnel, planarWeight);
+          #if NUM_SPOT_LIGHTS > 0
+            // Resolve low spotlights in the water film even when their emitters are too small for the capture.
+            float eyeHeight = max(0.0, dot(-geometryPosition, planarUp));
+            for (int i = 0; i < NUM_SPOT_LIGHTS; i++) {
+              SpotLight spot = spotLights[i];
+              vec3 toLamp = spot.position - geometryPosition;
+              float lampHeight = dot(toLamp, planarUp);
+              vec3 axis = spot.direction - planarUp * dot(spot.direction, planarUp);
+              float axisLength = length(axis);
+              if (axisLength < 0.3 || lampHeight <= 0.1 || lampHeight >= 1.8) continue;
+              vec3 along = axis / axisLength;
+              vec3 across = cross(planarUp, along);
+              // Intersect the reflected camera-to-light segment with the receiver.
+              vec3 offset = (eyeHeight * toLamp - lampHeight * geometryPosition) /
+                max(eyeHeight + lampHeight, 0.001);
+              float lengthwise = dot(offset, along) / mix(0.46, 0.72, 1.0 - planarDotNV);
+              float crosswise = dot(offset, across) / 0.105;
+              float film = exp(-dot(vec2(lengthwise, crosswise), vec2(lengthwise, crosswise)));
+              float forward = smoothstep(0.22, 0.68, dot(normalize(toLamp), spot.direction));
+              float low = smoothstep(0.1, 0.3, lampHeight) * (1.0 - smoothstep(1.0, 1.8, lampHeight));
+              float power = max(spot.color.r, max(spot.color.g, spot.color.b));
+              vec3 lampTint = spot.color * (1.0 - exp(-0.025 * power)) / max(power, 0.001);
+              reflectedLight.indirectSpecular +=
+                1.05 * planarWeight * low * forward * film * lampTint;
+            }
+          #endif
           #ifdef USE_CLEARCOAT
-            clearcoatSpecularIndirect = planarColor * planarFresnel;
+            float planarDotNVcc = saturate(dot(geometryClearcoatNormal, geometryViewDir));
+            vec3 planarCoatFresnel = F_Schlick(material.clearcoatF0, material.clearcoatF90, planarDotNVcc);
+            clearcoatSpecularIndirect = mix(clearcoatSpecularIndirect, planarColor * planarCoatFresnel, planarWeight);
           #endif
         `);
       };
@@ -200,13 +234,18 @@ export function addPlanarReflection(scene: THREE.Scene, root: THREE.Object3D, na
     });
     object.material = Array.isArray(object.material) ? materials : materials[0]!;
   }
-  const capture = reflection.onBeforeRender.bind(reflection);
-  reflection.onBeforeRender = (...args) => {
-    if (scene.overrideMaterial) return;
-    // Do not sample the render target while it is being written by the reflected camera.
-    uniforms.planarTexture.value = null;
-    try { capture(...args); } finally { uniforms.planarTexture.value = reflection.getRenderTarget().texture; }
-  };
-  scene.add(reflection);
-  return reflection;
+  return Object.assign(reflection, {
+    capture(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
+      camera.updateWorldMatrix(true, false);
+      uniforms.planarActive.value = Number(camera.matrixWorld.elements[13]! > reflection.position.y);
+      if (!uniforms.planarActive.value) return;
+      const visible = receivers.map(receiver => receiver.visible);
+      receivers.forEach(receiver => { receiver.visible = false; });
+      try {
+        reflection.onBeforeRender(renderer, scene, camera, reflection.geometry, reflectionMaterial, null!);
+      } finally {
+        receivers.forEach((receiver, index) => { receiver.visible = visible[index]!; });
+      }
+    },
+  });
 }

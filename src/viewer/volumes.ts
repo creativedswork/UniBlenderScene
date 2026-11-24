@@ -4,10 +4,10 @@ import type { Volume } from "../shared/vfx.js";
 export const maxVolumes = 8;
 const maxLocalLights = 8;
 
-export function volumeUniforms(volumes: Volume[], scene: THREE.Scene, camera: THREE.Camera) {
+export function volumeUniforms(volumes: Volume[], scene: THREE.Scene, camera: THREE.Camera, litDust = false) {
   scene.updateMatrixWorld(true);
   const lights: (THREE.PointLight | THREE.SpotLight | THREE.RectAreaLight)[] = [];
-  if (volumes.length) scene.traverse(object => {
+  if (volumes.length || litDust) scene.traverse(object => {
     if (object instanceof THREE.PointLight || object instanceof THREE.SpotLight || object instanceof THREE.RectAreaLight) lights.push(object);
   });
   const cameraPosition = new THREE.Vector3(), position = new THREE.Vector3();
@@ -34,6 +34,7 @@ export function volumeUniforms(volumes: Volume[], scene: THREE.Scene, camera: TH
   const forward = new THREE.Vector3(), target = new THREE.Vector3();
   return {
     uniforms,
+    hasLocalLights: lights.length > 0,
     update() {
       if (!ranked.length) return;
       camera.getWorldPosition(cameraPosition);

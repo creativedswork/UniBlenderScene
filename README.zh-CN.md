@@ -14,31 +14,42 @@
 | Claude Code | 加载插件，在终端中查看渲染图并获取 `.blend` / GLB 文件 |
 | 其他 Agent 运行环境 | 连接 MCP 服务并加载场景工作流指引；预览能力取决于客户端 |
 
-## 效果展示 · 夕阳下的林间住宅
-
-根据一张参考图，在 Blender 中重建玻璃住宅、水池和四周的松林。下方对照原始参考、Blender 成片和导出后的两种预览。
+## 效果展示
 
 <table>
   <tr>
-    <th width="50%">参考图</th>
-    <th width="50%">Blender</th>
+    <th colspan="2" scope="colgroup">夕阳下的林间住宅</th>
+    <th colspan="2" scope="colgroup">雨夜城市赛道</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="docs/forest-house-reference.webp" alt="夕阳下的现代住宅和水池，四周环绕松林" width="480" /></td>
-    <td align="center" valign="top"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的穿林光束、室内暖光和池水倒影" width="480" /></td>
+    <th scope="col">参考图</th>
+    <th scope="col">Blender</th>
+    <th scope="col">参考图</th>
+    <th scope="col">Blender</th>
   </tr>
   <tr>
-    <th>Three.js</th>
-    <th>ThreeRT</th>
+    <td align="center" valign="middle"><a href="docs/forest-house-reference.webp"><img src="docs/forest-house-reference.webp" alt="夕阳下的玻璃住宅、池水和松林参考图" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-blender.webp"><img src="docs/forest-house-blender.webp" alt="Blender 成片中的室内暖光和穿林光束" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-reference.webp"><img src="docs/rainy-city-circuit-reference.webp" alt="雨夜赛道低机位参考图，白色跑车和街边霓虹倒映在路面上" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-blender.webp"><img src="docs/rainy-city-circuit-blender.webp" alt="Blender 成片中的车灯光束、湿路上的断续反光和塔楼成排亮窗" width="214" /></a></td>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="docs/forest-house-threejs.webp" alt="导出后在 Three.js 中预览林间住宅、光束和水池" width="480" /></td>
-    <td align="center" valign="top"><img src="docs/forest-house-threert.webp" alt="ThreeRT 渲染的林间住宅和光束，树木使用简化几何" width="480" /></td>
+    <th scope="col">Three.js</th>
+    <th scope="col">ThreeRT</th>
+    <th scope="col">Three.js</th>
+    <th scope="col">ThreeRT</th>
+  </tr>
+  <tr>
+    <td align="center" valign="middle"><a href="docs/forest-house-threejs.webp"><img src="docs/forest-house-threejs.webp" alt="Three.js 预览中的林间住宅、光束和水池" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/forest-house-threert.webp"><img src="docs/forest-house-threert.webp" alt="ThreeRT 渲染中的林间住宅和光束，树木使用简化几何" width="180" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threejs.webp"><img src="docs/rainy-city-circuit-threejs.webp" alt="Three.js 低机位预览中的办公塔楼窗灯与湿路倒影" width="214" /></a></td>
+    <td align="center" valign="middle"><a href="docs/rainy-city-circuit-threert.webp"><img src="docs/rainy-city-circuit-threert.webp" alt="ThreeRT 低机位渲染中的错落塔楼、街雾和车身倒影" width="214" /></a></td>
   </tr>
 </table>
 
-Three.js 预览在部分建筑表面使用了烘焙的漫反射照明。
-ThreeRT 图使用简化的树木几何，并按 Blender 的取景裁切。不同渲染器的雾、阴影和倒影表现有所差异。
+林间住宅根据一张参考图制作。Three.js 在部分建筑表面使用烘焙的漫反射光照。ThreeRT 图采用简化的树木几何，并按 Blender 的取景裁切。
+
+雨夜赛道的三个渲染结果使用同一低机位。车灯照亮车前薄雾，在湿路上留下断续的白色高光。沿街店面后方是成排亮窗的办公塔楼。Three.js 用烘焙光照贴图显示道路、护栏和店面的静态光照，并实时计算湿路反射。Three.js 和 ThreeRT 都将预览雾量应用到局部雾效和深度薄雾。
 
 ## 插件包含什么
 
@@ -59,7 +70,7 @@ ThreeRT 图使用简化的树木几何，并按 Blender 的取景裁切。不同
 1. **规划：** 明确主要物体、空间关系和视觉目标。
 2. **构建：** 先搭建完整场景，再细化几何与构图。
 3. **确认：** 从多个视角检查灰模场景，确认构图后再开始制作材质和灯光。
-4. **细化：** 用 Leap 改结构，用 Tweak 调整已有参数。材质或灯光有多个可行方向时，从同一检查点渲染候选方案，与原版比较后再选一个进入正式复核。
+4. **细化：** 用 Leap 改结构，用 Tweak 调整已有参数。材质或灯光有多个可行方向时，从同一检查点渲染候选方案，与上一版比较后再选一个进入正式复核。有参考图的场景，每轮都要对照对应机位的原始参考图，单独调整交互预览时也一样。
 5. **交付：** 将复核后的最佳检查点导出为渲染图、`.blend` 和 GLB。
 
 Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存检查点并跟踪复核进度。详见[工作流设计](docs/scene-generation-preview.md)。
@@ -88,7 +99,7 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 
 想快速漫游、检查物体摆放时，在预览器中切换到 **Three.js · 网页交互**；选择 **Render** 可对照 Blender 渲染图。不同预览模式的外观可能有差异，确认最终效果时以 Blender 渲染图为准。
 
-本机场景的 3D 预览准备好后，点击 **在浏览器中打开**，就能在 Chrome 中查看同一场景。
+本机场景的 3D 预览准备好后，点击 **在浏览器中打开**。如果客户端未能打开浏览器，可从 **查看预览链接** 复制地址，在浏览器中查看同一场景。
 
 ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘焙天空全景时，原生客户端会用它显示背景。进展见[上游 HDRI 支持请求](https://github.com/meshy-dev/ThreeRT/issues/178)。
 

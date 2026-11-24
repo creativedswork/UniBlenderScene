@@ -128,6 +128,7 @@ try {
     await direct.waitForFunction(() => document.querySelector("#mode-3d")?.getAttribute("aria-pressed") === "true");
     assert.equal(await direct.locator("#canvas canvas").count(), 1);
     assert.equal(await direct.locator("#open-browser").isVisible(), false);
+    assert.equal(await direct.locator("#show-browser-link").isVisible(), false);
     assert.equal(await direct.locator("#upload").isVisible(), false);
     await direct.getByRole("treeitem", { name: "Red cube · object" }).click();
     await direct.locator("#selection-box").waitFor({ state: "visible" });
@@ -143,6 +144,29 @@ try {
     console.error(entry.text());
   });
   const frame = page.frameLocator("#viewer");
+  const lightmapHost = `http://127.0.0.1:${(server.address() as { port: number }).port}/?lightmap=1`;
+  const openBrowser = frame.getByRole("button", { name: "在浏览器中打开" });
+  const linkDialog = frame.locator("#browser-preview-dialog");
+  const checkPreviewLink = async () => {
+    await linkDialog.waitFor({ state: "visible", timeout: 10000 });
+    assert.equal(await frame.locator("#browser-preview-url").inputValue(), previewUrl.href);
+    await frame.getByRole("button", { name: "关闭", exact: true }).click();
+  };
+  await page.goto(`${lightmapHost}&browser=open`);
+  const [popup] = await Promise.all([page.waitForEvent("popup", { timeout: 5000 }), openBrowser.click()]);
+  await popup.waitForURL(previewUrl.href, { waitUntil: "commit", timeout: 10000 });
+  await popup.close();
+  assert.equal(await linkDialog.isVisible(), false);
+  await frame.getByRole("button", { name: "查看预览链接" }).click();
+  await checkPreviewLink();
+  for (const mode of ["unsupported", "blocked", "silent"]) {
+    await page.goto(`${lightmapHost}&browser=${mode}`);
+    await openBrowser.click();
+    await checkPreviewLink();
+    assert.equal(await page.locator("#sent").getAttribute("data-browser-url"),
+      mode === "unsupported" ? null : previewUrl.href);
+  }
+  console.log("Browser preview opening and link fallback passed");
   await page.goto(`http://127.0.0.1:${(server.address() as { port: number }).port}/?cameras=1`);
   await frame.locator("#reference-select").selectOption("reference-5");
   await frame.locator("#reference-open").click();
@@ -356,13 +380,7 @@ try {
   await page.locator("#viewer").screenshot({path:resolve(root,"viewer-composition.png")});
   await frame.locator("#review-panel").screenshot({path:resolve(root,"viewer-composition-panel.png")});
   assert.equal(await frame.locator("#review-panel button, #review-panel input").count(), 0);
-  await page.goto(`http://127.0.0.1:${(server.address() as {port:number}).port}/?lightmap=1&blockBrowser=1`);
-  await frame.getByRole("button", { name: "在浏览器中打开" }).click();
-  await frame.locator("#browser-preview-dialog").waitFor({ state: "visible" });
-  assert.equal(await frame.locator("#browser-preview-url").inputValue(), previewUrl.href);
-  assert.equal(await page.locator("#sent").getAttribute("data-browser-url"), previewUrl.href);
-  await frame.getByRole("button", { name: "关闭", exact: true }).click();
-  await frame.locator("#browser-preview-dialog").waitFor({ state: "hidden" });
+  await page.goto(lightmapHost);
   await page.waitForFunction(() => {
     const canvas = (document.getElementById("viewer") as HTMLIFrameElement).contentDocument?.querySelector("#canvas canvas");
     return canvas?.getAttribute("data-renderer") === "raster" &&

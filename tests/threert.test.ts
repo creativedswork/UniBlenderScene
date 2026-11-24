@@ -101,8 +101,9 @@ test("native models normalize RGB16 and RGBA16 PNGs without changing source, mes
 });
 
 test("thin atmosphere retains physical extinction through ThreeRT's fog coverage combination", () => {
-  for (const density of [0.004, 0.14]) {
+  for (const [density, hazeScale] of [[0.004, undefined], [0.14, 0.53]] as const) {
     const input: ThreeRTInput = { camera: cameraFromGLB(glb()), profile: structuredClone(profile) };
+    input.profile.previewAppearance!.hazeScale = hazeScale;
     input.profile.previewAppearance!.dust!.volumes[0]!.density = density;
     input.profile.previewAppearance!.dust!.wind = [0.12, 0.04, 0.025];
     const fog = buildThreeRTScene(input).scene.children.find(child => child instanceof FogVolume) as FogVolume;
@@ -111,8 +112,9 @@ test("thin atmosphere retains physical extinction through ThreeRT's fog coverage
     // At the sphere centre, the height term must not suppress the specified radial density.
     const a = Math.exp(-Height), b = Math.exp(-Radial);
     const extinction = -Math.log(a + b - a * b);
-    assert.ok(Math.abs(extinction / density - 1) < 0.00001);
-    assert.ok(Math.abs(Math.exp(-extinction * 20) - Math.exp(-density * 20)) < 0.00001);
+    const expectedDensity = density * (hazeScale ?? 1);
+    assert.ok(Math.abs(extinction / expectedDensity - 1) < 0.00001);
+    assert.ok(Math.abs(Math.exp(-extinction * 20) - Math.exp(-expectedDensity * 20)) < 0.00001);
     assert.equal(fog.animated, true, "The native viewport must update the drifting medium");
     assert.deepEqual(fog.volume.params.Wind, [0.12, 0.025, -0.04, 0], "Convert Blender Z-up wind to native Y-up");
   }

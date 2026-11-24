@@ -261,10 +261,10 @@ with structural shading. If the five review views are missing, run
 `scene_review_views` first. Approval and stage budgets are preserved.
 
 When a scene has 3D preview assets on the local service, click **在浏览器中打开**
-in the embedded viewer. The link opens the same scene in Three.js with the
-scene graph, camera controls and available downloads. If the client blocks
-external links, copy the address shown by the viewer into Chrome. To reopen an
-old tab after the local service has stopped, open the preview again from Codex.
+in the embedded viewer. The browser preview shows the same scene in Three.js
+with the scene graph, camera controls and available downloads. If the client
+cannot open the browser, copy the address from **查看预览链接** into your browser.
+To reopen an old tab after the local service has stopped, open the preview again from Codex.
 Send composition decisions and edit requests in the conversation.
 
 In a terminal harness without MCP Apps, use `scene_get` with `images: "render"` for new render evidence and

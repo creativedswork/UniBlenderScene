@@ -158,9 +158,12 @@ evidence through the service or report that it is not ready.
    for each stage. Reconstruction requires composition; its user confirmation
    cannot be disabled. Stage budgets apply to the whole scene.
    Geometry/composition criteria must test shape, dimensions, placement,
-   occlusion and camera in gray evidence. Assign material/color and lighting
-   criteria to their appearance stages; do not fail gray evidence for lacking
-   textures or colored light.
+   occlusion and camera in gray evidence. For a requested or visually defining
+   lighting effect, record the visible result as a lighting criterion and name
+   the camera that shows it. Include a geometry/composition check only when the
+   effect depends on something those stages lock, such as a visible car front
+   or an opening that sunlight must pass through. Design and tune the lights in
+   the lighting stage. Assess material/color and lighting in appearance renders.
    For a localized refinement, include only affected stages followed by final.
    Before construction, perform a separate read-only graph verification pass
    against every reference through `scene_plan_review`. Submit coverage,
@@ -190,9 +193,11 @@ evidence through the service or report that it is not ready.
    may map to multiple Blender objects. Mark an object `built` only when its
    visible mesh should appear in the exported GLB.
 6. Poll `scene_get` with `images: "none"` until the edit finishes, then call `scene_get` with
-   `images: "render"` once. Inspect the returned image and object summary against the primary reference, spatial
-   relationships visible in every auxiliary view, and every
-   frozen criterion. Use `scene_get` with `objectName` after the job finishes when
+   `images: "render"` once. For each iteration, compare the new render with the
+   original reference for that camera at a comparable crop. Check the edited
+   effects, spatial relationships visible in every auxiliary view, and all
+   frozen criteria. Use the object summary to diagnose visible differences. Use
+   `scene_get` with `objectName` after the job finishes when
    an imported object's transform is not in the abbreviated summary. Do not
    claim to have seen an image when the host cannot display it.
 7. Read the selected domain's critique guidance and call `scene_review` with
@@ -200,9 +205,13 @@ evidence through the service or report that it is not ready.
    every current-stage criterion exactly once (all
    criteria in the final stage), observed evidence,
    a visual score, any regressions, whether remaining gaps are repairable, and
-   one concrete bounded next action. A procedural proxy does not satisfy a
-   high-fidelity criterion merely because the object exists. For a reference
-   scene, measure each frozen anchor in the same-crop render and submit its
+   one concrete bounded next action. In lighting and final reviews, judge each
+   lighting criterion by the visible effect in its planned camera render.
+   Mark a missing required effect as failed. Use the light settings and object
+   summary to diagnose missing or weak effects.
+   A procedural proxy does not satisfy a high-fidelity criterion merely
+   because the object exists. For a reference scene, measure each frozen
+   anchor in the same-crop render and submit its
    `referenceAlignment` box. The service computes the largest edge displacement
    and does not complete the request when it exceeds 8% of the frame. Measure
    from the actual render; do not infer boxes from scene coordinates. The visual
@@ -241,10 +250,12 @@ evidence through the service or report that it is not ready.
    If the chat preview still fails, report the error with those links.
    Delivered appearance defaults to ThreeRT when the native client is available;
    Three.js supplies the browser fallback and gray structural review.
-   Verify the active backend, reset its camera and compare a 3D screenshot with
-   the reviewed Blender render at the same crop. Recheck major reference anchors, light and shadow
-   regions, and prominent materials; orbit to check depth, window/wall placement,
-   and occlusion against auxiliary views. Do not substitute a GLB-only page: it
+   For every viewer iteration, verify the active backend, reset to the planned
+   camera, and compare the screenshot with the reviewed Blender render at the
+   same crop and with the original reference for that camera. Recheck major
+   reference anchors, planned lighting effects, light and shadow regions, and
+   prominent materials. Orbit to check depth, window/wall placement, and occlusion
+   against auxiliary views. Do not substitute a GLB-only page: it
    omits the exported render profile, lighting and atmosphere settings.
    Record the checkpoint iteration, export version, active backend and engine
    version with the screenshot. Verify Three.js and ThreeRT separately when
