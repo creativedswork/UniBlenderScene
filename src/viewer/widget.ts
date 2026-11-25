@@ -67,7 +67,7 @@ const app = new App({ name: "UniBlenderScene viewer", version }, {});
 const browserStateUrl = document.body.hasAttribute("data-browser-preview") ? `${location.pathname}/state${location.search}` : "";
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
 let preferredBackend: "web" | "threert" | undefined = browserStateUrl ? "web" : undefined;
-let threeRTImageKey = "", threeRTRequestPending = false;
+let threeRTImageKey = "", threeRTRequestPending = false, threeRTWarningsKey = "";
 let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
 let liveConnecting = false, liveWanted = false, liveStatus = "";
 let referenceListKey = "", reviewImagesKey = "", referenceRequest = 0;
@@ -399,7 +399,35 @@ function updateThreeRT() {
     unavailable ? unavailable :
     current && state?.status === "failed" ? state.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" :
     threeRTRequestPending || scene.job?.kind === "threert" && ["queued", "running"].includes(scene.job.status) ? "正在准备材质与本机渲染场景，完成后连接实时视图。" :
-    (liveStatus || "连接后可在网页拖动、缩放和平移；画面帧率取决于本机渲染与传输速度。") + (current ? ` ${state?.warnings?.join(" ") ?? ""}` : "");
+    liveStatus || "连接后可在网页拖动、缩放和平移；画面帧率取决于本机渲染与传输速度。";
+  const rawWarnings = current ? state?.warnings ?? [] : [];
+  const effectObjects = new Set(rawWarnings.map(item => /^(.+?) · [^:]+:/.exec(item)?.[1]).filter((name): name is string => Boolean(name)));
+  const warnings = [...new Set(rawWarnings.filter(item => {
+    const match = /^Volume (.+): unsupported density graph\.?$/.exec(item);
+    return !(match && effectObjects.has(match[1]!));
+  }))];
+  const toggle = el<HTMLButtonElement>("threert-warnings-toggle");
+  const list = el("threert-warnings");
+  const warningsKey = warnings.join("\n");
+  toggle.hidden = !warnings.length;
+  toggle.textContent = warnings.length ? `${warnings.length} 条差异提示` : "";
+  toggle.title = warningsKey;
+  if (!warnings.length) {
+    list.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+  }
+  if (warningsKey !== threeRTWarningsKey) {
+    threeRTWarningsKey = warningsKey;
+    list.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+    if (typeof list.replaceChildren === "function" && typeof document !== "undefined") {
+      list.replaceChildren(...warnings.map(warning => {
+        const item = document.createElement("li");
+        item.textContent = warning;
+        return item;
+      }));
+    }
+  }
   const url = current && state?.status === "done" ? artifact("threert.png") : undefined;
   const download = el<HTMLAnchorElement>("download-threert");
   download.hidden = !url;
@@ -428,7 +456,7 @@ async function openRealtime() {
   try {
     const connection = await connectThreeRT(el<HTMLCanvasElement>("threert-render"), scene.realtimeUrl!, text => {
       if (snapshot?.id === scene.id && snapshot.exportVersion === scene.exportVersion) {
-        liveStatus = text; el("threert-status").textContent = text + ` ${scene.threeRTRender?.warnings?.join(" ") ?? ""}`;
+        liveStatus = text; el("threert-status").textContent = text;
       }
     });
     if (snapshot?.id !== scene.id || snapshot.exportVersion !== scene.exportVersion) { connection.dispose(); return; }
@@ -1315,6 +1343,11 @@ el<HTMLSelectElement>("render-backend").onchange = () => {
   showPreview();
 };
 el("render-threert").onclick = () => { void startThreeRT(); };
+el("threert-warnings-toggle").onclick = () => {
+  const list = el("threert-warnings");
+  list.hidden = !list.hidden;
+  el("threert-warnings-toggle").setAttribute("aria-expanded", String(!list.hidden));
+};
 el("reset").onclick = () => {
   if (mode === "threert") { liveViewer?.reset(); return; }
   if (viewer) {

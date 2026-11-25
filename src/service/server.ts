@@ -19,6 +19,38 @@ const referenceInstructions = "Before the first user-facing update, keep image 1
 const WIDGET_URI = "ui://uni-blender-scene/viewer.html";
 const WIDGET_FILE = new URL("../../dist/widget.html", import.meta.url);
 const version: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+function formatIssues(issues: readonly { path?: readonly PropertyKey[]; message: string }[]): string {
+  return issues.map(issue => {
+    const path = (issue.path ?? []).reduce<string>((acc, seg, index) =>
+      index === 0 ? String(seg) : typeof seg === "number" ? `${acc}[${seg}]` : `${acc}.${String(seg)}`, "");
+    return path ? `${issue.message} (${path})` : issue.message;
+  }).join("; ");
+}
+
+// Accept JSON-encoded strings for deeply nested MCP tool arguments so dynamic tool bridges that truncate nested objects/arrays cannot block callers.
+function jsonOr<T extends z.ZodType>(schema: T) {
+  const parsed = z.string().min(1).describe("JSON-encoded string of this value.")
+    .transform((text, ctx) => {
+      try { return JSON.parse(text) as unknown; } catch (error) {
+        ctx.addIssue({ code: "custom", message: `Invalid JSON string: ${error instanceof Error ? error.message : String(error)}` });
+        return z.NEVER;
+      }
+    }).pipe(schema);
+  return z.union([schema, parsed], {
+    error: (issue) => {
+      if (issue.code !== "invalid_union") return undefined;
+      const isString = typeof issue.input === "string";
+      const branch = isString ? issue.errors[1] : issue.errors[0];
+      if (!branch?.length) return undefined;
+      const detail = formatIssues(branch);
+      const hint = !isString && branch.some(entry => entry.code === "invalid_type" && (entry.path?.length ?? 0) > 0)
+        ? " (If the host tool bridge truncated nested values to null or scalars, pass this argument as a JSON-encoded string.)"
+        : "";
+      return `${detail}${hint}`;
+    },
+  });
+}
+
 const idSchema = { sceneId: z.string().regex(/^scene_[a-f0-9-]+$/) };
 const criterion = z.object({
   id: z.string().min(1).max(80), description: z.string().min(1).max(2000),
@@ -118,20 +150,20 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }, (args) => guarded(() => result(store.create(args.prompt, args.reference, args.references))));
   server.registerTool("scene_plan", {
     title: "Plan Blender scene",
-    description: "Freeze global criteria, steps, a Scene Graph, asset requirements and ordered stage budgets. Reconstruction requires composition and final stages. Composition always pauses for five structural views and explicit user approval; false compositionApproval is rejected. Every Blender object mapped to a graph node must carry its stable scene_node_id custom property. First geometry edit builds all major subjects. Reference anchors use normalized image-space boxes. Requires planning stage.",
+    description: "Freeze global criteria, steps, a Scene Graph, asset requirements and ordered stage budgets. Reconstruction requires composition and final stages. Composition always pauses for five structural views and explicit user approval; false compositionApproval is rejected. Every Blender object mapped to a graph node must carry its stable scene_node_id custom property. First geometry edit builds all major subjects. Reference anchors use normalized image-space boxes. Deeply nested arguments (graph, relations, workflow, referenceAnchors, referenceChecks) also accept JSON-encoded strings. Requires planning stage.",
     inputSchema: {
       ...idSchema, summary: z.string().min(1).max(10000),
       criteria: z.array(criterion).min(1).max(12),
-      graph: z.array(graphNode).min(1).max(500),
-      relations: z.array(relationNode).max(500).optional().describe("Independent relation nodes linking graph objects by explicit roles. Bind criterionIds to stages that must verify the relation. Numeric tolerances/spacing use Blender world units. Support requires subject/support roles and axis=z; alignment compares center coordinates; spacing compares sorted center gaps on axis. Semantic covers unsupported visual constraints. Skill relations require an active exact spatial_score id/hash, minScore and numeric parameters. Existing numeric types automatically pin active spatial-support/alignment/spacing rewards. Read blender-spatial for scoring and bounded search. Omit for legacy plans."),
+      graph: jsonOr(z.array(graphNode).min(1).max(500)),
+      relations: jsonOr(z.array(relationNode).max(500)).optional().describe("Independent relation nodes linking graph objects by explicit roles. Bind criterionIds to stages that must verify the relation. Numeric tolerances/spacing use Blender world units. Support requires subject/support roles and axis=z; alignment compares center coordinates; spacing compares sorted center gaps on axis. Semantic covers unsupported visual constraints. Skill relations require an active exact spatial_score id/hash, minScore and numeric parameters. Existing numeric types automatically pin active spatial-support/alignment/spacing rewards. Read blender-spatial for scoring and bounded search. Omit for legacy plans. Also accepts a JSON-encoded string."),
       assets: z.array(z.object({ nodeId: z.string().min(1), kind: z.enum(["object", "structure", "existing"]), reason: z.string().min(1).max(2000) })).max(500),
-      workflow: z.object({
+      workflow: jsonOr(z.object({
         stages: z.array(z.object({ name: z.enum(["geometry", "composition", "materials", "lighting", "final"]),
           criterionIds: z.array(z.string().min(1)).min(1), budget: z.number().int().min(1).max(8) })).min(1).max(5),
         compositionApproval: z.boolean().optional(),
-      }).optional(),
-      referenceAnchors: z.array(z.object({ id: z.string().min(1).max(80), description: z.string().min(1).max(2000), targetBox: imageBox })).min(2).max(8).optional().describe("Camera/composition boxes in the stored primary reference only, even when appearance criteria target an auxiliary image."),
-      referenceChecks: z.array(referenceCheck).max(48).optional().describe("Frozen point and visible edge checks per paired reference. Use normalized [x,y] from the top left and a graph node ID. Points project a mapped Empty with scene_landmark_id. Edges measure the stated side of the node mask at increasing reference y values. The service gates composition and final acceptance. Existing checks carry across refinements."),
+      })).optional(),
+      referenceAnchors: jsonOr(z.array(z.object({ id: z.string().min(1).max(80), description: z.string().min(1).max(2000), targetBox: imageBox })).min(2).max(8)).optional().describe("Camera/composition boxes in the stored primary reference only, even when appearance criteria target an auxiliary image. Also accepts a JSON-encoded string."),
+      referenceChecks: jsonOr(z.array(referenceCheck).max(48)).optional().describe("Frozen point and visible edge checks per paired reference. Use normalized [x,y] from the top left and a graph node ID. Points project a mapped Empty with scene_landmark_id. Edges measure the stated side of the node mask at increasing reference y values. The service gates composition and final acceptance. Existing checks carry across refinements. Also accepts a JSON-encoded string."),
       steps: z.array(z.string().min(1).max(3000)).min(1).max(8),
       visualThreshold: z.number().min(0).max(100).default(85),
     }, annotations: write,
@@ -154,12 +186,12 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   server.registerTool("scene_graph", {
     title: "Update Scene Graph mappings",
     description: "Update node labels, Blender object names, relations, and completion status during an edit or review stage. Node IDs stay fixed. Blender objects must carry a matching scene_node_id custom property for export mapping.",
-    inputSchema: { ...idSchema, graph: z.array(graphNode).min(1).max(500) }, annotations: write,
+    inputSchema: { ...idSchema, graph: jsonOr(z.array(graphNode).min(1).max(500)) }, annotations: write,
   }, ({ sceneId, graph }) => guarded(() => result(store.updateGraph(sceneId, graph))));
   server.registerTool("scene_edit", {
     title: "Edit and render Blender scene",
     description: "Supply code for a Leap or tweaks for numeric changes to existing parameters. Tweak accepts unlinked material and world socket values, light parameters, exposure and existing object transforms. Use Blender units and radians. Saves and renders a PNG, with rollback on failure. Poll scene_get with images=none, read images=render and submit scene_review before another edit. Build and fit every name in referenceCameras on the first multi-reference edit. The first is the active camera. Python runs with the Blender process's OS permissions.",
-    inputSchema: { ...idSchema, code: leapCodeSchema.optional(), tweaks: tweaksSchema.optional() },
+    inputSchema: { ...idSchema, code: leapCodeSchema.optional(), tweaks: jsonOr(tweaksSchema).optional() },
     annotations: { ...write, openWorldHint: true },
   }, ({ sceneId, code, tweaks }) => guarded(() => {
     if (Boolean(code) === Boolean(tweaks)) throw new Error("Supply exactly one of code (Leap) or tweaks (Tweak).");
@@ -168,7 +200,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   server.registerTool("scene_appearance_search", {
     title: "Compare material or lighting candidates",
     description: "During the materials or lighting edit stage, submit 2-3 distinct Leap or Tweak candidates. The bridge renders each from the current checkpoint, including an unedited baseline. Poll scene_get with images=none, then use images=appearance for the comparison. Choose against current criteria and submit selection with the returned searchId and candidateId. Select baseline to keep the current scene. Selection saves the chosen state as one regular edit, renders full evidence and requires scene_review. One batch per edit round. Leap Python runs with the Blender process's OS permissions.",
-    inputSchema: { ...idSchema, candidates: z.array(appearanceCandidateSchema).min(2).max(3).optional(),
+    inputSchema: { ...idSchema, candidates: jsonOr(z.array(appearanceCandidateSchema).min(2).max(3)).optional(),
       selection: z.object({ searchId: z.uuid(), candidateId: z.string().min(1).max(32) }).optional() },
     annotations: { ...write, openWorldHint: true },
   }, ({ sceneId, candidates, selection }) => guarded(() => {
@@ -266,7 +298,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
         matches: z.boolean().optional().describe("Required for each input reference. Set false when a difference relevant to the current phase is significant or its comparison evidence is unavailable."),
       }).array().max(6).optional(),
       criteria: z.array(z.object({ id: z.string(), passed: z.boolean(), evidence: z.string().min(1).max(2000) })).min(1).max(30),
-      referenceAlignment: z.array(z.object({ id: z.string(), renderBox: imageBox, evidence: z.string().min(1).max(2000) })).min(2).max(8).optional(),
+      referenceAlignment: jsonOr(z.array(z.object({ id: z.string(), renderBox: imageBox, evidence: z.string().min(1).max(2000) })).min(2).max(8)).optional(),
       visualScore: z.number().min(0).max(100),
       regressions: z.array(z.string().min(1).max(2000)).max(30),
       repairable: z.boolean(), nextAction: z.string().min(1).max(4000),
@@ -318,7 +350,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
     description: "Package the reviewed scene and prepared bake as GLB, profile, lightmaps, scene-graph.json and manifest.json. Prefer scene_bake first; legacy callers prepare a missing bake automatically. Reuses valid prepared textures when only preview appearance changes. Built graph nodes must map by scene_node_id to exported meshes. Async: poll scene_get images=none, then verify the viewer. Requires presentation.purpose=delivery.",
     inputSchema: { ...idSchema, lightingBakes: z.array(lightingBake).max(100).optional()
       .describe("Compatibility input; prefer scene_bake. Omitted uses the active bake settings. [] clears explicit receivers; omitted mode retains legacy appearance baking."),
-      previewAppearance: z.object({ exposureEV: z.number().min(-3).max(3).optional(), saturation: z.number().min(0).max(2).optional(),
+      previewAppearance: jsonOr(z.object({ exposureEV: z.number().min(-3).max(3).optional(), saturation: z.number().min(0).max(2).optional(),
         renderMode: z.enum(["pathtracing", "raster"]).optional().describe("Raster displays baked lightmaps without progressive sampling."),
         planarReflection: z.string().trim().min(1).max(256).optional().describe("Name of a horizontal mesh whose top surface supplies one real-time planar reflection in raster mode."),
         reflectionProbe: z.array(z.number().min(-10000).max(10000)).length(3).transform(value => value as [number, number, number]).optional()
@@ -330,7 +362,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
           volumes: z.array(z.object({ center: z.array(z.number().min(-10000).max(10000)).length(3),
             radius: z.array(z.number().min(0.05).max(1000)).length(3), density: z.number().min(0).max(2) })).min(1).max(6),
         }).optional(),
-      }).optional().describe("Web preview exposure offset, saturation and animated local dust in Blender Z-up world coordinates. Omitted reuses prior settings; {} clears them. Does not alter the source render or GLB lighting."),
+      })).optional().describe("Web preview exposure offset, saturation and animated local dust in Blender Z-up world coordinates. Omitted reuses prior settings; {} clears them. Does not alter the source render or GLB lighting. Also accepts a JSON-encoded string."),
     }, annotations: write,
   }, (args) => guarded(() => result(store.export(args.sceneId, false, args.lightingBakes, args.previewAppearance))));
   server.registerTool("scene_render_high_quality", {
@@ -373,7 +405,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   server.registerTool("scene_experience", {
     title: "Capture scene experience",
     description: "After final export and viewer verification, prepare the current case or record a host-written retrospective bound to its fingerprint. Stores accepted differences separately from verified lessons, observations and preferences, copying scene-local evidence with hashes. A completed/best_effort export alone is not user acceptance or visual success. Runtime data stays in RUNS_ROOT, never bundled Skills or Git.",
-    inputSchema: { ...idSchema, retrospective: retrospectiveSchema.optional() }, annotations: write,
+    inputSchema: { ...idSchema, retrospective: jsonOr(retrospectiveSchema).optional() }, annotations: write,
   }, ({ sceneId, retrospective }) => guarded(() => libraryResult(store.recordExperience(sceneId, retrospective))));
   server.registerTool("scene_library_search", {
     title: "Retrieve learned scene skills and cases",

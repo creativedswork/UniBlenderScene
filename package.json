@@ -17,6 +17,7 @@
     "test:claude": "node --import tsx tests/claude.integration.ts",
     "check:scenario-skills": "node scripts/check-scenario-skills.mjs",
     "configure": "tsx scripts/configure.ts",
+    "install:cursor": "node --import tsx scripts/install-cursor.ts",
     "pack:plugin": "tsx scripts/package.ts"
   },
   "dependencies": {

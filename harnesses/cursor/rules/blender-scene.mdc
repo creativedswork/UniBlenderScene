@@ -1,0 +1,16 @@
+---
+description: Apply before the first reply and throughout Blender 3D scene creation, reconstruction, or refinement tasks using UniBlenderScene, especially when reference images are attached.
+alwaysApply: false
+---
+
+# UniBlenderScene workflow rules
+
+For Blender scene requests with UniBlenderScene, apply these rules before the first user-facing update and throughout production:
+
+- Keep attachment upload order. Image 1 is the primary reference and the default camera. Use one camera per image in new multi-reference scenes.
+- A request targeting another image (such as “俯瞰视角和第五张图一致”) applies to that numbered camera (Camera 5). Keep Camera 1 as the default and avoid reassigning or promising a different primary output.
+- Pass the user's scene request verbatim as `scene_create.prompt`. Put observations and planned camera adjustments in `scene_plan`. After creating a scene, check `scene_get.reference` and `referenceCameras` before describing camera assignments again.
+- Follow the `blender-scene` Skill and use the plugin's `scene_*` MCP tools for scene operations. Before starting, verify that the `scene_*` tools are available; if missing or failing, use `blender-setup` to diagnose and report the error rather than writing an ad hoc HTTP client or modifying plugin source unless the user requests plugin development.
+- If both global `user-uni-blender-scene` (from `~/.cursor/mcp.json`) and plugin-scoped `plugin-uni-blender-scene-uni-blender-scene` namespaces are present, prefer `user-uni-blender-scene` (especially for `scene_view`), because Cursor Desktop renders MCP Apps inline 3D views only for globally configured MCP servers.
+- When resuming an existing scene, call `scene_get` with `images: "none"` first and preserve its stored checkpoints, stage budgets, and approval state.
+- When calling `scene_*` tools through a dynamic tool bridge that truncates deeply nested arguments (`graph`, `relations`, `workflow`, `referenceAnchors`, `referenceChecks`, `tweaks`, `candidates`, `referenceAlignment`, `previewAppearance`, or `retrospective`), pass those parameters as JSON-encoded strings.

@@ -97,6 +97,52 @@ Use `/mcp` to check the service connection before requesting a scene. Loading th
 plugin does not start the HTTP service or Blender. A healthy connection does not
 prove that a scene job will succeed; scene tool failures still need diagnosis.
 
+### Cursor
+
+Cursor natively loads `.cursor-plugin/plugin.json`, discovers the shared root
+`skills/`, registers the workflow rule in `harnesses/cursor/rules/` and subagents
+in `harnesses/cursor/agents/`, and defines the managed MCP entry in
+`harnesses/cursor/mcp.json` using `${CURSOR_PLUGIN_ROOT}`.
+
+Like Codex, Cursor's default `stdio` entry launches `scripts/codex-mcp.sh` and
+`scripts/codex-mcp.ts`, which automatically starts or reuses the same managed
+local HTTP service (`127.0.0.1:4312`) and dedicated Blender bridge
+(`127.0.0.1:9877`). It uses `~/.canova/runs` and `~/.canova/.env` by default,
+shares the task queue with Codex when both clients are used, and stops the
+service after ten minutes of inactivity.
+
+Install Node.js 22+ and Blender 4.5+ on the machine running Cursor. For a
+release ZIP (recommended) or a built source checkout (`npm ci && npm run build`),
+run the Cursor installer from the extracted plugin directory:
+
+```bash
+npm run install:cursor
+```
+
+This installer copies the plugin into `~/.cursor/plugins/local/uni-blender-scene`
+(without external symlinks or repository runtime files) and registers
+`uni-blender-scene` in global `~/.cursor/mcp.json`, while omitting `mcpServers`
+from the installed local plugin copy to avoid duplicate tool servers.
+Registering the MCP server in global `~/.cursor/mcp.json` is required on Cursor
+Desktop so `scene_view` renders interactive MCP Apps inline views (Blender
+render, Three.js, and ThreeRT) directly in Chat; local plugin-scoped MCP
+servers alone currently fall back to plain JSON text in Cursor Desktop.
+
+Then restart Cursor or run `Developer: Reload Window` and check the `Customize`
+sidebar to verify that `uni-blender-scene` skills, rules, subagents, and the
+global `uni-blender-scene` MCP server (`scene_get`, `scene_view`, etc.) are
+loaded. For Cursor CLI, load the built plugin directory directly without copying:
+
+```bash
+agent --plugin-dir /absolute/path/to/UniBlenderScene
+```
+
+For scene production, open a separate workspace directory outside the plugin
+checkout so repository contributor instructions (`AGENTS.md` / `CLAUDE.md`) are
+not loaded into the scene project. Note that Enterprise Cursor teams may need
+`Allow Local Plugin Imports` enabled in Dashboard settings, and hosted Cloud
+Agents do not read `~/.cursor/plugins/local/`.
+
 ## Validate Claude Code
 
 From the repository root, validate both native manifests:
@@ -404,7 +450,8 @@ npm run configure -- https://YOUR_SERVICE_ORIGIN
 ```
 
 This switches root `mcp.json` to the remote HTTP transport and updates
-`harnesses/claude-code/mcp.json` to the same endpoint.
+`harnesses/claude-code/mcp.json` and `harnesses/cursor/mcp.json` to the same
+endpoint.
 Keep the key in connection settings, outside manifests. The service supports
 fixed bearer-key authentication for private connections. It does not implement
 OAuth or public-directory submission, which needs a supported authentication

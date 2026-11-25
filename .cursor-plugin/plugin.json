@@ -1,0 +1,20 @@
+{
+  "name": "uni-blender-scene",
+  "displayName": "UniBlenderScene",
+  "version": "0.4.5",
+  "description": "Blender scene creation and review for Codex, Claude Code, Cursor, and other agent harnesses, powered by shared Skills and MCP.",
+  "author": {
+    "name": "CreativeDSWork"
+  },
+  "repository": "https://github.com/creativedswork/UniBlenderScene",
+  "keywords": [
+    "blender",
+    "3d",
+    "scene",
+    "mcp",
+    "rendering"
+  ],
+  "rules": "./harnesses/cursor/rules",
+  "agents": "./harnesses/cursor/agents",
+  "mcpServers": "./harnesses/cursor/mcp.json"
+}

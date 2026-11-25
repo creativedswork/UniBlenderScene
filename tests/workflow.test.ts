@@ -1168,25 +1168,192 @@ test("MCP numeric vectors use homogeneous item schemas and retain input constrai
     }));
     for (const spec of [...boxes, ...vectors]) {
       let schema: any = tools.find(tool => tool.name === spec.name)!.inputSchema;
-      for (const key of spec.path) schema = key === "items" ? schema.items : schema.properties[key];
+      for (const key of spec.path) {
+        schema = key === "items" ? schema.items : schema.properties[key];
+        if (Array.isArray(schema?.anyOf)) {
+          assert.ok(schema.anyOf.some((branch: any) => branch.type === "string"), `${spec.name}.${spec.path.join(".")} should allow a JSON string`);
+          schema = schema.anyOf.find((branch: any) => branch.type !== "string");
+        }
+      }
       assert.equal(schema.type, "array");
       assert.equal(schema.minItems, spec.length); assert.equal(schema.maxItems, spec.length);
       assert.deepEqual(schema.items, { type: "number", ...(spec.minimum === undefined ? {} : { minimum: spec.minimum, maximum: spec.maximum }) });
       const valid = Array(spec.length).fill(spec.minimum ?? 0);
+      const topKey = spec.path[0]!;
+      const asJsonString = (raw: Record<string, unknown>) => ({ ...raw, [topKey]: JSON.stringify(raw[topKey]) });
       for (const vector of [valid, Array(spec.length).fill(spec.maximum ?? 1)]) {
-        const before = spec.calls();
-        const result = await client.callTool({ name: spec.name, arguments: spec.args(vector) });
-        assert.equal(result.isError, undefined, JSON.stringify(result.content));
-        assert.equal(spec.calls(), before + 1);
+        for (const args of [spec.args(vector), asJsonString(spec.args(vector))]) {
+          const before = spec.calls();
+          const result = await client.callTool({ name: spec.name, arguments: args });
+          assert.equal(result.isError, undefined, JSON.stringify(result.content));
+          assert.equal(spec.calls(), before + 1);
+        }
       }
       const invalid: unknown[] = [valid.slice(1), [...valid, 0], ["0", ...valid.slice(1)], null];
       if (spec.minimum !== undefined) invalid.push([spec.minimum - 1, ...valid.slice(1)], [spec.maximum! + 1, ...valid.slice(1)]);
       for (const vector of invalid) {
-        const before = spec.calls();
-        const result = await client.callTool({ name: spec.name, arguments: spec.args(vector) });
-        assert.equal(result.isError, true, `${spec.name}.${spec.path.join(".")} accepted ${JSON.stringify(vector)}`);
-        assert.equal(spec.calls(), before, "Invalid vectors must not reach the store");
+        for (const args of [spec.args(vector), asJsonString(spec.args(vector))]) {
+          const before = spec.calls();
+          const result = await client.callTool({ name: spec.name, arguments: args });
+          assert.equal(result.isError, true, `${spec.name}.${spec.path.join(".")} accepted ${JSON.stringify(vector)}`);
+          assert.equal(spec.calls(), before, "Invalid vectors must not reach the store");
+        }
       }
+    }
+  } finally { await client.close(); await server.close(); }
+});
+
+test("MCP deeply nested arguments accept JSON-encoded strings and report truncation hints", async (t) => {
+  const { store } = setup();
+  const scene = store.create("Open-world hilltop castle"); await store.settled();
+  const planCall = t.mock.method(store, "plan", () => scene);
+  const graphCall = t.mock.method(store, "updateGraph", () => scene);
+  const editCall = t.mock.method(store, "edit", () => scene);
+  const appearanceCall = t.mock.method(store, "searchAppearance", () => scene);
+  const reviewCall = t.mock.method(store, "review", () => scene);
+  const exportCall = t.mock.method(store, "export", () => scene);
+  const experienceCall = t.mock.method(store, "recordExperience", () => ({ ok: true }));
+  const server = createMcpServer(store, "https://example.com");
+  const client = new Client({ name: "nested-json-test", version: "1.0.0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a); await client.connect(b);
+  try {
+    const graphValue = [
+      { id: "hill", label: "Hill", kind: "object", parentId: null, blenderObjectNames: ["Hill"], description: "Castle hill", status: "planned" },
+      { id: "castle", label: "Castle", kind: "object", parentId: null, blenderObjectNames: ["Castle"], description: "Hilltop castle",
+        relations: [{ targetId: "hill", description: "Rests on hill" }] },
+    ];
+    const relationsValue = [{
+      id: "rel_castle_on_hill", type: "semantic", description: "Castle rests on hill.",
+      participants: [{ nodeId: "castle", role: "subject" }, { nodeId: "hill", role: "support" }],
+      criterionIds: ["cube"],
+    }];
+    const workflowValue = {
+      compositionApproval: true,
+      stages: [
+        { name: "geometry", criterionIds: ["cube"], budget: 3 },
+        { name: "composition", criterionIds: ["cube"], budget: 2 },
+        { name: "final", criterionIds: ["cube"], budget: 1 },
+      ],
+    };
+    const anchorsValue = [
+      { id: "castle_box", description: "Castle silhouette", targetBox: [0.16, 0.16, 0.66, 0.55] },
+      { id: "hill_box", description: "Hill silhouette", targetBox: [0.05, 0.45, 0.95, 0.95] },
+    ];
+    const checksValue = [
+      { id: "p1", reference: "reference", nodeId: "castle", tolerance: 0.05, kind: "point", landmarkId: "spire", target: [0.44, 0.18] },
+      { id: "e1", reference: "reference", nodeId: "castle", tolerance: 0.06, kind: "edge", side: "left", target: [[0.2, 0.25], [0.18, 0.45]] },
+    ];
+    const planned = await client.callTool({
+      name: "scene_plan",
+      arguments: {
+        sceneId: scene.id, summary: "Castle plan", steps: ["Build castle"], visualThreshold: 85,
+        criteria: plan.criteria,
+        assets: [
+          { nodeId: "hill", kind: "structure", reason: "Terrain mesh" },
+          { nodeId: "castle", kind: "structure", reason: "Fortress structure" },
+        ],
+        graph: JSON.stringify(graphValue),
+        relations: JSON.stringify(relationsValue),
+        workflow: JSON.stringify(workflowValue),
+        referenceAnchors: JSON.stringify(anchorsValue),
+        referenceChecks: JSON.stringify(checksValue),
+      },
+    });
+    assert.equal(planned.isError, undefined, JSON.stringify(planned.content));
+    assert.equal(planCall.mock.callCount(), 1);
+    const passedPlan = planCall.mock.calls[0]!.arguments[1]!;
+    assert.deepEqual(passedPlan.workflow, workflowValue);
+    assert.deepEqual(passedPlan.relations, relationsValue);
+    assert.deepEqual(passedPlan.referenceChecks, checksValue);
+    assert.deepEqual(passedPlan.referenceAnchors, anchorsValue);
+    assert.deepEqual(passedPlan.graph, graphValue);
+
+    const updatedGraph = await client.callTool({ name: "scene_graph", arguments: { sceneId: scene.id, graph: JSON.stringify(graphValue) } });
+    assert.equal(updatedGraph.isError, undefined, JSON.stringify(updatedGraph.content));
+    assert.deepEqual(graphCall.mock.calls[0]!.arguments[1], graphValue);
+
+    const tweaksValue = [{ target: "objectTransform", object: "Castle", property: "location", value: [1, 2, 3] }];
+    const edited = await client.callTool({ name: "scene_edit", arguments: { sceneId: scene.id, tweaks: JSON.stringify(tweaksValue) } });
+    assert.equal(edited.isError, undefined, JSON.stringify(edited.content));
+    assert.equal(editCall.mock.callCount(), 1);
+
+    const candidatesValue = [
+      { mode: "tweak", label: "Brighter", tweaks: [{ target: "exposure", value: 0.5 }] },
+      { mode: "tweak", label: "Warmer", tweaks: [{ target: "light", object: "Sun", property: "color", value: [1, 0.9, 0.8] }] },
+    ];
+    const searched = await client.callTool({ name: "scene_appearance_search", arguments: { sceneId: scene.id, candidates: JSON.stringify(candidatesValue) } });
+    assert.equal(searched.isError, undefined, JSON.stringify(searched.content));
+    assert.deepEqual(appearanceCall.mock.calls[0]!.arguments[1], candidatesValue);
+
+    const alignmentValue = anchorsValue.map(anchor => ({ id: anchor.id, renderBox: anchor.targetBox, evidence: "Aligned" }));
+    const reviewed = await client.callTool({
+      name: "scene_review",
+      arguments: {
+        sceneId: scene.id, iteration: 1, inspectionId: "insp-1",
+        criteria: [{ id: "cube", passed: true, evidence: "Visible" }],
+        referenceAlignment: JSON.stringify(alignmentValue),
+        visualScore: 92, regressions: [], repairable: false, nextAction: "Proceed",
+      },
+    });
+    assert.equal(reviewed.isError, undefined, JSON.stringify(reviewed.content));
+    assert.deepEqual(reviewCall.mock.calls[0]!.arguments[1]!.referenceAlignment, alignmentValue);
+
+    const appearanceValue = {
+      exposureEV: 0.25,
+      dust: { color: [1, 0.95, 0.85], wind: [0.2, 0, 0], volumes: [{ center: [0, 0, 2], radius: [4, 4, 2], density: 0.5 }] },
+    };
+    const exported = await client.callTool({ name: "scene_export", arguments: { sceneId: scene.id, previewAppearance: JSON.stringify(appearanceValue) } });
+    assert.equal(exported.isError, undefined, JSON.stringify(exported.content));
+    assert.deepEqual(exportCall.mock.calls[0]!.arguments[3], appearanceValue);
+
+    const retrospectiveValue = {
+      requestId: "retro-1", caseFingerprint: "a".repeat(64), acceptedDifferences: [],
+      lessons: [{
+        title: "Keep horizon low", tags: ["camera"], status: "verified",
+        problem: "Castle clipped", cause: "Pitch too high", repair: "Lowered pitch",
+        verification: "Re-rendered view 1", applicability: "Open-world vistas",
+        limitations: ["Wide lens"], evidenceFiles: ["renders/iteration-1.png"],
+      }],
+    };
+    const experienced = await client.callTool({
+      name: "scene_experience",
+      arguments: { sceneId: scene.id, retrospective: JSON.stringify(retrospectiveValue) },
+    });
+    assert.equal(experienced.isError, undefined, JSON.stringify(experienced.content));
+    assert.deepEqual(experienceCall.mock.calls[0]!.arguments[1], retrospectiveValue);
+
+    // Truncated dynamic-bridge payloads (nullified array items or flattened 2D edge targets) are rejected with an actionable hint.
+    for (const [label, broken] of [
+      ["workflow.stages[0]=null", { workflow: { compositionApproval: true, stages: [null] } }],
+      ["relations[0].participants=[null,null]", { relations: [{ ...relationsValue[0], participants: [null, null] }] }],
+      ["flattened edge target", { referenceChecks: [{ ...checksValue[1], target: [0.2, 0.4] }] }],
+    ] as const) {
+      const before = planCall.mock.callCount();
+      const failed = await client.callTool({
+        name: "scene_plan",
+        arguments: {
+          sceneId: scene.id, summary: "Broken", steps: ["Step"], criteria: plan.criteria,
+          graph: plan.graph, assets: plan.assets, ...broken,
+        },
+      });
+      assert.equal(failed.isError, true, `${label} must fail validation`);
+      assert.equal(planCall.mock.callCount(), before);
+      assert.match(JSON.stringify(failed.content), /JSON-encoded string/, `${label} should suggest passing a JSON-encoded string`);
+    }
+
+    // Invalid JSON syntax, empty string, and schema-violating JSON strings are rejected without reaching the store.
+    for (const badWorkflow of ["", "{bad json", "null", JSON.stringify({ stages: [{ name: "invalid", criterionIds: [], budget: 0 }] })]) {
+      const before = planCall.mock.callCount();
+      const failed = await client.callTool({
+        name: "scene_plan",
+        arguments: {
+          sceneId: scene.id, summary: "Bad json", steps: ["Step"], criteria: plan.criteria,
+          graph: plan.graph, assets: plan.assets, workflow: badWorkflow,
+        },
+      });
+      assert.equal(failed.isError, true, `workflow=${JSON.stringify(badWorkflow)} must fail validation`);
+      assert.equal(planCall.mock.callCount(), before);
     }
   } finally { await client.close(); await server.close(); }
 });

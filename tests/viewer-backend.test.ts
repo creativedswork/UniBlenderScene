@@ -10,7 +10,8 @@ const functions = ["threeRTLiveUnavailableReason", "showPreview", "setMode", "up
 const handlers = source.statements.filter(statement =>
   ts.isFunctionDeclaration(statement) && functions.includes(statement.name?.text ?? "") ||
   statement.getText(source).startsWith('el<HTMLSelectElement>("render-backend").onchange =') ||
-  statement.getText(source).startsWith('el("mode-3d").onclick ='));
+  statement.getText(source).startsWith('el("mode-3d").onclick =') ||
+  statement.getText(source).startsWith('el("threert-warnings-toggle").onclick ='));
 const code = transformSync(handlers.map(statement => statement.getText(source)).join("\n"), { loader: "ts" }).code;
 
 function setup(capability: object, webViewer = true, failRequest = false) {
@@ -33,7 +34,7 @@ function setup(capability: object, webViewer = true, failRequest = false) {
   runInContext(`let snapshot = ${JSON.stringify({ id: "scene_test", stage: "completed", exportVersion: "v1",
     realtimeUrl: "http://localhost/realtime", threeRT: capability })};
     let viewer = ${webViewer ? "{}" : "undefined"}, mode = "render", liveViewer, liveConnecting = false, preferredBackend;
-    let liveWanted = false, liveStatus = "", threeRTRequestPending = false, threeRTImageKey = "";
+    let liveWanted = false, liveStatus = "", threeRTRequestPending = false, threeRTImageKey = "", threeRTWarningsKey = "";
     ${code}`, context);
   return { context, el, requests: () => requests };
 }
@@ -114,4 +115,32 @@ test("mode changes clear keyboard input while same-mode refreshes preserve held 
   assert.equal(runInContext("clears", fixture.context), 1);
   runInContext('setMode("render")', fixture.context);
   assert.equal(runInContext("clears", fixture.context), 2);
+});
+
+test("ThreeRT warnings stay collapsed in a deduplicated toggle instead of bloating the status line", () => {
+  const fixture = setup({ available: true, liveAvailable: true });
+  runInContext(`
+    snapshot.workflowState = { phase: "final", status: "completed", compositionApproved: true,
+      presentation: { mode: "appearance", purpose: "delivery", source: "best", iteration: 3 } };
+    snapshot.threeRTRender = {
+      status: "done", iteration: 3, exportVersion: "v1",
+      warnings: [
+        "Compositor Fog Glow is approximated with Bloom.",
+        "Volume Street Haze: unsupported density graph.",
+        "Street Haze · fog: the density graph uses unsupported inputs",
+        "ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 AgX 显示 LUT。",
+      ],
+    };
+    liveStatus = "ThreeRT 实时交互 · 4.2 帧/秒";
+    updateThreeRT();
+  `, fixture.context);
+  assert.equal(fixture.el("threert-status").textContent, "ThreeRT 实时交互 · 4.2 帧/秒");
+  assert.equal(fixture.el("threert-warnings-toggle").hidden, false);
+  assert.equal(fixture.el("threert-warnings-toggle").textContent, "3 条差异提示");
+  assert.doesNotMatch(fixture.el("threert-warnings-toggle").title, /Volume Street Haze: unsupported density graph/);
+  assert.equal(fixture.el("threert-warnings").hidden, true);
+  fixture.el("threert-warnings-toggle").onclick();
+  assert.equal(fixture.el("threert-warnings").hidden, false);
+  fixture.el("threert-warnings-toggle").onclick();
+  assert.equal(fixture.el("threert-warnings").hidden, true);
 });
