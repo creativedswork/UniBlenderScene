@@ -42,6 +42,7 @@ import sys
 
 import bmesh
 import bpy
+import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
@@ -353,7 +354,7 @@ def _islands(bm, flip):
                     if g.index not in done:
                         done.add(g.index)
                         stack.append(g)
-        local, coords, polys = {}, [], []
+        local, coords, polys, edges = {}, [], [], set()
         closed, vol, area = True, 0.0, 0.0
         for f in faces:
             ids = []
@@ -363,12 +364,13 @@ def _islands(bm, flip):
                     coords.append(v.co.copy())
                 ids.append(local[v.index])
             polys.append(ids)
+            edges.update((min(a, b), max(a, b)) for a, b in zip(ids, ids[1:] + ids[:1]))
             closed = closed and all(len(e.link_faces) == 2 for e in f.edges)
             co = [v.co for v in f.verts]
             vol += sum(co[0].dot(co[i].cross(co[i + 1])) for i in range(1, len(co) - 1)) / 6.0
             area += f.calc_area()
         out.append({
-            "coords": coords, "polys": polys, "closed": closed, "volume": vol * flip,
+            "coords": coords, "polys": polys, "edges": sorted(edges), "closed": closed, "volume": vol * flip,
             "area": area, "faces": len(faces),
             "centers": [f.calc_center_median() for f in faces],
             "normals": [f.normal.copy() for f in faces],
@@ -379,25 +381,84 @@ def _islands(bm, flip):
     return out
 
 
+def _clip(p, q, lo, hi):
+    """Parameter range (t0, t1) of segment p-q inside the box lo-hi, or None (Liang-Barsky)."""
+    t0, t1 = 0.0, 1.0
+    for k in range(3):
+        d = q[k] - p[k]
+        if abs(d) < 1e-12:
+            if p[k] < lo[k] or p[k] > hi[k]:
+                return None
+            continue
+        ta, tb = (lo[k] - p[k]) / d, (hi[k] - p[k]) / d
+        if ta > tb:
+            ta, tb = tb, ta
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return None
+    return t0, t1
+
+
+def _edge_samples(x, lo, hi):
+    """Points along the edges of part x, clipped to the box lo-hi: the ends and middle of each clipped piece."""
+    co = x["coords"]
+    for i, j in x["edges"]:
+        p, q = co[i], co[j]
+        if any(min(p[k], q[k]) > hi[k] or max(p[k], q[k]) < lo[k] for k in range(3)):
+            continue
+        t = _clip(p, q, lo, hi)
+        if t is not None:
+            for s in (t[0], (t[0] + t[1]) / 2, t[1]):
+                yield p.lerp(q, s)
+
+
 def _attached(a, b, tol):
-    """True when parts a and b intersect or come within tol of each other."""
+    """True when parts a and b intersect or come within tol of each other. Where two parts cross face
+    to face (a rail across a post) no vertex lies near the other part, and a hairline gap hides the
+    contact from the overlap test, so points along each part's edges inside the overlap of the two
+    bounding boxes are tested too."""
     if a["tree"].overlap(b["tree"]):
         return True
     for x, y in ((a, b), (b, a)):
         if any(y["tree"].find_nearest(c, tol)[0] is not None for c in x["coords"]):
             return True
+    lo = [max(a["lo"][k], b["lo"][k]) - tol for k in range(3)]
+    hi = [min(a["hi"][k], b["hi"][k]) + tol for k in range(3)]
+    for x, y in ((a, b), (b, a)):
+        if any(y["tree"].find_nearest(c, tol)[0] is not None for c in _edge_samples(x, lo, hi)):
+            return True
     return False
 
 
+def _winding_number(b, pts):
+    """Winding numbers of closed part b about the points: +-1 inside, 0 outside (the solid angles of its
+    triangles, Van Oosterom and Strackee, summed)."""
+    if "tris" not in b:
+        co = np.array([tuple(c) for c in b["coords"]], float)
+        b["tris"] = co[np.array([(p[0], p[i], p[i + 1]) for p in b["polys"] for i in range(1, len(p) - 1)], int)]
+    out = []
+    for c in pts:
+        A, B, C = (b["tris"][:, k] - np.array(tuple(c)) for k in range(3))
+        la, lb, lc = (np.linalg.norm(X, axis=1) for X in (A, B, C))
+        num = np.einsum("ij,ij->i", A, np.cross(B, C))
+        den = (la * lb * lc + np.einsum("ij,ij->i", A, B) * lc + np.einsum("ij,ij->i", A, C) * lb
+               + np.einsum("ij,ij->i", B, C) * la)
+        out.append(float(np.arctan2(num, den).sum()) / (2 * math.pi))
+    return out
+
+
 def _inside(a, b):
-    """True when sampled vertices of part a all lie inside closed part b."""
+    """True when sampled vertices of part a all lie inside closed part b. Behind b's nearest face is the quick
+    test; past the rim of a thin shell the nearest point is an edge or corner, whose face can look away from a
+    point far outside, so b's winding number about the samples decides."""
     if not b["closed"] or b["volume"] <= 0:
         return False
-    for c in a["coords"][::max(1, len(a["coords"]) // 64)]:
+    pts = a["coords"][::max(1, len(a["coords"]) // 64)]
+    for c in pts:
         loc, normal, _, _ = b["tree"].find_nearest(c)
         if loc is None or (c - loc).dot(normal) >= 0:
             return False
-    return True
+    return all(abs(w) > 0.5 for w in _winding_number(b, pts))
 
 
 def _scale_owner(o):
@@ -421,7 +482,7 @@ def _samples_image(tree, seen=None):
                for nd in tree.nodes)
 
 
-def deliverable(objs, profile="game", eps=None, tol=None, gap=None, evaluated=True):
+def deliverable(objs, profile="game", eps=None, tol=None, gap=None, evaluated=True, ground=None):
     """Gate the parts of ONE asset before export or handoff.
 
     objs: the mesh objects (or names) that make up the asset. Gate separate props one by
@@ -430,6 +491,11 @@ def deliverable(objs, profile="game", eps=None, tol=None, gap=None, evaluated=Tr
     part farther than this from the rest floats (an error); between tol and gap it is a
     warning, an error for print. Defaults: 0.01%, 0.2% and 1% of the bounding diagonal.
     evaluated: check the mesh with modifiers applied, as exporters write it by default.
+    ground: height of the floor the asset stands on (e.g. 0.0), off by default. Parts that
+    span it (lowest point at or below ground + tol, highest at or above ground - tol) stand on
+    it together, so separate pieces each on the floor (bike-rack hoops, a scatter of stones) do
+    not float, and the group on the floor is the asset: a part not connected to it floats,
+    however large. When no part spans it, a warning says so and the largest group is the asset.
     Returns {"pass", "errors", "warnings", "per_object", "profile", "eps", "tol", "gap",
     "skipped"}.
     """
@@ -568,8 +634,13 @@ def deliverable(objs, profile="game", eps=None, tol=None, gap=None, evaluated=Tr
         else:
             flag("back_to_back", {a, b}, f"{where}: {_n(k, 'back-to-back touching face')}")
 
-    # Floating and enclosed parts: union every pair that touches; the component with the
-    # most surface is the asset, every other component floats.
+    # Floating and enclosed parts: union every pair that touches, and every part on the ground;
+    # the component on the ground, else the one with the most surface, is the asset, every
+    # other component floats.
+    standing = [] if ground is None else [i for i, p in enumerate(parts)
+                                          if p["lo"][2] <= ground + tol and p["hi"][2] >= ground - tol]
+    if ground is not None and parts and not standing:
+        out["warnings"].append(f"no part reaches the ground at z = {ground}")
     if len(parts) > MAX_PARTS:
         out["warnings"].append(f"{len(parts)} parts: floating and enclosed checks skipped")
     elif len(parts) > 1:
@@ -598,31 +669,39 @@ def deliverable(objs, profile="game", eps=None, tol=None, gap=None, evaluated=Tr
                 elif _inside(a, b) or _inside(b, a):
                     enclosed.add(i if _inside(a, b) else j)
                     root[find(i)] = find(j)
+        for i in standing[1:]:
+            root[find(i)] = find(standing[0])
         groups = {}
         for i in range(len(parts)):
             groups.setdefault(find(i), []).append(i)
-        main = max(groups.values(), key=lambda g: sum(parts[i]["area"] for i in g))
-        coords, polys = [], []
+        main = (groups[find(standing[0])] if standing
+                else max(groups.values(), key=lambda g: sum(parts[i]["area"] for i in g)))
+        coords, polys, poly_part = [], [], []
         for i in main:
             polys += [[k + len(coords) for k in poly] for poly in parts[i]["polys"]]
+            poly_part += [i] * len(parts[i]["polys"])
             coords += parts[i]["coords"]
         body = BVHTree.FromPolygons(coords, polys)
         dist = {}  # part index -> its component's distance to the main component
+        near = {}  # part index -> the main component's part nearest to its component
         for g in groups.values():
             if g is main:
                 continue
-            d = min(body.find_nearest(c)[3] for i in g
-                    for c in parts[i]["coords"][::max(1, len(parts[i]["coords"]) // 64)])
-            dist.update((i, d) for i in g)
+            hit = min((body.find_nearest(c) for i in g
+                       for c in parts[i]["coords"][::max(1, len(parts[i]["coords"]) // 64)]),
+                      key=lambda h: h[3])
+            dist.update((i, hit[3]) for i in g)
+            near.update((i, poly_part[hit[2]]) for i in g)
         for n in out["per_object"]:
             for check, far in (("floating", True), ("gap", False)):
                 mine = [i for i, d in dist.items() if owner[i] == n and (d > gap) == far]
                 if not mine:
                     continue
-                d = min(dist[i] for i in mine)
+                closest = min(mine, key=dist.get)
+                d = dist[closest]
                 if len(mine) == owner.count(n):
                     what = "floating" if far else "not touching"
-                    flag(check, [n], f"{n}: {what}, {d:.3g} from the nearest part")
+                    flag(check, [n], f"{n}: {what}, {d:.3g} from {owner[near[closest]]}")
                 else:
                     pct = 100.0 * sum(parts[i]["faces"] for i in mine) / sum(
                         parts[i]["faces"] for i in range(len(parts)) if owner[i] == n)
@@ -660,13 +739,14 @@ def _cli():
     ap.add_argument("--objects", nargs="+", help="parts of the asset (default: every visible mesh)")
     ap.add_argument("--import", dest="source", help="gate this file alone (glb, fbx, obj, usd, stl, ply)")
     ap.add_argument("--profile", default="game", choices=PROFILES)
+    ap.add_argument("--ground", type=float, help="floor height the parts stand on")
     ap.add_argument("--json", help="also write the report here")
     a = ap.parse_args(argv)
     if a.deliverable:
         if a.source:
             _import(a.source)
         objs = a.objects or [o.name for o in bpy.context.scene.objects if o.type == "MESH" and o.visible_get()]
-        r = deliverable(objs, profile=a.profile)
+        r = deliverable(objs, profile=a.profile, ground=a.ground)
     else:
         r = audit(bpy.data.objects[a.object], high=bpy.data.objects[a.high] if a.high else None)
         r["problems"] = verdict(r)

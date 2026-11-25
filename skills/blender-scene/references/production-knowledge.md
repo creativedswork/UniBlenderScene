@@ -1,8 +1,9 @@
 # Blender production knowledge
 
-This plugin packages the same Scenario Blender knowledge revision used by the
-Canova runtime (`e24bc7d40be97b428e7b9fd467c415366e1dd974`). The original
-files, helper source, license, and checksums are in [scenario](../../scenario/source.json).
+The Scenario Blender knowledge is based on the Canova snapshot
+(`e24bc7d40be97b428e7b9fd467c415366e1dd974`). The
+[source manifest](../../scenario/source.json) records the expert Skill revision
+and checksums for the copied references and helper source.
 Selected EL4CTEO Blender Skills add environment and surface effects, pinned in
 [their source manifest](../../blender-effects/source.json) under the
 [MIT license](../../blender-effects/LICENSE).
