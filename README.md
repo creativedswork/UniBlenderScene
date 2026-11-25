@@ -17,7 +17,7 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
 | --- | --- |
 | Codex | Install the plugin; review renders and open interactive previews in an MCP Apps host |
 | Claude Code | Load the plugin; inspect renders and access `.blend`/GLB files from the terminal |
-| Cursor | Run `npm run install:cursor` to install Skills/rules/subagents locally and register the global MCP server (`~/.cursor/mcp.json`); auto-manages the local service and opens interactive previews via MCP Apps |
+| Cursor | Install locally with `npm run install:cursor` (or load via Cursor CLI); review renders and open interactive previews in Chat |
 | Other agent harnesses | Connect to the MCP service and load the scene workflow instructions; preview support depends on the host |
 
 ## Showcases
@@ -75,7 +75,24 @@ Provider access, API keys and generation costs are configured separately. See th
 
 ## Quick start
 
-Ask your agent to read and follow the [quick-start guide](docs/quick-start.md) to set up UniBlenderScene.
+Prerequisites: Node.js 22+ and Blender 4.5+ on the machine running the local
+service. Ask your agent to read and follow the [quick-start guide](docs/quick-start.md)
+to set up UniBlenderScene, or connect your host directly from the extracted
+release ZIP (or after running `npm ci && npm run build` in a source checkout):
+
+- **Codex:** add the plugin root as a local marketplace source and install
+  `uni-blender-scene`. Codex starts or reuses the managed local service and
+  dedicated Blender bridge automatically. See [Codex setup](docs/operations.md#codex).
+- **Claude Code:** start the local service (`node --import tsx scripts/start-local.ts`
+  from the plugin root), then launch `claude --plugin-dir /absolute/path/to/UniBlenderScene`
+  from a separate scene directory. See [Claude Code setup](docs/operations.md#claude-code).
+- **Cursor:** run `npm run install:cursor` from the plugin root, then restart
+  Cursor or run `Developer: Reload Window`. The installer copies the plugin
+  (Skills, workflow rule, and subagents) to `~/.cursor/plugins/local/uni-blender-scene`
+  and registers `uni-blender-scene` in `~/.cursor/mcp.json` so Cursor Desktop
+  auto-manages the local service and renders inline MCP Apps 3D previews in Chat.
+  For Cursor CLI, run `agent --plugin-dir /absolute/path/to/UniBlenderScene`.
+  See [Cursor setup](docs/operations.md#cursor).
 
 ## Scene workflow
 
@@ -83,13 +100,17 @@ The [scene Skill](skills/blender-scene/SKILL.md) guides a staged process:
 
 1. **Plan:** identify the main objects, spatial relationships and visual goals.
 2. **Build:** establish the full scene, then refine geometry and composition.
-3. **Confirm:** review the gray scene from multiple views and approve composition
-   before materials and lighting begin.
+3. **Confirm:** review the neutral gray scene from multiple views—including
+   frozen reference landmark and silhouette edge checks when reconstructing from
+   images—and approve composition before materials and lighting begin.
 4. **Refine:** use Leap for structural changes and Tweak for existing parameters.
    Compare material or lighting candidates against the same baseline when several
    directions are plausible, then render and review the selected edit.
    For reference-based scenes, compare every iteration with the original reference
    for that camera, including changes limited to the interactive preview.
+   When a staged review does not pass, the workflow pauses and lists the unmet
+   checks and visual differences so you can choose whether to continue revising
+   the current phase or accept the listed differences and advance.
 5. **Deliver:** export the best reviewed checkpoint as a render, `.blend` and GLB.
 
 The agent supplies planning and visual judgment; the service executes Blender
@@ -109,7 +130,8 @@ Learning runs during agent tasks; it does not change model weights. See the
 
 ## Interactive 3D preview
 
-Ask the agent to open the preview in a host that supports MCP Apps. You can:
+Ask the agent to open the preview in a host that supports MCP Apps (such as
+Codex or Cursor Desktop). You can:
 
 - Orbit, zoom, pan and reset the camera.
 - Click the Three.js or ThreeRT view: W/S moves along the viewing direction, including up or down when tilted; A/D moves sideways. Hold Shift to move faster.
@@ -135,8 +157,9 @@ When the local 3D preview is ready, select **在浏览器中打开** to open it 
 browser. If the client cannot open it, copy the address from **查看预览链接**.
 
 ThreeRT approximates Blender's HDR environment lighting with a gradient sky.
-The native client displays the baked sky panorama when the export includes one.
-See the [upstream HDRI request](https://github.com/meshy-dev/ThreeRT/issues/178).
+The native client displays the exported sky panorama (`background.exr`) when the
+export includes one. See the
+[upstream HDRI request](https://github.com/meshy-dev/ThreeRT/issues/178).
 
 For static scenes, ask the agent to optimize the browser preview for smoother
 navigation. If ThreeRT is unavailable, you can explore the scene with Three.js.
@@ -157,6 +180,8 @@ See [preview setup](docs/operations.md#threert-setup-and-limits) to enable Three
 
 ## Documentation
 
+- [Quick-start guide](docs/quick-start.md): local dependency checks and
+  host setup for Codex, Claude Code, and Cursor.
 - [Service setup and deployment](docs/operations.md): local runtime, plugin
   source, remote connection, configuration, and packaging.
 - [Scene Skill](skills/blender-scene/SKILL.md): scene workflow and tool use.
