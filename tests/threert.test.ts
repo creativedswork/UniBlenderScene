@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BlenderClient } from "../src/service/blender.js";
 import { SceneStore, type Scene } from "../src/service/store.js";
-import { cameraFromGLB, modelWithoutPunctualLights, renderThreeRT } from "../src/service/threert.js";
+import { cameraFromGLB, collectThreeRTWarnings, modelWithoutPunctualLights, renderThreeRT } from "../src/service/threert.js";
 import { buildThreeRTScene, type ThreeRTInput } from "../runtime/threert/scene.js";
 import { DirectionalLight, FogVolume, HomogeneousVolume, RainCurtain, VolumeMesh } from "@threert/scene";
 import { PNG } from "pngjs";
@@ -43,8 +43,9 @@ require("node:fs").writeFileSync(process.argv[process.argv.indexOf("-o") + 1], B
   try {
     writeFileSync(join(directory, "final.glb"), glb());
     writeFileSync(join(directory, "environment.exr"), exr);
+    writeFileSync(join(directory, "background.exr"), exr);
     writeFileSync(join(directory, "render-profile.json"), JSON.stringify({ ...profile, world: { ...profile.world,
-      environmentUri: "environment.exr", backgroundEnvironmentUri: `data:application/octet-stream;base64,${exr.toString("base64")}`,
+      environmentUri: "environment.exr", backgroundEnvironmentUri: "background.exr",
       environmentRotationY: Math.PI / 2 } }));
     await renderThreeRT(directory, cli);
     const input: ThreeRTInput = JSON.parse(readFileSync(join(directory, "input.json"), "utf8"));
@@ -292,4 +293,35 @@ test("ThreeRT jobs preserve source/workflow, expose only current successful outp
     assert.ok(!store.allowedFiles(scene).some(file => file.endsWith("/threert.png")));
     assert.equal(scene.stage, "best_effort"); assert.equal(scene.iteration, 4);
   } finally { if (before === undefined) delete process.env.THREERT_BIN; else process.env.THREERT_BIN = before; }
+});
+
+test("collectThreeRTWarnings deduplicates volume density warnings already listed in effects.issues", () => {
+  const warnings = collectThreeRTWarnings({
+    render: { resolutionX: 640, resolutionY: 360, filmTransparent: false },
+    world: { color: [0, 0, 0], strength: 1, environmentUri: "environment.exr", environmentRotationY: 0 },
+    colorManagement: { viewTransform: "AgX", exposure: 0 },
+    lights: [],
+    warnings: [
+      "WebGL only warning",
+      "Compositor Fog Glow is approximated with Bloom.",
+      "Volume Street Haze: unsupported density graph.",
+      "Volume Standalone Fog: unsupported density graph.",
+    ],
+    effects: {
+      version: 1,
+      shafts: [],
+      fog: [],
+      issues: [
+        { object: "Street Haze", effect: "fog", status: "missing", reason: "the density graph uses unsupported inputs" },
+        { object: "Water", effect: "reflection", status: "approximate", reason: "threejs only", target: "threejs" },
+      ],
+    },
+  });
+  assert.deepEqual(warnings, [
+    "Compositor Fog Glow is approximated with Bloom.",
+    "Volume Standalone Fog: unsupported density graph.",
+    "Street Haze · fog: the density graph uses unsupported inputs",
+    "ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 AgX 显示 LUT。",
+    "ThreeRT 使用渐变天空近似环境照明。",
+  ]);
 });

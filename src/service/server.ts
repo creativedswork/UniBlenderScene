@@ -11,6 +11,7 @@ import { z } from "zod";
 import { REFERENCE_ASSETS, SceneStore, type ImageBox, type Scene } from "./store.js";
 import { proposalSchema, replaySchema, retrospectiveSchema } from "./experience.js";
 import { appearanceCandidateSchema, leapCodeSchema, tweakCode, tweaksSchema } from "./appearance.js";
+import { referenceOverlay, type ImagePoint } from "./reference-checks.js";
 
 const referenceInstructions = "Before the first user-facing update, keep image 1 as the primary reference and default camera. " +
   "A request such as ‘俯瞰视角和第五张图一致’ only applies to Camera 5. Keep all attachments in their original order and keep Camera 1 as the default. " +
@@ -18,6 +19,38 @@ const referenceInstructions = "Before the first user-facing update, keep image 1
 const WIDGET_URI = "ui://uni-blender-scene/viewer.html";
 const WIDGET_FILE = new URL("../../dist/widget.html", import.meta.url);
 const version: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+function formatIssues(issues: readonly { path?: readonly PropertyKey[]; message: string }[]): string {
+  return issues.map(issue => {
+    const path = (issue.path ?? []).reduce<string>((acc, seg, index) =>
+      index === 0 ? String(seg) : typeof seg === "number" ? `${acc}[${seg}]` : `${acc}.${String(seg)}`, "");
+    return path ? `${issue.message} (${path})` : issue.message;
+  }).join("; ");
+}
+
+// Accept JSON-encoded strings for deeply nested MCP tool arguments so dynamic tool bridges that truncate nested objects/arrays cannot block callers.
+function jsonOr<T extends z.ZodType>(schema: T) {
+  const parsed = z.string().min(1).describe("JSON-encoded string of this value.")
+    .transform((text, ctx) => {
+      try { return JSON.parse(text) as unknown; } catch (error) {
+        ctx.addIssue({ code: "custom", message: `Invalid JSON string: ${error instanceof Error ? error.message : String(error)}` });
+        return z.NEVER;
+      }
+    }).pipe(schema);
+  return z.union([schema, parsed], {
+    error: (issue) => {
+      if (issue.code !== "invalid_union") return undefined;
+      const isString = typeof issue.input === "string";
+      const branch = isString ? issue.errors[1] : issue.errors[0];
+      if (!branch?.length) return undefined;
+      const detail = formatIssues(branch);
+      const hint = !isString && branch.some(entry => entry.code === "invalid_type" && (entry.path?.length ?? 0) > 0)
+        ? " (If the host tool bridge truncated nested values to null or scalars, pass this argument as a JSON-encoded string.)"
+        : "";
+      return `${detail}${hint}`;
+    },
+  });
+}
+
 const idSchema = { sceneId: z.string().regex(/^scene_[a-f0-9-]+$/) };
 const criterion = z.object({
   id: z.string().min(1).max(80), description: z.string().min(1).max(2000),
@@ -40,6 +73,14 @@ const relationNode = z.object({
 });
 // Homogeneous array schemas let Codex discover tools that accept fixed-length vectors.
 const imageBox = z.array(z.number()).length(4).transform(value => value as ImageBox);
+const imagePoint = z.array(z.number().min(0).max(1)).length(2).transform(value => value as ImagePoint);
+const referenceCheck = z.object({
+  id: z.string().trim().min(1).max(80), reference: z.enum(REFERENCE_ASSETS),
+  nodeId: z.string().min(1).max(100), tolerance: z.number().positive().max(1),
+}).and(z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("point"), landmarkId: z.string().trim().min(1).max(100), target: imagePoint }),
+  z.object({ kind: z.literal("edge"), side: z.enum(["left", "right"]), target: z.array(imagePoint).min(2).max(16) }),
+]));
 const referenceEvidence = z.array(z.object({ reference: z.enum(REFERENCE_ASSETS), observation: z.string().min(1).max(4000) })).max(6);
 const referenceFile = z.object({
   download_url: z.string().url().optional(), file_id: z.string().min(1).optional(),
@@ -71,7 +112,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   };
   const write = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
-  const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json", "best.blend",
+  const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "background.exr", "scene-graph.json", "manifest.json", "best.blend",
     "review-main.png", "review-front.png", "review-side.png", "review-top.png", "review-perspective.png", "threert.png"] as const;
   const assetName = z.union([z.enum(assetNames), z.string().regex(/^lightmap-\d+\.png$/),
     z.string().regex(/^(?:iteration-\d+|revision-[a-f0-9-]+-composition)-reference-[2-6]\.png$/)]);
@@ -109,26 +150,27 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }, (args) => guarded(() => result(store.create(args.prompt, args.reference, args.references))));
   server.registerTool("scene_plan", {
     title: "Plan Blender scene",
-    description: "Freeze global criteria, steps, a Scene Graph, asset requirements and ordered stage budgets. Reconstruction requires composition and final stages. Composition always pauses for five structural views and explicit user approval; false compositionApproval is rejected. Every Blender object mapped to a graph node must carry its stable scene_node_id custom property. First geometry edit builds all major subjects. Reference anchors use normalized image-space boxes. Requires planning stage.",
+    description: "Freeze global criteria, steps, a Scene Graph, asset requirements and ordered stage budgets. Reconstruction requires composition and final stages. Composition always pauses for five structural views and explicit user approval; false compositionApproval is rejected. Every Blender object mapped to a graph node must carry its stable scene_node_id custom property. First geometry edit builds all major subjects. Reference anchors use normalized image-space boxes. Deeply nested arguments (graph, relations, workflow, referenceAnchors, referenceChecks) also accept JSON-encoded strings. Requires planning stage.",
     inputSchema: {
       ...idSchema, summary: z.string().min(1).max(10000),
       criteria: z.array(criterion).min(1).max(12),
-      graph: z.array(graphNode).min(1).max(500),
-      relations: z.array(relationNode).max(500).optional().describe("Independent relation nodes linking graph objects by explicit roles. Bind criterionIds to stages that must verify the relation. Numeric tolerances/spacing use Blender world units. Support requires subject/support roles and axis=z; alignment compares center coordinates; spacing compares sorted center gaps on axis. Semantic covers unsupported visual constraints. Skill relations require an active exact spatial_score id/hash, minScore and numeric parameters. Existing numeric types automatically pin active spatial-support/alignment/spacing rewards. Read blender-spatial for scoring and bounded search. Omit for legacy plans."),
+      graph: jsonOr(z.array(graphNode).min(1).max(500)),
+      relations: jsonOr(z.array(relationNode).max(500)).optional().describe("Independent relation nodes linking graph objects by explicit roles. Bind criterionIds to stages that must verify the relation. Numeric tolerances/spacing use Blender world units. Support requires subject/support roles and axis=z; alignment compares center coordinates; spacing compares sorted center gaps on axis. Semantic covers unsupported visual constraints. Skill relations require an active exact spatial_score id/hash, minScore and numeric parameters. Existing numeric types automatically pin active spatial-support/alignment/spacing rewards. Read blender-spatial for scoring and bounded search. Omit for legacy plans. Also accepts a JSON-encoded string."),
       assets: z.array(z.object({ nodeId: z.string().min(1), kind: z.enum(["object", "structure", "existing"]), reason: z.string().min(1).max(2000) })).max(500),
-      workflow: z.object({
+      workflow: jsonOr(z.object({
         stages: z.array(z.object({ name: z.enum(["geometry", "composition", "materials", "lighting", "final"]),
           criterionIds: z.array(z.string().min(1)).min(1), budget: z.number().int().min(1).max(8) })).min(1).max(5),
         compositionApproval: z.boolean().optional(),
-      }).optional(),
-      referenceAnchors: z.array(z.object({ id: z.string().min(1).max(80), description: z.string().min(1).max(2000), targetBox: imageBox })).min(2).max(8).optional().describe("Camera/composition boxes in the stored primary reference only, even when appearance criteria target an auxiliary image."),
+      })).optional(),
+      referenceAnchors: jsonOr(z.array(z.object({ id: z.string().min(1).max(80), description: z.string().min(1).max(2000), targetBox: imageBox })).min(2).max(8)).optional().describe("Camera/composition boxes in the stored primary reference only, even when appearance criteria target an auxiliary image. Also accepts a JSON-encoded string."),
+      referenceChecks: jsonOr(z.array(referenceCheck).max(48)).optional().describe("Frozen point and visible edge checks per paired reference. Use normalized [x,y] from the top left and a graph node ID. Points project a mapped Empty with scene_landmark_id. Edges measure the stated side of the node mask at increasing reference y values. The service gates composition and final acceptance. Existing checks carry across refinements. Also accepts a JSON-encoded string."),
       steps: z.array(z.string().min(1).max(3000)).min(1).max(8),
       visualThreshold: z.number().min(0).max(100).default(85),
     }, annotations: write,
   }, ({ sceneId, ...plan }) => guarded(() => result(store.plan(sceneId, plan))));
   server.registerTool("scene_plan_review", {
     title: "Review planned spatial layout",
-    description: "Read-only graph verification before construction. Review coverage, hierarchy, independent relation nodes (participants, roles, axes, tolerances and criterion bindings), legacy spatial relations and stage_checklists against every reference. Failures return to planning. Use a separate verification pass from generation.",
+    description: "Read-only graph verification before construction. Review coverage, hierarchy, spatial relations, planned reference-check bindings and stage_checklists against every reference. Failures return to planning. Passing freezes the reference checks. Use a separate verification pass from generation.",
     inputSchema: { ...idSchema,
       checks: z.array(z.object({ id: z.enum(["coverage", "hierarchy", "spatial", "stage_checklists"]), passed: z.boolean(), evidence: z.string().min(1).max(4000) })).length(4),
       referenceEvidence,
@@ -144,12 +186,12 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   server.registerTool("scene_graph", {
     title: "Update Scene Graph mappings",
     description: "Update node labels, Blender object names, relations, and completion status during an edit or review stage. Node IDs stay fixed. Blender objects must carry a matching scene_node_id custom property for export mapping.",
-    inputSchema: { ...idSchema, graph: z.array(graphNode).min(1).max(500) }, annotations: write,
+    inputSchema: { ...idSchema, graph: jsonOr(z.array(graphNode).min(1).max(500)) }, annotations: write,
   }, ({ sceneId, graph }) => guarded(() => result(store.updateGraph(sceneId, graph))));
   server.registerTool("scene_edit", {
     title: "Edit and render Blender scene",
     description: "Supply code for a Leap or tweaks for numeric changes to existing parameters. Tweak accepts unlinked material and world socket values, light parameters, exposure and existing object transforms. Use Blender units and radians. Saves and renders a PNG, with rollback on failure. Poll scene_get with images=none, read images=render and submit scene_review before another edit. Build and fit every name in referenceCameras on the first multi-reference edit. The first is the active camera. Python runs with the Blender process's OS permissions.",
-    inputSchema: { ...idSchema, code: leapCodeSchema.optional(), tweaks: tweaksSchema.optional() },
+    inputSchema: { ...idSchema, code: leapCodeSchema.optional(), tweaks: jsonOr(tweaksSchema).optional() },
     annotations: { ...write, openWorldHint: true },
   }, ({ sceneId, code, tweaks }) => guarded(() => {
     if (Boolean(code) === Boolean(tweaks)) throw new Error("Supply exactly one of code (Leap) or tweaks (Tweak).");
@@ -158,7 +200,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   server.registerTool("scene_appearance_search", {
     title: "Compare material or lighting candidates",
     description: "During the materials or lighting edit stage, submit 2-3 distinct Leap or Tweak candidates. The bridge renders each from the current checkpoint, including an unedited baseline. Poll scene_get with images=none, then use images=appearance for the comparison. Choose against current criteria and submit selection with the returned searchId and candidateId. Select baseline to keep the current scene. Selection saves the chosen state as one regular edit, renders full evidence and requires scene_review. One batch per edit round. Leap Python runs with the Blender process's OS permissions.",
-    inputSchema: { ...idSchema, candidates: z.array(appearanceCandidateSchema).min(2).max(3).optional(),
+    inputSchema: { ...idSchema, candidates: jsonOr(z.array(appearanceCandidateSchema).min(2).max(3)).optional(),
       selection: z.object({ searchId: z.uuid(), candidateId: z.string().min(1).max(32) }).optional() },
     annotations: { ...write, openWorldHint: true },
   }, ({ sceneId, candidates, selection }) => guarded(() => {
@@ -177,14 +219,16 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }, ({ sceneId, ...options }) => guarded(() => result(store.optimize(sceneId, options))));
   server.registerTool("scene_get", {
     title: "Inspect scene and rendered evidence",
-    description: "Read authoritative workflowState (phase, status, approval and presentation). Set images=render for the current evidence, references for inputs, appearance for the baseline and valid candidates in the active appearance search, none for metadata, or all for render and references (legacy default). Use images=camera with referenceName for a matched camera render. referenceName selects one reference with images=references; objectName returns object data alone or with images=none. Poll scene_get with images=none during jobs. Inspect each new render once.",
+    description: "Read authoritative workflowState and current inspection. Use images=render for the main render, references for inputs, appearance for active candidates, none for metadata, or all for render and references. Use images=camera with referenceName for a paired render or images=alignment for the reference-check overlay (primary by default). objectName inspects one Blender object alone or with images=none. Poll with images=none during jobs.",
     inputSchema: {
       ...idSchema, objectName: z.string().min(1).max(256).optional(), referenceName: z.enum(REFERENCE_ASSETS).optional(),
-      images: z.enum(["none", "render", "references", "camera", "appearance", "all"]).optional(),
+      images: z.enum(["none", "render", "references", "camera", "alignment", "appearance", "all"]).optional(),
     }, annotations: read, _meta: { "openai/widgetAccessible": true },
   }, ({ sceneId, objectName, referenceName, images }) => guarded(async () => {
     if (objectName && (referenceName || images && images !== "none")) throw new Error("Inspect an object alone or with images=none.");
-    if (referenceName && images && images !== "references" && images !== "camera") throw new Error("Select a reference with images=references or images=camera.");
+    if (referenceName && images && !["references", "camera", "alignment"].includes(images)) {
+      throw new Error("Select a reference with images=references, images=camera, or images=alignment.");
+    }
     if (images === "camera" && !referenceName) throw new Error("Select referenceName for the matched camera render.");
     const scene = store.get(sceneId);
     const output = result(scene);
@@ -197,6 +241,17 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
     const references = store.referenceImages(scene);
     if (referenceName && !references.some((image) => image.assetName === referenceName)) throw new Error("Reference image is unavailable.");
     const selection = images ?? "all";
+    if (selection === "alignment") {
+      const reference = referenceName ?? REFERENCE_ASSETS[0];
+      const evidence = store.referenceAlignmentEvidence(scene, reference);
+      if (!evidence) throw new Error("Reference-check evidence is unavailable for the selected checkpoint and view.");
+      const overlay = referenceOverlay(await readFile(store.path(scene, evidence.file)), evidence.measurements);
+      output.content.push(
+        { type: "text", text: `Alignment for ${reference}. Cyan marks the frozen target. Amber marks the Blender measurement.` },
+        { type: "image", mimeType: "image/png", data: overlay.toString("base64") },
+      );
+      return output;
+    }
     if (selection === "appearance") {
       const candidates = store.appearanceImages(scene);
       if (!candidates.length) throw new Error("No appearance search is ready for comparison.");
@@ -232,16 +287,18 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }));
   server.registerTool("scene_review", {
     title: "Review scene evidence",
-    description: "Review the latest Blender render against every criterion for the current stage; final stage reviews all global criteria. Staged reviews require one structured observation per criterion with a real graph node ID; failed criteria need reason, correction and rerender acceptance check. Rank at most three repairs. Reference anchors are measured during composition and final stages. Service selects the best checkpoint and enforces per-stage budgets and two-round non-improvement stop. Visual score is host judgment.",
+    description: "Review the latest Blender render against the current-stage checklist and visible reference evidence. Final reviews cover all global criteria. Set matches for each reference using the current phase's visible requirements. Failed criteria need a reason, correction and rerender acceptance check. In composition and final, also submit box alignment and read service measurements. An unmet staged review returns workflowState.pendingDecision with issues and the next phase. Present both options and wait for the user.",
     inputSchema: {
       ...idSchema, iteration: z.number().int().min(1),
       inspectionId: z.string().min(1),
       relationReviews: z.array(z.object({ relationId: z.string().min(1), passed: z.boolean(), evidence: z.string().trim().min(1).max(4000),
         correction: z.string().trim().min(1).max(4000).optional() })).max(500).optional()
         .describe("Exactly one review per relation bound to a current-stage criterion; final reviews all relations. Read inspection.summary.relationChecks. Failed or unmeasurable numeric checks cannot pass. Numeric passes still need visual verification. Failures require a correction and failed linked criteria."),
-      referenceEvidence: referenceEvidence.optional(),
+      referenceEvidence: referenceEvidence.element.extend({
+        matches: z.boolean().optional().describe("Required for each input reference. Set false when a difference relevant to the current phase is significant or its comparison evidence is unavailable."),
+      }).array().max(6).optional(),
       criteria: z.array(z.object({ id: z.string(), passed: z.boolean(), evidence: z.string().min(1).max(2000) })).min(1).max(30),
-      referenceAlignment: z.array(z.object({ id: z.string(), renderBox: imageBox, evidence: z.string().min(1).max(2000) })).min(2).max(8).optional(),
+      referenceAlignment: jsonOr(z.array(z.object({ id: z.string(), renderBox: imageBox, evidence: z.string().min(1).max(2000) })).min(2).max(8)).optional(),
       visualScore: z.number().min(0).max(100),
       regressions: z.array(z.string().min(1).max(2000)).max(30),
       repairable: z.boolean(), nextAction: z.string().min(1).max(4000),
@@ -261,11 +318,14 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
     annotations: write,
   }, ({ sceneId, ...request }) => guarded(() => result(store.revise(sceneId, request))));
   server.registerTool("scene_review_decision", {
-    title: "Confirm or revise composition",
-    description: "Resolve the geometry and composition checkpoint. Explicit approval resumes the next stage. Rejection records feedback without refilling a stage; separately authorized additional rounds use scene_revise.",
+    title: "Record the user's stage review decision",
+    description: "Use only after the user chooses. For pendingDecision, supply its reviewId. With approved=true and acceptGaps=true, carry the shown checkpoint and its listed gaps into the named next phase. In final, this authorizes best-effort delivery. With approved=false, continue the current phase. Supply additionalBudget when the user grants more rounds after exhaustion. For a scoped structural revision, use scene_revise. Passing composition still requires explicit approval.",
     inputSchema: { ...idSchema, approved: z.boolean(), feedback: z.string().max(4000).optional(),
-      returnTo: z.enum(["geometry", "composition"]).optional() }, annotations: write, _meta: { "openai/widgetAccessible": true },
-  }, ({ sceneId, approved, feedback, returnTo }) => guarded(() => result(store.reviewDecision(sceneId, approved, feedback, returnTo))));
+      returnTo: z.enum(["geometry", "composition"]).optional(), reviewId: z.string().min(1).optional(),
+      acceptGaps: z.boolean().optional(), additionalBudget: z.number().int().min(1).max(8).optional(),
+    }, annotations: write, _meta: { "openai/widgetAccessible": true },
+  }, ({ sceneId, approved, feedback, returnTo, ...options }) =>
+    guarded(() => result(store.reviewDecision(sceneId, approved, feedback, returnTo, options))));
   server.registerTool("scene_review_views", {
     title: "Generate structural views",
     description: "Generate five gray views for the authoritative workflowState presentation: current working scene during geometry/composition, preserved checkpoint during awaiting_review. Read-only scene inspection; never advances a stage, resets budgets or approves structure. Replaces stale views with this source/iteration. Async: poll scene_get with images=none.",
@@ -278,7 +338,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   });
   server.registerTool("scene_bake", {
     title: "Bake reviewed scene",
-    description: "Prepare static lighting and portable material textures on a copy of the reviewed delivery checkpoint. Preserves source .blend, workflow and iteration. Results are cached by source bytes, settings and bake implementation. Async: poll scene_get images=none; scene.bake reports files, source hash and cacheHit. Then call scene_export to package the prepared scene. Requires completed or best_effort state.",
+    description: "Prepare static lighting and portable material textures on a copy of the reviewed delivery checkpoint. Preserves source .blend, workflow and iteration. Results are cached by source bytes, settings and bake implementation. Async: poll scene_get images=none; scene.bake reports files, source hash and cacheHit. Then call scene_export to package the prepared scene. Requires presentation.purpose=delivery.",
     inputSchema: { ...idSchema, lightingBakes: z.array(lightingBake.extend({
       resolution: z.number().int().min(64).max(4096).default(512),
       mode: z.enum(["appearance", "lightmap"]).default("lightmap"),
@@ -287,10 +347,10 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }, ({ sceneId, lightingBakes }) => guarded(() => result(store.bake(sceneId, lightingBakes))));
   server.registerTool("scene_export", {
     title: "Export reviewed scene",
-    description: "Package the reviewed scene and prepared bake as GLB, profile, lightmaps, scene-graph.json and manifest.json. Prefer scene_bake first; legacy callers prepare a missing bake automatically. Reuses valid prepared textures when only preview appearance changes. Built graph nodes must map by scene_node_id to exported meshes. Async: poll scene_get images=none, then verify the viewer. Requires completed or best_effort state.",
+    description: "Package the reviewed scene and prepared bake as GLB, profile, lightmaps, scene-graph.json and manifest.json. Prefer scene_bake first; legacy callers prepare a missing bake automatically. Reuses valid prepared textures when only preview appearance changes. Built graph nodes must map by scene_node_id to exported meshes. Async: poll scene_get images=none, then verify the viewer. Requires presentation.purpose=delivery.",
     inputSchema: { ...idSchema, lightingBakes: z.array(lightingBake).max(100).optional()
       .describe("Compatibility input; prefer scene_bake. Omitted uses the active bake settings. [] clears explicit receivers; omitted mode retains legacy appearance baking."),
-      previewAppearance: z.object({ exposureEV: z.number().min(-3).max(3).optional(), saturation: z.number().min(0).max(2).optional(),
+      previewAppearance: jsonOr(z.object({ exposureEV: z.number().min(-3).max(3).optional(), saturation: z.number().min(0).max(2).optional(),
         renderMode: z.enum(["pathtracing", "raster"]).optional().describe("Raster displays baked lightmaps without progressive sampling."),
         planarReflection: z.string().trim().min(1).max(256).optional().describe("Name of a horizontal mesh whose top surface supplies one real-time planar reflection in raster mode."),
         reflectionProbe: z.array(z.number().min(-10000).max(10000)).length(3).transform(value => value as [number, number, number]).optional()
@@ -302,7 +362,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
           volumes: z.array(z.object({ center: z.array(z.number().min(-10000).max(10000)).length(3),
             radius: z.array(z.number().min(0.05).max(1000)).length(3), density: z.number().min(0).max(2) })).min(1).max(6),
         }).optional(),
-      }).optional().describe("Web preview exposure offset, saturation and animated local dust in Blender Z-up world coordinates. Omitted reuses prior settings; {} clears them. Does not alter the source render or GLB lighting."),
+      })).optional().describe("Web preview exposure offset, saturation and animated local dust in Blender Z-up world coordinates. Omitted reuses prior settings; {} clears them. Does not alter the source render or GLB lighting. Also accepts a JSON-encoded string."),
     }, annotations: write,
   }, (args) => guarded(() => result(store.export(args.sceneId, false, args.lightingBakes, args.previewAppearance))));
   server.registerTool("scene_render_high_quality", {
@@ -312,7 +372,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   }, ({ sceneId }) => guarded(() => result(store.renderHighQuality(sceneId))));
   server.registerTool("scene_preview", {
     title: "Preview structural scene",
-    description: "Generate missing five gray views and a gray GLB for workflowState.presentation: current geometry/composition work draft, or preserved composition checkpoint while awaiting_review. Returns actual source, iteration and purpose in state/profile/manifest. A work draft can show unresolved geometry and cannot be approved. Preserves phase, status, budgets, approval and source materials. Rebuilds stale previews; final delivery still requires scene_export. Async: poll scene_get with images=none.",
+    description: "Generate missing five gray views and a gray GLB for the current structural draft or preserved structural checkpoint. Returns source, iteration and purpose. Preview generation leaves phase, status, budgets and approval untouched. Final delivery uses scene_export. Async: poll scene_get with images=none.",
     inputSchema: idSchema, annotations: write,
   }, (args) => guarded(() => result(store.export(args.sceneId, true))));
   server.registerTool("scene_view", {
@@ -345,7 +405,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   server.registerTool("scene_experience", {
     title: "Capture scene experience",
     description: "After final export and viewer verification, prepare the current case or record a host-written retrospective bound to its fingerprint. Stores accepted differences separately from verified lessons, observations and preferences, copying scene-local evidence with hashes. A completed/best_effort export alone is not user acceptance or visual success. Runtime data stays in RUNS_ROOT, never bundled Skills or Git.",
-    inputSchema: { ...idSchema, retrospective: retrospectiveSchema.optional() }, annotations: write,
+    inputSchema: { ...idSchema, retrospective: jsonOr(retrospectiveSchema).optional() }, annotations: write,
   }, ({ sceneId, retrospective }) => guarded(() => libraryResult(store.recordExperience(sceneId, retrospective))));
   server.registerTool("scene_library_search", {
     title: "Retrieve learned scene skills and cases",
@@ -397,11 +457,12 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
       role: "user", content: { type: "text", text: `Create or refine a Blender scene for: ${request}
 ${referenceInstructions}
 Read workflowState in every response: phase is the production stage, status is the operation state, and presentation fixes mode, purpose, source and iteration. Geometry/composition produce gray work images. Before these pass review, scene_preview can generate current-iteration five-view evidence and a gray GLB without changing state or approval; label it as a work draft, not confirmation or final delivery. Never substitute old views for a current revision.
-Use scene_create with every supplied image in references (up to 6). The first is the primary camera/composition; auxiliary images show the same scene and calibrate depth, occlusion and placement. Keep original attachment order and pass attachmentNumber for each image when known. Image 1 stays primary and supplies the default composition. For a new multi-reference scene build one named Blender camera per reference using scene_get.referenceCameras. A fifth-image overhead request constrains the fifth camera. Fit all cameras against shared world-space landmarks, object placement and occlusion in one scene. Preserve original attachment numbers for existing scenes. When reviewing, retrieve each matched camera image once with scene_get images=camera and referenceName. Record shared-landmark evidence and inconsistencies per reference. Primary-view anchors stay bound to image 1; each other camera is compared against its paired image. Poll scene_get with images=none, then inspect every reference once with scene_get images=references; use referenceName to revisit a specific view only when needed. For an existing delivered scene, scene_continue can append auxiliary references. Discover 3D API Providers in connected tools and available Skills, including CLI APIs, for every standalone object; follow the scene Skill's asset workflow and obtain authorization before paid generation. Blender fallback requires evidence from both inventories in discovery.tools and discovery.skills; missing access or pending prerequisites is not provider absence.
+Use scene_create with every supplied image in references (up to 6). The first is the primary camera/composition; auxiliary images show the same scene and calibrate depth, occlusion and placement. Keep original attachment order and pass attachmentNumber for each image when known. Image 1 stays primary and supplies the default composition. For a new multi-reference scene build one named Blender camera per reference using scene_get.referenceCameras. A fifth-image overhead request constrains the fifth camera. Fit all cameras against shared world-space landmarks, object placement and occlusion in one scene. Preserve original attachment numbers for existing scenes. When reviewing, retrieve each matched camera image once with scene_get images=camera and referenceName. Record shared-landmark evidence and inconsistencies per reference. Primary-view anchors are measured from image 1, including when copying an earlier checkpoint. Keep camera distance and subject scale in the frame as separate targets. Compare every other camera against its paired image. Poll scene_get with images=none, then inspect every reference once with scene_get images=references; use referenceName to revisit a specific view only when needed. For an existing delivered scene, scene_continue can append auxiliary references. Discover 3D API Providers in connected tools and available Skills, including CLI APIs, for every standalone object; follow the scene Skill's asset workflow and obtain authorization before paid generation. Blender fallback requires evidence from both inventories in discovery.tools and discovery.skills; missing access or pending prerequisites is not provider absence.
 Read the bundled Blender production guidance in the scene Skill. Reconcile every supplied view into one layout before planning. Freeze 1-12 global criteria and 1-8 bounded steps with scene_plan, including spatial relationships established by auxiliary views. Every plan needs a Scene Graph and asset requirements. For new multi-object plans, include independent relations with stable IDs, participant roles and criterionIds (or [] when none apply). Read the scene Skill spatial relations reference for world-axis measurements and visual checks; keep object hierarchy in parentId. For full reconstruction, use ordered workflow stages: geometry, composition, materials, lighting, final. Composition approval is mandatory and cannot be disabled. Classify every non-group node in assets. Perform scene_plan_review against all references before generation or editing. Then resolve independent object assets concurrently under the scene Skill's asset workflow, respecting Provider dependencies, concurrency limits, required choices and authorization. Providers requiring one asset per session or immediate waiting need isolated user-authorized asset workers; otherwise use their supported serial workflow. Only the coordinator records pending verified task IDs and completed local GLBs with scene_asset_strategy. Resolve every standalone object through Provider discovery and generation, or record that no applicable Provider exists, before serial Blender assembly. The first edit must build every major subject, camera, ground, and basic lighting. If a reference is attached, plan 2-8 normalized image-space boxes in the primary view and measure them during composition and final review. Check auxiliary-view depth and occlusion using object transforms and the orbitable scene.
 Use scene_edit with code for a structural Leap or tweaks for numeric changes to existing parameters. In materials or lighting, use scene_appearance_search if distinct corrections merit a comparison. Inspect scene_get images=appearance, compare each valid candidate with the baseline and pick one using selection; keep the baseline if no candidate improves it. Review the selected full render as a regular edit. After each edit inspect inspection.summary.relationChecks and visually verify active relations. Include relationReviews for every relation bound to a current-stage criterion; final covers all relations. Failed or unmeasurable numeric checks cannot pass, and failed relations require corrections and failed linked criteria. Recheck affectedRelations during scoped revisions without expanding the authorized edit scope. Set scene_node_id on directly mapped Blender objects. Update graph mappings and statuses through scene_graph. Set an active camera, lighting, materials, and render settings.
+In every phase, set referenceEvidence.matches for each paired view using the current phase’s visible requirements. Significant differences or unavailable evidence require false even when numeric checks pass. For reconstruction with identifiable points or silhouette edges, follow the scene Skill's reference checks workflow. Freeze referenceChecks per paired view before editing and map point landmarks to Blender Empties. During composition and final, read inspection.summary.referenceMeasurements. Use images=alignment for a discrepant view when the overlay helps identify the repair. Give the measured deviation and affected Blender object, then recheck the same view after editing.
 Poll scene_get with images=none until done; inspect the new render once with scene_get images=render and every current-stage criterion before submitting scene_review. Bind the runtime inspection.id as inspectionId. Submit referenceEvidence for every input view and sceneEvidence for each staged criterion. Use a separate read-only verification pass with at most three ranked repairs. A procedural proxy is not automatically high fidelity.
-Follow the returned stage. At awaiting_review, present the neutral gray main image and five structural views; use scene_preview and poll scene_get with images=none for interactive checkpoint inspection, preserving pending approval. Wait for the user's explicit scene_review_decision before advancing. When completed or best_effort, call scene_export, poll scene_get with images=none, then return render and artifact links. In an MCP Apps host, call scene_view only after scene_get images=none returns a non-null renderUrl, then verify the bundled viewer and Scene Graph selection. In a CLI without MCP Apps, use the inspected render and report that interactive viewing needs an MCP Apps host; do not claim viewer verification.
+When workflowState.pendingDecision is present, show the selected render and report the latest review’s unmet items, visual differences, and a concrete correction. Name the current phase and nextPhase. When the selected checkpoint differs from the latest review, name its iteration and the gaps it carries. Wait for the user to choose between continuing this phase and accepting the gaps to enter the named next phase. Call scene_review_decision with reviewId and the chosen action. If more rounds are needed, get an explicit additionalBudget, or follow scene_revise when scopedRevisionRequired is true. Final approval with listed gaps authorizes best-effort delivery. For a passing composition checkpoint, use scene_preview and wait for explicit user confirmation. For delivery, call scene_export and verify the rendered preview. In an MCP Apps host, call scene_view only after scene_get images=none returns a non-null renderUrl, then verify the bundled viewer and Scene Graph selection. In a CLI without MCP Apps, use the inspected render and report that interactive viewing needs an MCP Apps host; do not claim viewer verification.
 Count all image blocks entering this conversation, including Read, screenshots, Provider tools and scene_get. Do not reread an unchanged render through Read after scene_get. Respect the active model/provider image limit and reserve room for the next review batch. Before approaching that limit, save a text handoff under the scene run directory with sceneId, stage/iteration, plan, reference labels, observed differences, approval state and next step; start a fresh conversation if history cannot be reduced. If the limit is unknown, checkpoint around 35 image blocks as a conservative workflow default, not a claimed provider limit. Keep required visual inspections and user approval; never claim unseen evidence. The service cannot remove images already stored by the host.
 Report visual limitations honestly. The server supplies neither a language model nor a built-in 3D generator, and it does not create or review code for you.
 At task start, inspect learning.skills and retrieve relevant active entries using scene_library_search. After export and actual viewer verification, complete learning.retrospectiveDue with scene_experience, recording accepted differences and evidence rather than treating delivery as approval. When learning.batchDue is true, consolidate recurring verified lessons with scene_skill_propose, validate with scene_skill_validate and activate only a passing exact version using scene_skill_activate. Read blender-skill-library for the shared library workflow across scene-production domains. For numeric layout work read blender-spatial; scene_optimize searches with pinned Python rewards through the scene_edit transaction and requires visual review. Use spatial_score candidates for reusable rewards, inspect inherited regression reports and require two distinct source scenes before shared activation. Never execute learned code outside scene_edit, scene_optimize or its dedicated validation tool, or bypass Provider/approval/stage rules.

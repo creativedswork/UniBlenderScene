@@ -187,6 +187,19 @@ ramp.color_ramp.elements[1].color = (0.2, 0.18, 0.14, 1)
 world.node_tree.links.new(coordinates.outputs["Normal"], separate.inputs["Vector"])
 world.node_tree.links.new(separate.outputs["Z"], ramp.inputs["Fac"])
 world.node_tree.links.new(ramp.outputs["Color"], nodes["Background"].inputs["Color"])
+# Camera and lighting use different branches, with the visible sky first.
+camera_ray = nodes.new("ShaderNodeLightPath")
+non_camera = nodes.new("ShaderNodeMath")
+non_camera.operation = "SUBTRACT"
+non_camera.inputs[0].default_value = 1
+fill = nodes.new("ShaderNodeBackground")
+fill.inputs["Color"].default_value = (0.4, 0.05, 0.02, 1)
+split = nodes.new("ShaderNodeMixShader")
+world.node_tree.links.new(camera_ray.outputs["Is Camera Ray"], non_camera.inputs[1])
+world.node_tree.links.new(non_camera.outputs[0], split.inputs[0])
+world.node_tree.links.new(nodes["Background"].outputs[0], split.inputs[1])
+world.node_tree.links.new(fill.outputs[0], split.inputs[2])
+world.node_tree.links.new(split.outputs[0], nodes["World Output"].inputs["Surface"])
 # A linked atmosphere must not suppress the exported sky or get baked into it.
 position = nodes.new("ShaderNodeNewGeometry")
 radius = nodes.new("ShaderNodeVectorMath")
@@ -264,6 +277,8 @@ layers = group.nodes.new("CompositorNodeRLayers")
 bloom = group.nodes.new("CompositorNodeGlare")
 bloom.inputs["Type"].default_value = "Fog Glow"
 bloom.inputs["Strength"].default_value = 0.1
+grade = group.nodes.new("CompositorNodeBrightContrast")
+grade.label = "Local color grade"
 multiply = group.nodes.new("ShaderNodeMath")
 multiply.operation = "MULTIPLY"
 multiply.inputs[1].default_value = 0.03
@@ -272,9 +287,10 @@ mix.data_type = "RGBA"
 mix.inputs[7].default_value = (0.3, 0.25, 0.2, 1)
 output = group.nodes.new("NodeGroupOutput")
 group.links.new(layers.outputs["Image"], bloom.inputs["Image"])
+group.links.new(bloom.outputs["Image"], grade.inputs["Image"])
 group.links.new(layers.outputs["Mist"], multiply.inputs[0])
 group.links.new(multiply.outputs[0], mix.inputs[0])
-group.links.new(bloom.outputs["Image"], mix.inputs[6])
+group.links.new(grade.outputs["Image"], mix.inputs[6])
 group.links.new(mix.outputs[2], output.inputs["Image"])
 
 # A second named volume has its own color and a linked, height-dependent density.

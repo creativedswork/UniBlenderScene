@@ -17,6 +17,7 @@ const reviewSnapshot = JSON.parse(await readFile(resolve(root, "composition.json
 const workSnapshot = JSON.parse(await readFile(resolve(root, "geometry.json"), "utf8"));
 const cameraSnapshot = JSON.parse(await readFile(resolve(root, "reference-camera-scene.json"), "utf8"));
 const lightmapSnapshot = JSON.parse(await readFile(resolve(root, "lightmap-scene.json"), "utf8"));
+const shiftedProfile = new URL(snapshot.artifacts.find((item: { name: string }) => item.name === "render-profile.json").url).pathname;
 const files = new Map<string, string>();
 const include = (url: string | null) => {
   if (!url) return;
@@ -83,6 +84,10 @@ const server = createServer(async (request, response) => {
         referenceCameras: selected.referenceCameras?.map((view: { renderUrl: string | null }) => ({ ...view, renderUrl: rewrite(view.renderUrl) })),
         artifacts: selected.artifacts.map((item: { name: string; url: string }) => ({ ...item, url: rewrite(item.url) })),
       }));
+    } else if (path === shiftedProfile) {
+      const profile = JSON.parse(await readFile(files.get(path)!, "utf8"));
+      profile.camera.projectionMatrix[9] = 0.09;
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(profile));
     } else if (files.has(path)) {
       response.writeHead(200, { "Content-Type": path.endsWith(".json") ? "application/json" : path.endsWith(".png") ? "image/png" : "application/octet-stream" }).end(await readFile(files.get(path)!));
     } else response.writeHead(404).end();
@@ -244,6 +249,7 @@ try {
   assert.equal(await canvas.getAttribute("data-display-transform"), "blender-lut");
   assert.equal(await canvas.getAttribute("data-effects"), "bloom,haze,dust,volumes,sun-shafts");
   assert.equal(await canvas.getAttribute("data-dust-lighting"), "sun-shadow");
+  await frame.getByRole("button", { name: "Reset camera" }).click();
   await canvas.screenshot({ path: resolve(root, "viewer-3d.png") });
   const first = await canvas.screenshot();
   const initialOutline = await frame.locator("#selection-outline").getAttribute("d");
@@ -264,6 +270,9 @@ try {
   assert.notEqual(await frame.locator("#selection-axis-x").getAttribute("d"), initialAxis, "World axes follow orbit.");
   await frame.locator("#stage").screenshot({ path: resolve(root, "viewer-selection-orbit.png") });
   await frame.getByRole("button", { name: "Reset camera" }).click();
+  const outlinePixels = (path: string | null) => path?.replace(/-?\d+\.\d+/g, point => Number(point).toFixed(2));
+  assert.equal(outlinePixels(await frame.locator("#selection-outline").getAttribute("d")), outlinePixels(initialOutline),
+    "Reset restores the Blender camera's off-center projection as well as its pose.");
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.5, { steps: 12 });

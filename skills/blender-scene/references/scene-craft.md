@@ -53,6 +53,10 @@ landmark or occlusion and keep one consistent layout.
   road. Check the reflection on wet pavement and the beam in mist when the
   reference shows them. If other lights obscure the contribution, compare the
   relevant region with the headlights on and off at the same camera and exposure.
+- For direct sunlight, use reference shadow direction and placement to set the
+  sun angle, then adjust the direct light and sky fill. Check sunlit and shaded
+  surfaces in the render. When the reference shows shafts, also check that they
+  emerge from the expected opening or gap and follow the light direction.
 
 ## Check the deliverable
 

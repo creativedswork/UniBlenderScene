@@ -6,7 +6,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { PNG } from "pngjs";
-import { Matrix4, Quaternion, Vector3 } from "three";
+import { FloatType, Matrix4, Quaternion, Vector3 } from "three";
+import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -94,7 +95,7 @@ async function planFixture(args: Record<string, any>) {
 async function reviewFixture(args: Record<string,any>) {
   const s=(await call("scene_get",{sceneId:args.sceneId,images:"none"})).structuredContent as Record<string,any>;
   const observations=s.plan.workflow ? (args.observations ?? args.criteria.map((c:any)=>({criterionId:c.id,nodeId:"cube",target:"Visible cube",actual:"Cube shown",evidence:"Rendered fixture",reason:"Mismatch",correction:"Fix cube",acceptance:"Visible cube"}))).map((o:any)=>({...o,sceneEvidence:"Runtime inventory contains RedCube",...(s.references.length?{referenceView:s.references[0].assetName}:{})})) : undefined;
-  const r=await call("scene_review",{...args,inspectionId:s.inspection.id,observations,referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture spatial evidence checked"}))});
+  const r=await call("scene_review",{...args,inspectionId:s.inspection.id,observations,referenceEvidence:s.references.map((r:any)=>({reference:r.assetName,observation:"Fixture spatial evidence checked",matches:true}))});
   assert.equal(r.isError,undefined,JSON.stringify(r.content));return r;
 }
 async function poll(id: string, expectedStatus = "done"): Promise<Record<string, any>> {
@@ -135,6 +136,8 @@ try {
   const cameraScene = await poll(multiCamera.structuredContent!.id as string);
   const cameraId = cameraScene.id;
   const cameraNames = cameraInputs.map((_, index) => `Reference Camera ${index + 1}`);
+  const cameraAnchors = [{ id: "left", description: "Left edge", targetBox: [0.2, 0.3, 0.3, 0.7] },
+    { id: "right", description: "Right edge", targetBox: [0.65, 0.3, 0.8, 0.7] }];
   assert.deepEqual(cameraScene.references.map((ref: { fileId: string }) => ref.fileId), cameraInputs.map(ref => ref.file_id));
   assert.equal(cameraScene.reference.fileId, "attached-1");
   assert.deepEqual(cameraScene.referenceCameras.map((view: { cameraName: string }) => view.cameraName), cameraNames);
@@ -143,8 +146,13 @@ try {
   await planFixture({ sceneId: cameraId, summary: "Fit five cameras to the same cube", steps: ["Build a shared cube and fit five views"],
     criteria: [{ id: "cube", description: "The same landmark is visible across views", severity: "blocker" }],
     workflow: { stages: ["geometry", "composition", "final"].map(name => ({ name, criterionIds: ["cube"], budget: 2 })) },
-    referenceAnchors: [{ id: "left", description: "Left edge", targetBox: [0.2, 0.3, 0.3, 0.7] },
-      { id: "right", description: "Right edge", targetBox: [0.65, 0.3, 0.8, 0.7] }] });
+    referenceAnchors: cameraAnchors,
+    referenceChecks: [
+      { id: "front-center", kind: "point", reference: "reference", nodeId: "cube",
+        landmarkId: "front-center", target: [0.5, 0.5], tolerance: 0.01 },
+      { id: "top-edge", kind: "edge", reference: "reference-5", nodeId: "cube", side: "right",
+        target: [[0.98, 0.45], [0.98, 0.55]], tolerance: 0.01 },
+    ] });
   await call("scene_edit", { sceneId: cameraId, code: "pass" });
   assert.match((await poll(cameraId, "failed")).job.error, /Create a camera for each reference/);
   const cameraEdit = await call("scene_edit", { sceneId: cameraId, code: `
@@ -157,6 +165,11 @@ cube = bpy.context.object
 cube.name = "RedCube"
 cube["scene_node_id"] = "cube"
 cube.scale = (1.5, 0.75, 0.5)
+marker = bpy.data.objects.new("Front center", None)
+scene.collection.objects.link(marker)
+marker.parent = cube
+marker.location = (0.25, -1, 0.5)
+marker["scene_landmark_id"] = "front-center"
 for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)), 1):
     data = bpy.data.cameras.new(f"Reference Camera {index}")
     camera = bpy.data.objects.new(data.name, data)
@@ -192,6 +205,30 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   assert.deepEqual(cameraJSON.nodes.filter((node: { camera?: number }) => node.camera !== undefined)
     .map((node: { name: string }) => node.name).sort(), [...cameraNames].sort());
   assert.equal(cameraPreview.compositionApproved ?? false, false);
+  const cameraCriteria = [{ id: "cube", passed: true, evidence: "The shared fixture is visible" }];
+  await reviewFixture({ sceneId: cameraId, iteration: paired.iteration, criteria: cameraCriteria,
+    visualScore: 99, regressions: [], repairable: true, nextAction: "Check projected reference landmarks" });
+  await call("scene_edit", { sceneId: cameraId, code: "pass" });
+  const composition = await poll(cameraId);
+  const measurements = composition.inspection.summary.referenceMeasurements;
+  assert.deepEqual(measurements.map((item: { camera: string; status: string }) => [item.camera, item.status]),
+    [["Reference Camera 1", "passed"], ["Reference Camera 5", "failed"]], JSON.stringify(measurements));
+  assert.ok(measurements[0].maxError < 0.00001);
+  assert.ok(measurements[1].samples.every((sample: { objectName: string }) => sample.objectName === "RedCube"));
+  const alignmentOverlay = await call("scene_get", { sceneId: cameraId, images: "alignment", referenceName: "reference-5" });
+  const overlayImage = alignmentOverlay.content.find(item => item.type === "image");
+  assert.ok(overlayImage, JSON.stringify(alignmentOverlay.content));
+  const overlayPNG = PNG.sync.read(Buffer.from(overlayImage.data as string, "base64"));
+  assert.deepEqual([overlayPNG.width, overlayPNG.height], [96, 64]);
+  const mismatch = await reviewFixture({ sceneId: cameraId, iteration: composition.iteration, criteria: cameraCriteria,
+    referenceAlignment: cameraAnchors.map(anchor => ({ id: anchor.id, renderBox: anchor.targetBox, evidence: "Fixture box" })),
+    visualScore: 100, regressions: [], repairable: true, nextAction: "Move the paired camera to align the visible edge" });
+  assert.equal(mismatch.structuredContent!.stage, "awaiting_review");
+  const pendingCameraReview = (await poll(cameraId)).workflowState.pendingDecision;
+  assert.equal(pendingCameraReview.nextPhase, "final");
+  assert.ok(pendingCameraReview.issues.some((issue: { id: string }) => issue.id.startsWith("reference_check:")));
+  const continueCamera = await call("scene_review_decision", { sceneId: cameraId, approved: false, reviewId: pendingCameraReview.reviewId });
+  assert.equal(continueCamera.structuredContent?.stage, "edit");
 
   const created = await call("scene_create", { prompt: "Red cube on a warm floor, studio lighting." });
   const id = created.structuredContent!.id as string; await poll(id);
@@ -321,7 +358,22 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   assert.ok(profile.lights[0].energy > 0);
   assert.deepEqual([...profile.bakedObjects].sort(), ["Floor", "RedCube"]);
   assert.ok(profile.world.environmentUri?.endsWith("environment.exr"));
-  assert.ok(profile.world.backgroundEnvironmentUri?.startsWith("data:application/octet-stream;base64,"));
+  assert.equal(profile.world.backgroundEnvironmentUri, "background.exr");
+  const panorama = async (name: string) => {
+    const asset = exported.artifacts.find((file: { name: string }) => file.name === name);
+    const response = await fetch(asset.url);
+    assert.equal(response.status, 200);
+    return new EXRLoader().setDataType(FloatType).parse(await response.arrayBuffer());
+  };
+  const sky = await panorama("background.exr"), ambient = await panorama("environment.exr");
+  assert.deepEqual([sky.width, sky.height, ambient.width, ambient.height], [2048, 1024, 512, 256]);
+  assert.ok(Math.abs(ambient.data[0]! - 0.4) < 0.002, `The non-camera branch lights the scene (${ambient.data[0]})`);
+  assert.ok(sky.data[0]! < 0.25, "The camera branch supplies the visible sky");
+  const skyChunk = await call("scene_asset_chunk", { sceneId: id, name: "background.exr", offset: 0 });
+  assert.equal(skyChunk.isError, undefined);
+  assert.equal(exported.exportAlignment.status, "degraded");
+  assert.ok(profile.effects.issues.some((issue: { status: string; reason: string }) =>
+    issue.status === "missing" && issue.reason.includes("Local color grade")));
   assert.ok(Math.abs(profile.postprocessing.bloom.strength - 0.1) < 1e-6);
   assert.ok(Math.abs(profile.postprocessing.haze.strength - 0.03) < 1e-6);
   assert.ok(profile.warnings.some((warning: string) => warning.includes("Fog Glow")));

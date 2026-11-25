@@ -38,7 +38,8 @@ type Snapshot = {
   artifacts: { name: string; url: string }[];
   plan?: { graph?: GraphNode[]; workflow?: { stages: { name: string }[] } }; workflowIndex?: number;
   reviewViews?: string[]; remainingGaps?: string[];
-  workflowState?: { phase: string | null; status: string; compositionApproved: boolean; presentation: {
+  workflowState?: { phase: string | null; status: string; compositionApproved: boolean;
+    pendingDecision?: { nextPhase: string }; presentation: {
     mode: "structural" | "appearance"; purpose: "work" | "confirmation" | "delivery"; source: string; iteration: number;
   } };
 };
@@ -66,7 +67,7 @@ const app = new App({ name: "UniBlenderScene viewer", version }, {});
 const browserStateUrl = document.body.hasAttribute("data-browser-preview") ? `${location.pathname}/state${location.search}` : "";
 let snapshot: Snapshot | undefined, loadedURL = "", loadingURL = "", mode = "render";
 let preferredBackend: "web" | "threert" | undefined = browserStateUrl ? "web" : undefined;
-let threeRTImageKey = "", threeRTRequestPending = false;
+let threeRTImageKey = "", threeRTRequestPending = false, threeRTWarningsKey = "";
 let liveViewer: Awaited<ReturnType<typeof connectThreeRT>> | undefined;
 let liveConnecting = false, liveWanted = false, liveStatus = "";
 let referenceListKey = "", reviewImagesKey = "", referenceRequest = 0;
@@ -82,7 +83,8 @@ let viewer: {
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
   effects?: ReturnType<typeof previewEffects>;
   weather?: ReturnType<typeof createWeather>;
-  position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
+  position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver;
+  restoreProjection: () => void;
   meshesById: Map<string, THREE.Mesh[]>;
 } | undefined;
 const message = (text: string) => { el("message").textContent = text; };
@@ -397,7 +399,35 @@ function updateThreeRT() {
     unavailable ? unavailable :
     current && state?.status === "failed" ? state.error ?? "ThreeRT 渲染失败，可重试或切回网页交互。" :
     threeRTRequestPending || scene.job?.kind === "threert" && ["queued", "running"].includes(scene.job.status) ? "正在准备材质与本机渲染场景，完成后连接实时视图。" :
-    (liveStatus || "连接后可在网页拖动、缩放和平移；画面帧率取决于本机渲染与传输速度。") + (current ? ` ${state?.warnings?.join(" ") ?? ""}` : "");
+    liveStatus || "连接后可在网页拖动、缩放和平移；画面帧率取决于本机渲染与传输速度。";
+  const rawWarnings = current ? state?.warnings ?? [] : [];
+  const effectObjects = new Set(rawWarnings.map(item => /^(.+?) · [^:]+:/.exec(item)?.[1]).filter((name): name is string => Boolean(name)));
+  const warnings = [...new Set(rawWarnings.filter(item => {
+    const match = /^Volume (.+): unsupported density graph\.?$/.exec(item);
+    return !(match && effectObjects.has(match[1]!));
+  }))];
+  const toggle = el<HTMLButtonElement>("threert-warnings-toggle");
+  const list = el("threert-warnings");
+  const warningsKey = warnings.join("\n");
+  toggle.hidden = !warnings.length;
+  toggle.textContent = warnings.length ? `${warnings.length} 条差异提示` : "";
+  toggle.title = warningsKey;
+  if (!warnings.length) {
+    list.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+  }
+  if (warningsKey !== threeRTWarningsKey) {
+    threeRTWarningsKey = warningsKey;
+    list.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+    if (typeof list.replaceChildren === "function" && typeof document !== "undefined") {
+      list.replaceChildren(...warnings.map(warning => {
+        const item = document.createElement("li");
+        item.textContent = warning;
+        return item;
+      }));
+    }
+  }
   const url = current && state?.status === "done" ? artifact("threert.png") : undefined;
   const download = el<HTMLAnchorElement>("download-threert");
   download.hidden = !url;
@@ -426,7 +456,7 @@ async function openRealtime() {
   try {
     const connection = await connectThreeRT(el<HTMLCanvasElement>("threert-render"), scene.realtimeUrl!, text => {
       if (snapshot?.id === scene.id && snapshot.exportVersion === scene.exportVersion) {
-        liveStatus = text; el("threert-status").textContent = text + ` ${scene.threeRTRender?.warnings?.join(" ") ?? ""}`;
+        liveStatus = text; el("threert-status").textContent = text;
       }
     });
     if (snapshot?.id !== scene.id || snapshot.exportVersion !== scene.exportVersion) { connection.dispose(); return; }
@@ -914,10 +944,11 @@ async function loadModel(url: string) {
       sharpenThinGlass(gltf.scene);
     }
     const world = profile.world;
+    const exr = new EXRLoader();
     let environment: THREE.Texture;
     if (world.environmentUri) {
       const environmentURL = await assetURL("environment.exr", url);
-      environment = await new EXRLoader().loadAsync(environmentURL);
+      environment = await exr.loadAsync(environmentURL);
     } else {
       const [r = 0, g = 0, b = 0] = world.color;
       environment = new THREE.DataTexture(new Float32Array([r, g, b, 1, r, g, b, 1]), 2, 1, THREE.RGBAFormat, THREE.FloatType);
@@ -932,12 +963,17 @@ async function loadModel(url: string) {
     if (!profile.render.filmTransparent) {
       scene.background = environment; scene.backgroundIntensity = world.strength;
       scene.backgroundRotation.y = world.environmentRotationY;
-      if (world.backgroundEnvironmentUri) {
-        const encoded = world.backgroundEnvironmentUri.split(",")[1]!;
-        const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-        const image = new EXRLoader().parse(bytes.buffer);
-        const background = new THREE.DataTexture(image.data, image.width, image.height, image.format, image.type);
+      let background: THREE.DataTexture | undefined;
+      if (world.backgroundEnvironmentUri === "background.exr") {
+        background = await exr.loadAsync(await assetURL("background.exr", url));
+      } else if (world.backgroundEnvironmentUri?.startsWith("data:")) {
+        const bytes = Uint8Array.from(atob(world.backgroundEnvironmentUri.split(",")[1]!), (character) => character.charCodeAt(0));
+        const image = exr.parse(bytes.buffer);
+        background = new THREE.DataTexture(image.data, image.width, image.height, image.format, image.type);
+        background.minFilter = background.magFilter = THREE.LinearFilter;
         background.needsUpdate = true;
+      }
+      if (background) {
         background.colorSpace = THREE.LinearSRGBColorSpace; background.mapping = THREE.EquirectangularReflectionMapping;
         textures.push(background); scene.background = background; scene.backgroundIntensity = 1;
       }
@@ -1004,6 +1040,16 @@ async function loadModel(url: string) {
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
     const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, samples: raster ? 4 : 0 }) : undefined;
     let rasterDirty = true;
+    const restoreProjection = () => {
+      camera.updateProjectionMatrix();
+      if (camera instanceof THREE.PerspectiveCamera && profile.camera?.projectionMatrix?.length === 16) {
+        camera.projectionMatrix.fromArray(profile.camera.projectionMatrix);
+        const horizontalScale = aspect / camera.aspect;
+        camera.projectionMatrix.elements[0]! *= horizontalScale;
+        camera.projectionMatrix.elements[8]! *= horizontalScale;
+        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      }
+    };
     const resize = new ResizeObserver(() => {
       const w = el("stage").clientWidth, h = el("stage").clientHeight;
       if (!w || !h) return;
@@ -1015,12 +1061,7 @@ async function loadModel(url: string) {
         const halfWidth = (camera.top - camera.bottom) * viewportAspect / 2;
         camera.left = center - halfWidth; camera.right = center + halfWidth;
       }
-      camera.updateProjectionMatrix();
-      if (camera instanceof THREE.PerspectiveCamera && profile.camera?.projectionMatrix?.length === 16) {
-        camera.projectionMatrix.fromArray(profile.camera.projectionMatrix);
-        camera.projectionMatrix.elements[0]! *= aspect / viewportAspect;
-        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-      }
+      restoreProjection();
       tracer?.updateCamera();
       rasterDirty = true;
       effects?.resize(w, h);
@@ -1082,7 +1123,7 @@ async function loadModel(url: string) {
       gl.flush();
     }, 16);
     viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, weather, frameTimer,
-      position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
+      position, target, zoom: camera.zoom, textures, resize, restoreProjection, meshesById };
     resize.observe(el("stage"));
     renderer.domElement.dataset.renderer = raster ? "raster" : "path-tracing";
     renderer.domElement.dataset.bounces = String(tracer?.bounces ?? 0);
@@ -1137,14 +1178,19 @@ function receive(data: unknown) {
   }
   const busy = next.job && ["queued", "running"].includes(next.job.status);
   const state = next.workflowState, presentation = state?.presentation;
-  const structural = presentation?.mode === "structural", pending = next.stage === "awaiting_review";
+  const structural = presentation?.mode === "structural", pending = presentation?.purpose === "confirmation";
   el("status").textContent = busy ? next.job!.kind === "threert" ? "ThreeRT 渲染中" : next.job!.kind === "references" ? "Loading reference views" :
     next.job!.kind === "create" ? "Preparing scene" : next.job!.kind === "bake" ? "正在烘焙场景" : next.job!.kind === "preview" ? "Preparing 3D review preview" : `${next.job!.kind === "export" ? "Exporting" : "Rendering"} scene` :
     next.error ? next.job?.kind === "threert" ? "ThreeRT 渲染失败" : "Scene needs attention" : next.stage === "completed" ? "Ready" :
     next.stage === "best_effort" ? "Best version" : next.stage === "awaiting_review" ? "Confirm composition" :
     next.stage === "review" ? "Awaiting review" :
     next.plan?.workflow ? `Building ${next.plan.workflow.stages[next.workflowIndex ?? 0]?.name ?? "scene"}` : "Building scene";
-  if (!busy && !next.error && presentation) el("status").textContent = `${state!.phase ?? "Planning"} / ${state!.status} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  if (!busy && !next.error && presentation) {
+    const reviewNeedsChanges = presentation.purpose === "work" && ["awaiting_review", "best_effort"].includes(next.stage);
+    const reviewStatus = state!.pendingDecision ? `decision needed · next phase ${state!.pendingDecision.nextPhase}` :
+      reviewNeedsChanges ? "changes needed" : state!.status;
+    el("status").textContent = `${state!.phase ?? "Planning"} / ${reviewStatus} · ${presentation.purpose === "work" ? "work draft" : presentation.purpose === "confirmation" ? "awaiting approval" : "delivery"} · iteration ${presentation.iteration} · ${presentation.mode}`;
+  }
   const webIssues = next.exportAlignment?.issues.filter(issue => !issue.target || issue.target === "threejs") ?? [];
   el("status").title = webIssues.map(issue => `${issue.object} · ${issue.effect} — ${issue.reason}`).join("\n");
   if (!busy && !next.error && next.exportAlignment?.status === "degraded") el("status").textContent += " · 3D export is missing effects";
@@ -1297,11 +1343,16 @@ el<HTMLSelectElement>("render-backend").onchange = () => {
   showPreview();
 };
 el("render-threert").onclick = () => { void startThreeRT(); };
+el("threert-warnings-toggle").onclick = () => {
+  const list = el("threert-warnings");
+  list.hidden = !list.hidden;
+  el("threert-warnings-toggle").setAttribute("aria-expanded", String(!list.hidden));
+};
 el("reset").onclick = () => {
   if (mode === "threert") { liveViewer?.reset(); return; }
   if (viewer) {
     viewer.controls.enableDamping = false; viewer.controls.update();
-    viewer.camera.position.copy(viewer.position); viewer.camera.zoom = viewer.zoom; viewer.camera.updateProjectionMatrix();
+    viewer.camera.position.copy(viewer.position); viewer.camera.zoom = viewer.zoom; viewer.restoreProjection();
     viewer.controls.target.copy(viewer.target); viewer.controls.update(); updateSelectionBox();
     viewer.controls.enableDamping = true;
   }

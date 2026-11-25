@@ -40,5 +40,6 @@ and reviewer work on the shared Blender scene.
 Optional Codex agent templates are in `harnesses/codex/agents/`. Copy them into the target
 project's `.codex/agents/` to register the roles in Codex. They remain templates
 until installed; portable plugin installation does not automatically register
-these TOML files. ChatGPT hosts may use different delegation APIs or run the
-roles sequentially in one conversation.
+these TOML files. Cursor plugin subagents live in `harnesses/cursor/agents/` and
+are registered automatically by `.cursor-plugin/plugin.json`. ChatGPT hosts may
+use different delegation APIs or run the roles sequentially in one conversation.

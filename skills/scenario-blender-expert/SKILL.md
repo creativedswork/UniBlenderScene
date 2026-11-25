@@ -17,7 +17,10 @@ and export through this plugin's `scene_*` tools and dedicated Blender bridge.
   inspect the completed render with `scene_get` and submit evidence through
   `scene_review`. Use `scene_export` only when the scene workflow reaches export.
 - Verify the domain result against the latest `scene_get` render, object
-  summary, and the frozen `scene_plan` criteria before judging it complete.
+  summary, and the frozen `scene_plan` criteria. For a multi-part asset
+  designed to rest on a common floor, check each separate part against
+  that ground plane or its intended support. Use the upstream audit
+  section for contact, floating parts, and thin-shell containment.
 - Treat bundled `scripts/` as source material. Do not run them directly or
   start another Blender process. Check version-specific APIs against the active
   Blender version before using them in `scene_edit`.

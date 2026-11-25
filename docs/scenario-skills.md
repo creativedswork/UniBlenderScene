@@ -1,8 +1,9 @@
 # Scenario Blender knowledge
 
 The top-level `scenario-blender-*` Skills package the Scenario Blender production
-knowledge used by the Canova runtime, pinned to revision
-`e24bc7d40be97b428e7b9fd467c415366e1dd974`. Each has a directly loadable
+knowledge from the Canova snapshot at revision
+`e24bc7d40be97b428e7b9fd467c415366e1dd974`. The source manifest records
+any newer domain-specific revision. Each domain has a directly loadable
 `SKILL.md` that co-loads `blender-scene` and maps the domain to this plugin's
 `scene_*` workflow. The copied files and checksums are listed in
 [source.json](../skills/scenario/source.json), with the
@@ -36,3 +37,11 @@ skips meshopt compression in `bx_export.py` before Blender 5.2. This plugin's
 `scene_*` workflow does not execute either helper script, so neither changes its
 scene guidance or runtime export. The bundled source remains at the pinned
 revision until the helpers are separately adapted and tested.
+
+## Review on 2026-11-24
+
+The expert Skill's upstream guide and audit helper now use revision
+`932df7551696a7c5c5381ad8be50f5214cedafc8`. It includes improved part contact,
+thin-shell containment, and support checks for separate parts on a shared
+ground plane. The expert Skill uses these checks as guidance when reviewing
+`scene_get` evidence. Its bundled audit script is reference source.

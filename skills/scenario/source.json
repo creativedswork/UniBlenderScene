@@ -45,12 +45,13 @@
       "files": {
         "references/blender-5.2-deltas.md": "a62d17344b968501b46f333ddc9badb8ebdb6c8a23cc1be32c07aff0d85d909d",
         "references/bpy-reliability.md": "d5b138c58fc66fe6bb1709cfd1748d5ceb959bd8e7b34460e4ca9a622af698f9",
-        "scripts/bx_audit.py": "a2c99225730b1b44eade7033ae600f17c29c94ce9992a6cf7030d2dfcbaebf6b",
+        "scripts/bx_audit.py": "f04532d53a337e21f26b794735747f3e949256b8583b5b32469f77c53d22eaab",
         "scripts/bx_gui.py": "d5c020f27d2714f7f773da30cfa190017be453a621bb45f1eccececa3a33d60c",
         "scripts/bx_review.py": "5b274739b2a8ed26b3fe144e0d6ed15e51aee8e52b2852b51d5f6f464e939106",
-        "UPSTREAM.md": "049f0ecd4bbbdc3e6ee09beac9ce5f262d6970f6932221e20e0420bf492bd5f2"
+        "UPSTREAM.md": "089491d0a656b3097762a250ee2eeea590cc5e9f489c9819411277d676cf1ddd"
       },
-      "localPath": "skills/scenario-blender-expert"
+      "localPath": "skills/scenario-blender-expert",
+      "revision": "932df7551696a7c5c5381ad8be50f5214cedafc8"
     },
     {
       "name": "scenario-blender-export",

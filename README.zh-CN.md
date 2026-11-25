@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-面向 **Codex** 和 **Claude Code** 的 Blender 场景创建与复核插件。
+面向 **Codex**、**Claude Code** 和 **Cursor** 的 Blender 场景创建与复核插件。
 
 将参考图或文字描述转化为可编辑的 Blender 场景。通过 Agent 运行环境（Agent harness）配合 [Tripo](https://developers.tripo3d.ai/en/docs/introduction)、[Meshy](https://docs.meshy.ai/en/api) 等 3D API 生成单体资产，再在 Blender 中组装和细化场景。
 
@@ -12,6 +12,7 @@
 | --- | --- |
 | Codex | 安装插件，查看渲染图，并在支持 MCP Apps 的客户端中打开交互预览 |
 | Claude Code | 加载插件，在终端中查看渲染图并获取 `.blend` / GLB 文件 |
+| Cursor | 通过 `npm run install:cursor` 本地安装（或通过 Cursor CLI 加载），查看渲染图并在对话中打开交互预览 |
 | 其他 Agent 运行环境 | 连接 MCP 服务并加载场景工作流指引；预览能力取决于客户端 |
 
 ## 效果展示
@@ -55,13 +56,17 @@
 
 ![UniBlenderScene 模块的三层结构示意图](docs/plugin-modules.svg)
 
-共享 Skills 指导场景规划和视觉复核，专用 Blender 服务负责构建与渲染，预览器支持交互检查。Codex 和 Claude Code 使用同一套场景工作流。
+共享 Skills 指导场景规划和视觉复核，专用 Blender 服务负责构建与渲染，预览器支持交互检查。Codex、Claude Code 和 Cursor 使用同一套场景工作流。
 
 独立物体使用适用且已单独配置的 3D 资产服务。通过 Agent 运行环境中的工具或 Skills 接入 Tripo、Meshy 等服务后，Agent 会将生成的资产导入 Blender，进行摆放与场景复核。房间表面和简单几何体可以程序化生成；没有适用的资产服务时，工作流可回退到 Blender 建模。服务访问权限、API Key 和生成费用需要单独配置。详见[资产工作流](skills/blender-scene/references/assets.md)。
 
 ## 快速开始
 
-让 Agent 阅读并执行[快速开始文档](docs/quick-start.md)，完成 UniBlenderScene 的安装与配置。
+前置条件：运行本地服务的机器需安装 Node.js 22+ 和 Blender 4.5+。可直接让 Agent 阅读并执行[快速开始文档](docs/quick-start.md)，也可以在解压后的发布包根目录（源码检出需先执行 `npm ci && npm run build`）按对应客户端接入：
+
+- **Codex：** 将插件根目录添加为本地插件源并安装 `uni-blender-scene`，连接 MCP 时会自动拉起或复用托管本地服务与专用 Blender 桥接进程。详见 [Codex 配置](docs/operations.md#codex)。
+- **Claude Code：** 在插件根目录运行 `node --import tsx scripts/start-local.ts` 启动本地服务，再在独立的场景项目目录中执行 `claude --plugin-dir /absolute/path/to/UniBlenderScene`。详见 [Claude Code 配置](docs/operations.md#claude-code)。
+- **Cursor：** 在插件根目录运行 `npm run install:cursor`，然后重启 Cursor 或执行 `Developer: Reload Window`。脚本会将 Skills、工作流规则和子代理复制到 `~/.cursor/plugins/local/uni-blender-scene`，并在全局 `~/.cursor/mcp.json` 中注册 `uni-blender-scene`，使 Cursor 桌面端能够自动管理本地服务并在对话中内联打开 MCP Apps 3D 预览。Cursor CLI 可直接执行 `agent --plugin-dir /absolute/path/to/UniBlenderScene`。详见 [Cursor 配置](docs/operations.md#cursor)。
 
 ## 场景工作流
 
@@ -69,8 +74,8 @@
 
 1. **规划：** 明确主要物体、空间关系和视觉目标。
 2. **构建：** 先搭建完整场景，再细化几何与构图。
-3. **确认：** 从多个视角检查灰模场景，确认构图后再开始制作材质和灯光。
-4. **细化：** 用 Leap 改结构，用 Tweak 调整已有参数。材质或灯光有多个可行方向时，从同一检查点渲染候选方案，与上一版比较后再选一个进入正式复核。有参考图的场景，每轮都要对照对应机位的原始参考图，单独调整交互预览时也一样。
+3. **确认：** 从多个视角检查中性灰模场景（参考图重建可同时核对冻结的地标点与轮廓边检查项），确认构图后再开始制作材质和灯光。
+4. **细化：** 用 Leap 改结构，用 Tweak 调整已有参数。材质或灯光有多个可行方向时，从同一检查点渲染候选方案，与上一版比较后再选一个进入正式复核。有参考图的场景，每轮都要对照对应机位的原始参考图，单独调整交互预览时也一样。分阶段复核未通过时，工作流会暂停并列出未满足的检查项与视觉差异，由你选择继续在当前阶段修改，或接受所列差异进入下一阶段。
 5. **交付：** 将复核后的最佳检查点导出为渲染图、`.blend` 和 GLB。
 
 Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存检查点并跟踪复核进度。详见[工作流设计](docs/scene-generation-preview.md)。
@@ -83,7 +88,7 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 
 ## 交互式 3D 预览
 
-在支持 MCP Apps 的客户端中，让 Agent 打开预览。你可以：
+在支持 MCP Apps 的客户端（如 Codex、Cursor 桌面端）中，让 Agent 打开预览。你可以：
 
 - 旋转视角、缩放、平移和重置相机。
 - 点击 Three.js 或 ThreeRT 画面后，W/S 沿视线前后移动，俯视或仰视时可改变高度；A/D 左右平移，按住 Shift 加速。
@@ -101,7 +106,7 @@ Agent 负责规划和视觉判断；服务负责执行 Blender 操作、保存�
 
 本机场景的 3D 预览准备好后，点击 **在浏览器中打开**。如果客户端未能打开浏览器，可从 **查看预览链接** 复制地址，在浏览器中查看同一场景。
 
-ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘焙天空全景时，原生客户端会用它显示背景。进展见[上游 HDRI 支持请求](https://github.com/meshy-dev/ThreeRT/issues/178)。
+ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘焙天空全景（`background.exr`）时，原生客户端会用它显示背景。进展见[上游 HDRI 支持请求](https://github.com/meshy-dev/ThreeRT/issues/178)。
 
 对于静态场景，可以让 Agent 优化浏览器预览，让漫游更流畅。ThreeRT 不可用时，仍可通过 Three.js 浏览场景。启用方式见[预览配置](docs/operations.md#threert-setup-and-limits)。
 
@@ -113,6 +118,7 @@ ThreeRT 用渐变天空近似 Blender 的 HDR 环境照明。导出中包含烘�
 
 ## 文档
 
+- [快速开始](docs/quick-start.md)：本地依赖检查，以及 Codex、Claude Code 和 Cursor 的接入步骤。
 - [服务配置与部署](docs/operations.md)：本地运行、插件源、远程连接、配置和打包。
 - [场景 Skill](skills/blender-scene/SKILL.md)：场景工作流与工具使用。
 - [验证结果](docs/validation.md)：本版本已执行的检查。

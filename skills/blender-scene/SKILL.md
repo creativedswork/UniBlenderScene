@@ -59,10 +59,11 @@ Geometry and composition automatically render gray work images. Use
 before it has passed review; the latter also prepares missing five-view evidence
 and a gray GLB. These are work drafts, can contain reported defects and do not
 advance the workflow, consume edit rounds or authorize approval. When status is
-`awaiting_review`, the source becomes the preserved composition checkpoint and
-the purpose becomes confirmation. Only this status permits a user approval.
-Materials, lighting and final work use appearance renders. Completed/best-effort
-delivery uses the selected best version. Label deliveries with the returned
+`awaiting_review`, the source becomes the preserved checkpoint. Read
+`pendingDecision` for an unmet review. A passing composition checkpoint has
+`presentation.purpose: "confirmation"`.
+Materials, lighting and final work use appearance renders. Completed and
+best-effort results use the selected best version. Label deliveries with the returned
 phase, purpose and source iteration. Never substitute old views or a colored
 working render when current gray evidence is unavailable; generate the required
 evidence through the service or report that it is not ready.
@@ -138,9 +139,16 @@ evidence through the service or report that it is not ready.
    refine bounded parts without deleting the complete composition. For a
    primary reference, also freeze 2-8 major visual anchors as normalized
    `[left, top, right, bottom]` boxes in `referenceAnchors`. Include the main
-   subject and significant foreground or background regions. When auxiliary
-   views are supplied, include observable spatial criteria for their shared
-   objects and planes; verify these using object transforms and the orbitable
+   subject and significant foreground or background regions. Measure these
+   targets from the original image, including when creating a scene from a
+   previous checkpoint. Camera distance and subject size in the frame are
+   separate targets. Change a target only if the user requests that visible
+   departure, and record the departure in the plan. For reconstruction
+   with identifiable landmarks or silhouette edges, follow
+   [reference checks](references/reference-checks.md) to annotate and bind them
+   to the paired cameras and Scene Graph before freezing `referenceChecks`.
+   When auxiliary views are supplied, include observable spatial criteria for
+   their shared objects and planes. Verify these using object transforms and the orbitable
    scene as well as the primary render. Verify GLB loading
    and, when the host supports MCP Apps, viewer interaction after export,
    outside `scene_review`.
@@ -164,6 +172,11 @@ evidence through the service or report that it is not ready.
    effect depends on something those stages lock, such as a visible car front
    or an opening that sunlight must pass through. Design and tune the lights in
    the lighting stage. Assess material/color and lighting in appearance renders.
+   Give defining features their own criteria, and include them again in
+   composition whenever framing can change whether they are visible. For a
+   landscape, check the subject silhouette and frame coverage, the foreground
+   subject's readability, the open area through the middle ground, and the
+   background skyline where they define the reference.
    For a localized refinement, include only affected stages followed by final.
    Before construction, perform a separate read-only graph verification pass
    against every reference through `scene_plan_review`. Submit coverage,
@@ -215,9 +228,20 @@ evidence through the service or report that it is not ready.
    `referenceAlignment` box. The service computes the largest edge displacement
    and does not complete the request when it exceeds 8% of the frame. Measure
    from the actual render; do not infer boxes from scene coordinates. The visual
-   score is your judgment; it is not a measured image-similarity score.
+   score is your judgment. For frozen `referenceChecks`, read the current
+   `inspection.summary.referenceMeasurements`. Inspect `images: "alignment"`
+   for a discrepant paired view when it helps locate a repair. Cite the failed
+   measurement and the corresponding Blender object in your correction.
+   Recheck the same measurements and previously passing views after editing.
+   Failed or unmeasurable reference checks block a passing composition or final
+   review regardless of the visual score.
    Submit one `referenceEvidence` observation per supplied reference, keyed by
-   its stored asset name. In a staged workflow, provide one `observations` entry per criterion with
+   its stored asset name. In every phase, compare the original and paired
+   render at the same framing. Set `matches` to false for a significant
+   difference relevant to the phase or unavailable comparison. Name the region and
+   specific visual difference. Passing landmark locations or broad boxes
+   still require a visual check of silhouette, visible scale, depth and
+   foreground detail. In a staged workflow, provide one `observations` entry per criterion with
    its graph node ID, target, actual observation, visual evidence and
    `sceneEvidence` from the runtime inspection or an explicit limitation.
    For every relation bound to a current-stage criterion, submit one
@@ -233,12 +257,31 @@ evidence through the service or report that it is not ready.
    Provide at most three ranked `repairs`. Measure reference anchors in
    composition and final reviews.
    In a multi-reference scene, read each available matched render once using
-   `scene_get` with `images: "camera"` and its `referenceName`. In composition
-   and final reviews, record per-image evidence that compares the matched
+   `scene_get` with `images: "camera"` and its `referenceName`. Record
+   per-image evidence that compares the matched
    render and the shared landmarks. Identify visible mismatches or conflicting
    references before accepting the scene.
-8. Follow the returned stage. In `edit`, make the requested correction and repeat
-   the render/review loop. In `completed` or `best_effort`, optionally run
+8. Follow the returned stage. In `edit`, work on that phase and repeat the
+   render/review loop. At `workflowState.pendingDecision`, show the selected
+   render. Name the current phase and latest reviewed iteration. List the
+   unmet checklist items and visual differences in plain language, with their
+   evidence and a concrete correction. If the selected checkpoint is older,
+   identify its iteration and the differences it would carry forward.
+   Ask the user to choose between continuing the current phase and accepting
+   the listed differences to enter `pendingDecision.nextPhase`. Name that
+   phase in the options. In final, the second option authorizes export with
+   the listed differences.
+   Wait for the user's explicit choice before editing or advancing. Call
+   `scene_review_decision` with the returned `reviewId`. Use `approved: false`
+   to continue. If the remaining rounds are zero, include an explicit round
+   count when asking and pass the authorized count as `additionalBudget`.
+   When `scopedRevisionRequired` is true, use `scene_revise` for continued
+   structural repair. Use `approved: true, acceptGaps: true` only when the
+   user chooses to carry the selected checkpoint's differences forward.
+   Record acceptance through the tool and retain the original failed review.
+   For a legacy `best_effort` result with purpose `work`, offer the selected
+   render as a draft and report the remaining differences.
+   For `presentation.purpose: "delivery"`, optionally run
    `scene_bake` for static surface lightmaps (see [Blender code guidance](references/blender-code.md))
    and poll `scene_get` until it completes. Then call `scene_export`,
    poll `scene_get` with `images: "none"` for export completion and a non-null
@@ -266,17 +309,17 @@ evidence through the service or report that it is not ready.
    In a CLI without MCP Apps, use the inspected render and explain that
    interactive viewing requires an MCP Apps host. Track export and viewer
    failures as delivery issues outside the scene edit budget.
-   In `awaiting_review`, show the neutral gray main image and five review views.
+   For a structural `awaiting_review` checkpoint, show the neutral gray main
+   image. Include the five review views for composition.
    `scene_get` selects the checkpoint evidence, which may differ from the latest
    working iteration; follow `workflowState.presentation.iteration`.
    Call `scene_preview` and
    poll `scene_get` with `images: "none"` for review assets. In an MCP Apps host, verify tree selection
    and orbit in the bundled viewer; in a CLI, present the returned review links.
-   This prepares review assets without
-   approving composition or advancing the stage. Wait for the user's explicit
-   decision through `scene_review_decision`. Approval
-   resumes the next stage from the checkpoint; revision returns to geometry or
-   composition with feedback. Do not call `scene_edit` or `scene_export` while waiting.
+   Preview preparation leaves workflow and approval untouched. For a passing
+   composition checkpoint with purpose `confirmation`, wait for explicit
+   approval through `scene_review_decision`. For requested structural changes,
+   obtain a finite scoped `scene_revise` grant.
    If view generation failed, call `scene_review_views` to retry.
    The review GLB uses gray surfaces and neutral studio lighting on an export
    copy; original materials and lights stay in the source `.blend` for later
@@ -288,9 +331,9 @@ Non-staged requests permit 5 regular successful edit attempts, extending to 8 on
 review improves the best result and identifies repairable gaps. Two consecutive
 non-improvements stop the request. It ranks checkpoints by unmet blockers, unmet
 major criteria, regressions, and visual score, then exports the best checkpoint.
-Staged requests use each stage's planned budget. Exhausted composition restores
-its best checkpoint and pauses for user confirmation even when criteria remain
-unmet; report those differences. A failed Python/render transaction restores its
+Staged requests use each phase's planned budget and pause after every unmet
+review, including the first. The selected checkpoint stays a draft while
+the user's decision is pending. A failed Python/render transaction restores its
 checkpoint and reuses the candidate number on retry. Scope checks reject changes
 to frozen geometry, placement/camera, material graphs and lighting settings in
 later stages; visual resemblance and complete shader equivalence still require
@@ -357,8 +400,9 @@ normal `scene_review` before making another edit or searching again.
 
 ## Explicit finite revisions
 
-When the user explicitly authorizes additional local repair rounds, use
-`scene_revise`, not `scene_continue`, empty edits or a fabricated passing review.
+Use `scene_revise` when the user explicitly authorizes a scoped structural
+revision. For ordinary continuation of a paused phase, use the stage decision
+in step 8.
 Read `scene_get` with `images: "none"` first and bind its exact phase, status, iteration and updatedAt
 with a unique requestId. Supply the additional 1–8 round grant, feedback and
 non-group graph node scope. A rejection of structure alone grants no rounds.
@@ -376,8 +420,9 @@ uploads. Confirm those under the selected Provider's rules.
 Revision preview evidence includes its revision ID and content iteration;
 restoring an older checkpoint does not rewind global iteration or refund rounds.
 When the finite repair closes, the service creates a fresh zero-edit composition
-inspection. Review its actual gray image and frozen composition anchors; then
-await explicit approval. Never reuse a stale geometry inspection as composition
+inspection. Review its actual gray image and frozen composition anchors. Follow
+the returned stage decision or passing composition confirmation.
+Never reuse a stale geometry inspection as composition
 evidence or interpret budget exhaustion as geometry acceptance.
 
 The service cannot delete images already retained by a host. If the host reports

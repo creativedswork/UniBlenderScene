@@ -143,18 +143,23 @@ export function modelWithoutPunctualLights(bytes: Buffer): Buffer {
   return Buffer.concat([header, json, tail]);
 }
 
-/** Execute only the configured local engine. No shell, scene code or executable paths come from the widget. */
-export async function renderThreeRT(directory: string, binary: string) {
-  const profile = JSON.parse(await readFile(join(directory, "render-profile.json"), "utf8"));
-  const glb = await readFile(join(directory, "final.glb"));
-  const input: ThreeRTInput = { profile, camera: cameraFromGLB(glb, profile.camera?.name) };
-  const warnings: string[] = (Array.isArray(profile.warnings) ? profile.warnings : []).filter((warning: unknown): warning is string =>
-    typeof warning === "string" && !warning.startsWith("WebGL ") && !warning.startsWith("Three.js "));
-  const vfx = input.profile.vfx;
+/** Collect unique ThreeRT warnings without duplicating volume density graph issues already listed in effects.issues. */
+export function collectThreeRTWarnings(profile: ThreeRTInput["profile"] & {
+  warnings?: unknown;
+  colorManagement: { exposure: number; viewTransform?: unknown };
+}): string[] {
+  const effectIssues = (profile.effects?.issues ?? []).filter(issue => !issue.target || issue.target === "threeRT");
+  const issueObjects = new Set(effectIssues.map(issue => issue.object));
+  const warnings: string[] = (Array.isArray(profile.warnings) ? profile.warnings : []).filter((warning: unknown): warning is string => {
+    if (typeof warning !== "string" || warning.startsWith("WebGL ") || warning.startsWith("Three.js ")) return false;
+    const volumeMatch = /^Volume (.+): unsupported density graph\.?$/.exec(warning);
+    return !(volumeMatch && issueObjects.has(volumeMatch[1]!));
+  });
+  const vfx = profile.vfx;
   if (vfx?.volumes?.some(volume => volume.height || volume.noiseScale)) {
     warnings.push("ThreeRT 使用原生雾近似 Blender 的逐层密度曲线和噪声。");
   }
-  if (input.profile.postprocessing?.haze) {
+  if (profile.postprocessing?.haze) {
     const worldFog = vfx?.volumes?.some(volume => !volume.min || !volume.max);
     warnings.push(worldFog ? "ThreeRT 优先使用世界雾，未叠加 Mist 深度合成。" : "ThreeRT 使用原生指数雾近似 Mist 深度合成。");
   }
@@ -164,18 +169,30 @@ export async function renderThreeRT(directory: string, binary: string) {
   if (vfx?.precipitation?.some(effect => effect.kind !== "rain") || vfx?.ripples?.length || vfx?.animation) {
     warnings.push("当前 ThreeRT 预览保留静态材质和灯光，未重建非雨粒子、涟漪或采样动画。");
   }
-  warnings.push(...(input.profile.effects?.issues ?? []).filter(issue => !issue.target || issue.target === "threeRT")
-    .map(issue => `${issue.object} · ${issue.effect}: ${issue.reason}`));
+  warnings.push(...effectIssues.map(issue => `${issue.object} · ${issue.effect}: ${issue.reason}`));
   if (typeof profile.colorManagement.viewTransform === "string") {
     warnings.push(`ThreeRT 使用原生 Filmic 色调映射，未应用 Blender 的 ${profile.colorManagement.viewTransform} 显示 LUT。`);
   }
   if (profile.world.environmentUri) {
-    input.environment = environmentBands(readPanorama(await readFile(join(directory, "environment.exr"))));
     warnings.push("ThreeRT 使用渐变天空近似环境照明。");
   }
+  return [...new Set(warnings)];
+}
+
+/** Execute only the configured local engine. No shell, scene code or executable paths come from the widget. */
+export async function renderThreeRT(directory: string, binary: string) {
+  const profile = JSON.parse(await readFile(join(directory, "render-profile.json"), "utf8"));
+  const glb = await readFile(join(directory, "final.glb"));
+  const input: ThreeRTInput = { profile, camera: cameraFromGLB(glb, profile.camera?.name) };
+  const warnings = collectThreeRTWarnings(input.profile);
+  if (profile.world.environmentUri) {
+    input.environment = environmentBands(readPanorama(await readFile(join(directory, "environment.exr"))));
+  }
   const background = profile.world.backgroundEnvironmentUri;
-  const panorama = !profile.render.filmTransparent && typeof background === "string" && background.startsWith("data:")
-    ? readPanorama(Buffer.from(background.split(",")[1]!, "base64")) : undefined;
+  const panorama = profile.render.filmTransparent ? undefined : background === "background.exr"
+    ? readPanorama(await readFile(join(directory, "background.exr")))
+    : typeof background === "string" && background.startsWith("data:")
+      ? readPanorama(Buffer.from(background.split(",")[1]!, "base64")) : undefined;
   await writeFile(join(directory, "model.glb"), modelWithoutPunctualLights(glb));
   input.camera.aspect = profile.render.resolutionX / profile.render.resolutionY;
   const adapter = fileURLToPath(new URL("../../runtime/threert/scene.ts", import.meta.url));

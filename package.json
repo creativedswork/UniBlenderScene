@@ -1,6 +1,6 @@
 {
   "name": "uni-blender-scene",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "description": "Blender scene creation and review for Codex, Claude Code, and other agent harnesses, powered by shared Skills and MCP.",
   "private": true,
   "type": "module",
@@ -17,6 +17,7 @@
     "test:claude": "node --import tsx tests/claude.integration.ts",
     "check:scenario-skills": "node scripts/check-scenario-skills.mjs",
     "configure": "tsx scripts/configure.ts",
+    "install:cursor": "node --import tsx scripts/install-cursor.ts",
     "pack:plugin": "tsx scripts/package.ts"
   },
   "dependencies": {

@@ -14,6 +14,12 @@
   <style>
     [data-browser-preview] :is(#render-backend,#fullscreen,#upload){display:none}
     #browser-preview-url{display:block;width:min(620px,75vw);margin:8px 0 12px}
+    #threert-panel{padding:8px 16px;border-bottom:1px solid light-dark(#deddd6,#303333);font-size:12px}
+    .threert-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    #threert-status{margin-right:auto;min-width:0;overflow-wrap:anywhere}
+    #threert-warnings-toggle{padding:4px 9px;font-size:11px;color:light-dark(#707168,#a2a69c)}
+    #threert-warnings{margin:8px 0 0;padding:0 0 0 18px;max-height:110px;overflow:auto;font-size:11px;line-height:1.45;color:light-dark(#707168,#a2a69c)}
+    #threert-warnings li{margin:2px 0}
   </style>
 </head>
 <body>
@@ -33,10 +39,14 @@
   <main id="workspace">
   <section id="graph-panel" hidden><h2>Scene Graph <button id="graph-collapse" aria-expanded="true">Collapse</button><button id="selection-clear" disabled>Clear selection</button></h2><div id="graph-list" role="tree"></div><p id="graph-detail" role="status"></p></section>
   <section id="preview" aria-label="Scene preview">
-  <section id="threert-panel" hidden style="padding:10px 16px;border-bottom:1px solid #5555">
-    <span id="threert-status" role="status" style="font-size:12px"></span>
-    <button id="render-threert" disabled>连接实时渲染</button>
-    <a id="download-threert" class="download" hidden>下载主相机静态图</a>
+  <section id="threert-panel" hidden>
+    <div class="threert-bar">
+      <span id="threert-status" role="status"></span>
+      <button id="threert-warnings-toggle" type="button" aria-expanded="false" hidden></button>
+      <button id="render-threert" disabled>连接实时渲染</button>
+      <a id="download-threert" class="download" hidden>下载主相机静态图</a>
+    </div>
+    <ul id="threert-warnings" hidden></ul>
   </section>
   <div id="stage">
     <div id="canvas"></div>

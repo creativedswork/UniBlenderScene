@@ -81,6 +81,14 @@ mkdir -p ../UniBlenderScenes
   `claude --plugin-dir /absolute/path/to/UniBlenderScene`, using the actual plugin
   root. Check `/mcp` for the connection and available `scene_*` tools. For
   persistent installation, follow [Claude Code setup](operations.md#claude-code).
+- **Cursor:** from the extracted release ZIP or built checkout, run
+  `npm run install:cursor` (installs skills, rules, and subagents to
+  `~/.cursor/plugins/local/uni-blender-scene` and registers the managed MCP
+  server in global `~/.cursor/mcp.json` so Cursor Desktop renders MCP Apps
+  inline 3D previews in Chat), reload Cursor, and open the separate scene
+  directory. For Cursor CLI, run
+  `agent --plugin-dir /absolute/path/to/UniBlenderScene`. See
+  [Cursor setup](operations.md#cursor).
 - **Other hosts or remote services:** follow
   [service setup and deployment](operations.md) for the host's connection and
   authentication requirements.

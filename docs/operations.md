@@ -97,6 +97,52 @@ Use `/mcp` to check the service connection before requesting a scene. Loading th
 plugin does not start the HTTP service or Blender. A healthy connection does not
 prove that a scene job will succeed; scene tool failures still need diagnosis.
 
+### Cursor
+
+Cursor natively loads `.cursor-plugin/plugin.json`, discovers the shared root
+`skills/`, registers the workflow rule in `harnesses/cursor/rules/` and subagents
+in `harnesses/cursor/agents/`, and defines the managed MCP entry in
+`harnesses/cursor/mcp.json` using `${CURSOR_PLUGIN_ROOT}`.
+
+Like Codex, Cursor's default `stdio` entry launches `scripts/codex-mcp.sh` and
+`scripts/codex-mcp.ts`, which automatically starts or reuses the same managed
+local HTTP service (`127.0.0.1:4312`) and dedicated Blender bridge
+(`127.0.0.1:9877`). It uses `~/.canova/runs` and `~/.canova/.env` by default,
+shares the task queue with Codex when both clients are used, and stops the
+service after ten minutes of inactivity.
+
+Install Node.js 22+ and Blender 4.5+ on the machine running Cursor. For a
+release ZIP (recommended) or a built source checkout (`npm ci && npm run build`),
+run the Cursor installer from the extracted plugin directory:
+
+```bash
+npm run install:cursor
+```
+
+This installer copies the plugin into `~/.cursor/plugins/local/uni-blender-scene`
+(without external symlinks or repository runtime files) and registers
+`uni-blender-scene` in global `~/.cursor/mcp.json`, while omitting `mcpServers`
+from the installed local plugin copy to avoid duplicate tool servers.
+Registering the MCP server in global `~/.cursor/mcp.json` is required on Cursor
+Desktop so `scene_view` renders interactive MCP Apps inline views (Blender
+render, Three.js, and ThreeRT) directly in Chat; local plugin-scoped MCP
+servers alone currently fall back to plain JSON text in Cursor Desktop.
+
+Then restart Cursor or run `Developer: Reload Window` and check the `Customize`
+sidebar to verify that `uni-blender-scene` skills, rules, subagents, and the
+global `uni-blender-scene` MCP server (`scene_get`, `scene_view`, etc.) are
+loaded. For Cursor CLI, load the built plugin directory directly without copying:
+
+```bash
+agent --plugin-dir /absolute/path/to/UniBlenderScene
+```
+
+For scene production, open a separate workspace directory outside the plugin
+checkout so repository contributor instructions (`AGENTS.md` / `CLAUDE.md`) are
+not loaded into the scene project. Note that Enterprise Cursor teams may need
+`Allow Local Plugin Imports` enabled in Dashboard settings, and hosted Cloud
+Agents do not read `~/.cursor/plugins/local/`.
+
 ## Validate Claude Code
 
 From the repository root, validate both native manifests:
@@ -232,19 +278,22 @@ user's decision through `scene_review_decision`. Completed, exported scenes defa
 ThreeRT when its client is available; structural review uses Three.js. A manual
 backend choice is retained during scene updates. See the
 [ThreeRT setup and limits](#threert-setup-and-limits).
-For geometry/composition work or a scene in `awaiting_review`, first call
-`scene_preview` with its `sceneId` and poll `scene_get` with `images: "none"` until the job finishes.
-This prepares review assets without approving composition or enabling final
-export. Completed scenes use `scene_export` before opening the viewer.
+For geometry and composition, call `scene_preview` with its `sceneId` and poll
+`scene_get` with `images: "none"` until the job finishes. For materials,
+lighting and final review, use the appearance render. When
+`workflowState.pendingDecision` is present, report the review differences and
+the named next phase. The host records the user's choice to continue the phase
+or accept the differences and advance. Call `scene_export` when
+`workflowState.presentation.purpose` is `delivery`.
 
 Version 0.3.3 selects presentation from the per-scene `workflowState`. `phase`
 names the production stage and `status` names the operation state. During
 geometry/composition, edits automatically produce gray work images and
 `scene_preview` can generate the current iteration's five views and GLB even
-when geometry checks have not passed. These remain work drafts: no approval or
-final export is allowed. During `awaiting_review`, the source becomes the
-preserved composition checkpoint. This state is reconstructed from persisted
-scene fields on restart, independently for every scene.
+when geometry checks have not passed. Preview generation leaves the review
+state unchanged. During `awaiting_review`, the source becomes the preserved
+checkpoint. The service reconstructs the state from its saved scene fields
+on restart.
 
 The service displays neutral gray structural evidence during those phases:
 `scene_get`, the main image, five review views and the interactive review GLB.
@@ -401,7 +450,8 @@ npm run configure -- https://YOUR_SERVICE_ORIGIN
 ```
 
 This switches root `mcp.json` to the remote HTTP transport and updates
-`harnesses/claude-code/mcp.json` to the same endpoint.
+`harnesses/claude-code/mcp.json` and `harnesses/cursor/mcp.json` to the same
+endpoint.
 Keep the key in connection settings, outside manifests. The service supports
 fixed bearer-key authentication for private connections. It does not implement
 OAuth or public-directory submission, which needs a supported authentication

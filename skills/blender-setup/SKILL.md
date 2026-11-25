@@ -36,12 +36,20 @@ manifests. For Claude Code scene production, start in a scene project outside th
 plugin checkout and its subdirectories. Load the plugin with
 `claude --plugin-dir /absolute/path/to/UniBlenderScene` or install it from
 `.claude-plugin/marketplace.json`. Check `/mcp` for the connection and available
-scene tools before scene work. Both clients share `skills/` and the same running service;
-the Claude HTTP connection is in
-`harnesses/claude-code/mcp.json`. Read `docs/operations.md` for commands.
-For ChatGPT web, the service needs a reachable HTTPS endpoint and a host-supported
-authentication flow. Set `PUBLIC_BASE_URL` to the deployed origin and run
-`npm run configure -- https://YOUR_SERVICE_ORIGIN` to update both MCP configurations.
+scene tools before scene work. For Cursor Desktop, run `npm run install:cursor`
+from the extracted release ZIP or built checkout and reload Cursor. That copies
+the plugin into `~/.cursor/plugins/local/uni-blender-scene` (loading shared
+`skills/`, rules, and subagents) and registers `uni-blender-scene` in global
+`~/.cursor/mcp.json` (required by Cursor Desktop for MCP Apps inline 3D views in
+Chat, while omitting `mcpServers` from the local copy to prevent duplicate
+servers). For Cursor CLI (`agent`), pass
+`--plugin-dir /absolute/path/to/UniBlenderScene` directly. Both share the same
+managed local service and `skills/` as Codex and Claude Code. The Claude
+HTTP connection is in `harnesses/claude-code/mcp.json`. Read `docs/operations.md`
+for commands. For ChatGPT web, the service needs a reachable HTTPS endpoint and
+a host-supported authentication flow. Set `PUBLIC_BASE_URL` to the deployed
+origin and run `npm run configure -- https://YOUR_SERVICE_ORIGIN` to update all
+packaged MCP configurations.
 
 For missing tools, first use the host's tool discovery when available. For a
 Codex-managed service, check the logs in `RUNS_ROOT/.service/` and reconnect
