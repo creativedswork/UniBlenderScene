@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-面向 **Codex** 和 **Claude Code** 的 Blender 场景创建与复核插件。
+面向 **Codex**、**Claude Code** 和 **Cursor** 的 Blender 场景创建与复核插件。
 
 将参考图或文字描述转化为可编辑的 Blender 场景。通过 Agent 运行环境（Agent harness）配合 [Tripo](https://developers.tripo3d.ai/en/docs/introduction)、[Meshy](https://docs.meshy.ai/en/api) 等 3D API 生成单体资产，再在 Blender 中组装和细化场景。
 
@@ -12,6 +12,7 @@
 | --- | --- |
 | Codex | 安装插件，查看渲染图，并在支持 MCP Apps 的客户端中打开交互预览 |
 | Claude Code | 加载插件，在终端中查看渲染图并获取 `.blend` / GLB 文件 |
+| Cursor | 本地安装插件（`.cursor-plugin/plugin.json`），自动管理本地服务，加载共享 Skills/规则/子代理，并通过 MCP Apps 打开交互预览 |
 | 其他 Agent 运行环境 | 连接 MCP 服务并加载场景工作流指引；预览能力取决于客户端 |
 
 ## 效果展示
@@ -55,7 +56,7 @@
 
 ![UniBlenderScene 模块的三层结构示意图](docs/plugin-modules.svg)
 
-共享 Skills 指导场景规划和视觉复核，专用 Blender 服务负责构建与渲染，预览器支持交互检查。Codex 和 Claude Code 使用同一套场景工作流。
+共享 Skills 指导场景规划和视觉复核，专用 Blender 服务负责构建与渲染，预览器支持交互检查。Codex、Claude Code 和 Cursor 使用同一套场景工作流。
 
 独立物体使用适用且已单独配置的 3D 资产服务。通过 Agent 运行环境中的工具或 Skills 接入 Tripo、Meshy 等服务后，Agent 会将生成的资产导入 Blender，进行摆放与场景复核。房间表面和简单几何体可以程序化生成；没有适用的资产服务时，工作流可回退到 Blender 建模。服务访问权限、API Key 和生成费用需要单独配置。详见[资产工作流](skills/blender-scene/references/assets.md)。
 

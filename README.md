@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A Blender scene creation and review plugin for **Codex** and **Claude Code**.
+A Blender scene creation and review plugin for **Codex**, **Claude Code**, and **Cursor**.
 
 Turn reference images or text into editable Blender scenes. Combine your agent
 harness with 3D APIs such as [Tripo](https://developers.tripo3d.ai/en/docs/introduction)
@@ -17,6 +17,7 @@ and interactive presentation with [Meshy's ThreeRT](https://github.com/meshy-dev
 | --- | --- |
 | Codex | Install the plugin; review renders and open interactive previews in an MCP Apps host |
 | Claude Code | Load the plugin; inspect renders and access `.blend`/GLB files from the terminal |
+| Cursor | Install the plugin locally (`.cursor-plugin/plugin.json`); auto-manages the local service, loads shared Skills/rules/subagents, and opens interactive previews via MCP Apps |
 | Other agent harnesses | Connect to the MCP service and load the scene workflow instructions; preview support depends on the host |
 
 ## Showcases
@@ -62,7 +63,7 @@ The three rainy circuit renders use the same low-angle camera. The headlights il
 
 Shared Skills guide planning and visual review, a dedicated Blender service
 builds and renders the scene, and the viewer supports interactive inspection.
-Codex and Claude Code use the same scene workflow.
+Codex, Claude Code, and Cursor use the same scene workflow.
 
 Standalone objects use an applicable, separately configured 3D asset provider;
 connect Tripo, Meshy or another provider through your agent harness's tools or

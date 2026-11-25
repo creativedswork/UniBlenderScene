@@ -81,6 +81,13 @@ mkdir -p ../UniBlenderScenes
   `claude --plugin-dir /absolute/path/to/UniBlenderScene`, using the actual plugin
   root. Check `/mcp` for the connection and available `scene_*` tools. For
   persistent installation, follow [Claude Code setup](operations.md#claude-code).
+- **Cursor:** copy the extracted release ZIP or built checkout into
+  `~/.cursor/plugins/local/uni-blender-scene` (do not symlink outside
+  `~/.cursor/plugins/local`), reload Cursor, and open the separate scene
+  directory. Cursor uses `.cursor-plugin/plugin.json` and automatically starts
+  or reuses the managed local service and Blender bridge. For Cursor CLI, run
+  `agent --plugin-dir /absolute/path/to/UniBlenderScene`. See
+  [Cursor setup](operations.md#cursor).
 - **Other hosts or remote services:** follow
   [service setup and deployment](operations.md) for the host's connection and
   authentication requirements.
