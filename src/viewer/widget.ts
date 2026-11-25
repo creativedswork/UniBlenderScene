@@ -83,7 +83,8 @@ let viewer: {
   display?: FullScreenQuad; frameTimer: ReturnType<typeof setInterval>; gpuFence?: WebGLSync;
   effects?: ReturnType<typeof previewEffects>;
   weather?: ReturnType<typeof createWeather>;
-  position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver; aspect: number;
+  position: THREE.Vector3; target: THREE.Vector3; zoom: number; textures: THREE.Texture[]; resize: ResizeObserver;
+  restoreProjection: () => void;
   meshesById: Map<string, THREE.Mesh[]>;
 } | undefined;
 const message = (text: string) => { el("message").textContent = text; };
@@ -915,10 +916,11 @@ async function loadModel(url: string) {
       sharpenThinGlass(gltf.scene);
     }
     const world = profile.world;
+    const exr = new EXRLoader();
     let environment: THREE.Texture;
     if (world.environmentUri) {
       const environmentURL = await assetURL("environment.exr", url);
-      environment = await new EXRLoader().loadAsync(environmentURL);
+      environment = await exr.loadAsync(environmentURL);
     } else {
       const [r = 0, g = 0, b = 0] = world.color;
       environment = new THREE.DataTexture(new Float32Array([r, g, b, 1, r, g, b, 1]), 2, 1, THREE.RGBAFormat, THREE.FloatType);
@@ -933,12 +935,17 @@ async function loadModel(url: string) {
     if (!profile.render.filmTransparent) {
       scene.background = environment; scene.backgroundIntensity = world.strength;
       scene.backgroundRotation.y = world.environmentRotationY;
-      if (world.backgroundEnvironmentUri) {
-        const encoded = world.backgroundEnvironmentUri.split(",")[1]!;
-        const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
-        const image = new EXRLoader().parse(bytes.buffer);
-        const background = new THREE.DataTexture(image.data, image.width, image.height, image.format, image.type);
+      let background: THREE.DataTexture | undefined;
+      if (world.backgroundEnvironmentUri === "background.exr") {
+        background = await exr.loadAsync(await assetURL("background.exr", url));
+      } else if (world.backgroundEnvironmentUri?.startsWith("data:")) {
+        const bytes = Uint8Array.from(atob(world.backgroundEnvironmentUri.split(",")[1]!), (character) => character.charCodeAt(0));
+        const image = exr.parse(bytes.buffer);
+        background = new THREE.DataTexture(image.data, image.width, image.height, image.format, image.type);
+        background.minFilter = background.magFilter = THREE.LinearFilter;
         background.needsUpdate = true;
+      }
+      if (background) {
         background.colorSpace = THREE.LinearSRGBColorSpace; background.mapping = THREE.EquirectangularReflectionMapping;
         textures.push(background); scene.background = background; scene.backgroundIntensity = 1;
       }
@@ -1005,6 +1012,16 @@ async function loadModel(url: string) {
     const denoise = new FullScreenQuad(new DenoiseMaterial({ sigma: 1, kSigma: 1, threshold: 0.02, toneMapped: !display && !effects }));
     const denoiseTarget = display || effects ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, samples: raster ? 4 : 0 }) : undefined;
     let rasterDirty = true;
+    const restoreProjection = () => {
+      camera.updateProjectionMatrix();
+      if (camera instanceof THREE.PerspectiveCamera && profile.camera?.projectionMatrix?.length === 16) {
+        camera.projectionMatrix.fromArray(profile.camera.projectionMatrix);
+        const horizontalScale = aspect / camera.aspect;
+        camera.projectionMatrix.elements[0]! *= horizontalScale;
+        camera.projectionMatrix.elements[8]! *= horizontalScale;
+        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      }
+    };
     const resize = new ResizeObserver(() => {
       const w = el("stage").clientWidth, h = el("stage").clientHeight;
       if (!w || !h) return;
@@ -1016,12 +1033,7 @@ async function loadModel(url: string) {
         const halfWidth = (camera.top - camera.bottom) * viewportAspect / 2;
         camera.left = center - halfWidth; camera.right = center + halfWidth;
       }
-      camera.updateProjectionMatrix();
-      if (camera instanceof THREE.PerspectiveCamera && profile.camera?.projectionMatrix?.length === 16) {
-        camera.projectionMatrix.fromArray(profile.camera.projectionMatrix);
-        camera.projectionMatrix.elements[0]! *= aspect / viewportAspect;
-        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-      }
+      restoreProjection();
       tracer?.updateCamera();
       rasterDirty = true;
       effects?.resize(w, h);
@@ -1083,7 +1095,7 @@ async function loadModel(url: string) {
       gl.flush();
     }, 16);
     viewer = { renderer, scene, camera, controls, navigation, tracer, reflection, probe, denoise, denoiseTarget, display, effects, weather, frameTimer,
-      position, target, zoom: camera.zoom, textures, resize, aspect, meshesById };
+      position, target, zoom: camera.zoom, textures, resize, restoreProjection, meshesById };
     resize.observe(el("stage"));
     renderer.domElement.dataset.renderer = raster ? "raster" : "path-tracing";
     renderer.domElement.dataset.bounces = String(tracer?.bounces ?? 0);
@@ -1307,7 +1319,7 @@ el("reset").onclick = () => {
   if (mode === "threert") { liveViewer?.reset(); return; }
   if (viewer) {
     viewer.controls.enableDamping = false; viewer.controls.update();
-    viewer.camera.position.copy(viewer.position); viewer.camera.zoom = viewer.zoom; viewer.camera.updateProjectionMatrix();
+    viewer.camera.position.copy(viewer.position); viewer.camera.zoom = viewer.zoom; viewer.restoreProjection();
     viewer.controls.target.copy(viewer.target); viewer.controls.update(); updateSelectionBox();
     viewer.controls.enableDamping = true;
   }

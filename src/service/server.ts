@@ -80,7 +80,7 @@ export function createMcpServer(store: SceneStore, origin: string, browserPrevie
   };
   const write = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
-  const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json", "best.blend",
+  const assetNames = ["render", "best.png", ...REFERENCE_ASSETS, "final.glb", "render-profile.json", "environment.exr", "background.exr", "scene-graph.json", "manifest.json", "best.blend",
     "review-main.png", "review-front.png", "review-side.png", "review-top.png", "review-perspective.png", "threert.png"] as const;
   const assetName = z.union([z.enum(assetNames), z.string().regex(/^lightmap-\d+\.png$/),
     z.string().regex(/^(?:iteration-\d+|revision-[a-f0-9-]+-composition)-reference-[2-6]\.png$/)]);

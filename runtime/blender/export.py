@@ -254,7 +254,7 @@ def planar_reflection_receiver(scene):
     return receivers[0] if len(receivers) == 1 else None, receivers
 
 
-def compositor_profile(scene, warnings):
+def compositor_profile(scene, warnings, issues):
     tree = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
     if not tree or not scene.render.use_compositing:
         return {}
@@ -262,11 +262,13 @@ def compositor_profile(scene, warnings):
     if not output or not output.inputs.get("Image"):
         return {}
     result = {}
+    supported = set()
     glare = upstream(output.inputs["Image"], "GLARE")
     glare_type = (glare.inputs["Type"].default_value if glare.inputs.get("Type")
                   else getattr(glare, "glare_type", "")) if glare else ""
     mode = glare_type.upper().replace(" ", "_")
     if mode in {"BLOOM", "FOG_GLOW"}:
+        supported.add(glare)
         result["bloom"] = {key: float(glare.inputs[name].default_value) for key, name in
                            [("strength", "Strength"), ("threshold", "Threshold"), ("radius", "Size")]
                            if glare.inputs.get(name)}
@@ -277,33 +279,63 @@ def compositor_profile(scene, warnings):
     elif glare:
         warnings.append(f"Compositor Glare mode {glare_type} is unsupported.")
     source = output.inputs["Image"].links[0].from_node if output.inputs["Image"].is_linked else None
-    if source and source.bl_idname == "ShaderNodeMix" and source.data_type == "RGBA" and source.inputs[0].is_linked:
+    if (source and source.bl_idname == "ShaderNodeMix" and source.data_type == "RGBA" and
+            source.blend_type == "MIX" and source.inputs[0].is_linked and source.inputs[6].is_linked):
         amount = source.inputs[0].links[0].from_node
-        if amount.type == "MATH" and amount.operation == "MULTIPLY" and amount.inputs[0].is_linked:
+        if (amount.type == "MATH" and amount.operation == "MULTIPLY" and amount.inputs[0].is_linked and
+                not amount.inputs[1].is_linked):
             link = amount.inputs[0].links[0]
             if link.from_node.type == "R_LAYERS" and link.from_socket.name == "Mist" and not source.inputs[7].is_linked:
                 mist = scene.world.mist_settings
                 if mist.falloff in {"LINEAR", "QUADRATIC"}:
+                    supported.update((source, amount))
                     result["haze"] = {"start": float(mist.start), "depth": float(mist.depth),
                                       "falloff": mist.falloff, "strength": float(amount.inputs[1].default_value),
                                       "color": list(source.inputs[7].default_value)[:3]}
+    seen = set()
+    pending = [output.inputs["Image"]]
+    missing = []
+    for socket in pending:
+        for link in socket.links:
+            node = link.from_node
+            if node in seen:
+                continue
+            seen.add(node)
+            pending.extend(node.inputs)
+            if node not in supported and node.type not in {"R_LAYERS", "REROUTE"}:
+                missing.append(node.label or node.name)
+    if supported:
+        issues.append({"object": tree.name, "effect": "compositor", "target": "threejs", "status": "approximate",
+                       "reason": "Three.js approximates Blender's " + " and ".join(result) + "."})
+    if missing:
+        missing = list(dict.fromkeys(missing))
+        names = ", ".join(missing[:8]) + (f" and {len(missing) - 8} more" if len(missing) > 8 else "")
+        issues.append({"object": tree.name, "effect": "compositor", "target": "threejs", "status": "missing",
+                       "reason": "Effects omitted from Three.js: " + names + "."})
     return result
 
 
-def bake_world_backgrounds(scene, world_output, ambient, disk_socket=None):
-    surface = world_output.inputs["Surface"]
-    original_surface = surface.links[0].from_socket
+def bake_world_backgrounds(scene, world_output, disk_socket=None):
     volume = world_output.inputs["Volume"]
     volume_sources = [link.from_socket for link in volume.links]
     disk_source = disk_socket.links[0].from_socket if disk_socket else None
     disk_value = disk_socket.default_value if disk_socket else None
     original_camera = scene.camera
+    tree = scene.world.node_tree
+    # Evaluate the same graph for lighting with camera-only branches disabled.
+    camera_links = [(link.from_socket, link.to_socket) for link in tree.links
+                    if link.from_node.type == "LIGHT_PATH" and link.from_socket.name == "Is Camera Ray"]
     visibility = [(obj, obj.hide_render) for obj in scene.objects]
     render = scene.render
+    transparent = render.film_transparent
+    background_width = min(4096, max(2048, render.resolution_x * 2, *(node.image.size[0] for node in tree.nodes
+                           if node.type == "TEX_ENVIRONMENT" and node.image)))
     settings = render.image_settings
     saved = (render.resolution_x, render.resolution_y, render.resolution_percentage, render.filepath,
-             render.engine, render.film_transparent, render.use_compositing,
-             settings.file_format, settings.color_mode, settings.color_depth, scene.cycles.samples)
+             render.engine, render.film_transparent, render.use_compositing, render.use_border,
+             render.pixel_aspect_x, render.pixel_aspect_y, render.use_sequencer,
+             settings.file_format, settings.color_mode, settings.color_depth,
+             scene.cycles.samples, scene.cycles.use_denoising)
     data = bpy.data.cameras.new("World export panorama")
     camera = bpy.data.objects.new("World export panorama", data)
     scene.collection.objects.link(camera)
@@ -326,20 +358,31 @@ def bake_world_backgrounds(scene, world_output, ambient, disk_socket=None):
         scene.camera = camera
         render.resolution_x, render.resolution_y, render.resolution_percentage = 512, 256, 100
         render.engine, render.film_transparent, render.use_compositing = "CYCLES", False, False
+        render.use_border = render.use_sequencer = False
+        render.pixel_aspect_x = render.pixel_aspect_y = 1
         settings.file_format, settings.color_mode, settings.color_depth = "OPEN_EXR", "RGB", "32"
         scene.cycles.samples = 1
-        scene.world.node_tree.links.new(ambient.outputs[0], surface)
+        scene.cycles.use_denoising = False
+        zero = tree.nodes.new("ShaderNodeValue") if camera_links else None
+        for _, dst in camera_links:
+            tree.links.new(zero.outputs[0], dst)
         render.filepath = os.path.join(directory, "environment.exr")
-        bpy.ops.render.render(write_still=True)
-        scene.world.node_tree.links.new(original_surface, surface)
-        render.filepath = os.path.join(directory, "background.exr")
-        bpy.ops.render.render(write_still=True)
-        with open(render.filepath, "rb") as file:
-            background = "data:application/octet-stream;base64," + base64.b64encode(file.read()).decode("ascii")
-        os.unlink(render.filepath)
-        return background
+        try:
+            bpy.ops.render.render(write_still=True)
+        finally:
+            if zero:
+                tree.nodes.remove(zero)
+            for src, dst in camera_links:
+                tree.links.new(src, dst)
+        if not transparent:
+            settings.color_depth = "16"
+            render.resolution_y = background_width // 2
+            render.resolution_x = render.resolution_y * 2
+            render.filepath = os.path.join(directory, "background.exr")
+            bpy.ops.render.render(write_still=True)
+            return "background.exr"
+        return None
     finally:
-        scene.world.node_tree.links.new(original_surface, surface)
         for socket in volume_sources:
             scene.world.node_tree.links.new(socket, volume)
         if disk_source is not None:
@@ -351,8 +394,10 @@ def bake_world_backgrounds(scene, world_output, ambient, disk_socket=None):
         bpy.data.objects.remove(camera, do_unlink=True)
         bpy.data.cameras.remove(data)
         (render.resolution_x, render.resolution_y, render.resolution_percentage, render.filepath,
-         render.engine, render.film_transparent, render.use_compositing,
-         settings.file_format, settings.color_mode, settings.color_depth, scene.cycles.samples) = saved
+         render.engine, render.film_transparent, render.use_compositing, render.use_border,
+         render.pixel_aspect_x, render.pixel_aspect_y, render.use_sequencer,
+         settings.file_format, settings.color_mode, settings.color_depth,
+         scene.cycles.samples, scene.cycles.use_denoising) = saved
 
 
 def display_lut(scene):
@@ -460,15 +505,18 @@ try:
         background = upstream(output.inputs.get("Surface"), "BACKGROUND") if output else None
     color = list(background.inputs["Color"].default_value)[:3] if background else list(world.color) if world else [0, 0, 0]
     strength = float(background.inputs["Strength"].default_value) if background else 1.0
-    environment = upstream(background.inputs.get("Color"), "TEX_ENVIRONMENT") if background else None
-    mapping = upstream(environment.inputs.get("Vector"), "MAPPING") if environment else None
     environment_uri = None
     background_uri = None
     baked_panorama = False
     visible_disk = next((node for node in output.id_data.nodes
                          if node.type == "MAP_RANGE" and node.label == "Apparent solar disc"), None) if output else None
     effects = {} if structural_preview else effect_profile(scene, output, visible_disk)
-    if environment and environment.image:
+    surface = output.inputs["Surface"] if output else None
+    surface_node = surface.links[0].from_node if surface and surface.is_linked else None
+    simple_background = surface_node and surface_node.type == "BACKGROUND" and not surface_node.inputs["Strength"].is_linked
+    color_input = surface_node.inputs["Color"] if simple_background else None
+    environment = color_input.links[0].from_node if color_input and color_input.is_linked else None
+    if environment and environment.type == "TEX_ENVIRONMENT" and environment.image and not environment.inputs["Vector"].is_linked:
         settings = scene.render.image_settings
         original = (settings.file_format, settings.color_mode, settings.color_depth)
         try:
@@ -477,7 +525,7 @@ try:
             environment_uri = "environment.exr"
         finally:
             settings.file_format, settings.color_mode, settings.color_depth = original
-    elif not structural_preview and background and background.inputs["Color"].is_linked:
+    elif not structural_preview and surface_node and (not simple_background or color_input.is_linked):
         solar = effects.get("sun")
         disk_socket = solar_disk_socket(visible_disk) if solar else None
         if disk_socket is not None:
@@ -485,24 +533,16 @@ try:
             gain = float(visible.inputs["Strength"].default_value) if visible else 1.0
             solar["radiance"] = [float(channel) * gain for channel in disk_socket.node.inputs[2].default_value[:3]]
             solar["inBackground"] = False
-        background_uri = bake_world_backgrounds(scene, output, background, disk_socket)
+        background_uri = bake_world_backgrounds(scene, output, disk_socket)
         environment_uri = "environment.exr"
         strength = 1.0
         baked_panorama = True
-    if not environment_uri and os.path.exists(os.path.join(directory, "environment.exr")):
-        os.unlink(os.path.join(directory, "environment.exr"))
+    for name, uri in (("environment.exr", environment_uri), ("background.exr", background_uri)):
+        if not uri and os.path.exists(os.path.join(directory, name)):
+            os.unlink(os.path.join(directory, name))
     appearance = {} if structural_preview else dict(preview_appearance)
     warnings = []
-    postprocessing = {} if structural_preview else compositor_profile(scene, warnings)
-    if not structural_preview and scene.render.use_compositing:
-        compositor = getattr(scene, "compositing_node_group", None) or getattr(scene, "node_tree", None)
-        final = next((n for n in compositor.nodes if n.type in {"GROUP_OUTPUT", "COMPOSITE"} and getattr(n, "is_active_output", True)), None) if compositor else None
-        image = final.inputs.get("Image") if final else None
-        if image and image.is_linked and image.links[0].from_node.type != "R_LAYERS":
-            effects["issues"].append({"object": compositor.name, "effect": "compositor", "target": "threejs",
-                                      "status": "approximate" if postprocessing else "missing",
-                                      "reason": "The viewer approximates the compositor's glare and mist."
-                                      if postprocessing else "The compositor graph has no supported interactive effect."})
+    postprocessing = {} if structural_preview else compositor_profile(scene, warnings, effects["issues"])
     if not structural_preview and not appearance.get("planarReflection") and appearance.get("renderMode") != "pathtracing":
         receiver, candidates = planar_reflection_receiver(scene)
         if receiver:
@@ -567,7 +607,7 @@ try:
         "world": {
             "color": color, "strength": strength, "environmentUri": environment_uri,
             # Cycles' rendered panorama has its longitude origin a quarter turn from Three.js.
-            "environmentRotationY": math.pi / 2 if baked_panorama else -float(mapping.inputs["Rotation"].default_value[2]) if mapping else 0.0,
+            "environmentRotationY": math.pi / 2 if baked_panorama else 0.0,
             "backgroundEnvironmentUri": background_uri,
         },
         "postprocessing": postprocessing,

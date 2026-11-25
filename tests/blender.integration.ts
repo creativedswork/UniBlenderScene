@@ -6,7 +6,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { PNG } from "pngjs";
-import { Matrix4, Quaternion, Vector3 } from "three";
+import { FloatType, Matrix4, Quaternion, Vector3 } from "three";
+import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -357,7 +358,22 @@ for index, position in enumerate(((3,-6,2),(6,-2,2),(-6,-2,2),(4,4,3),(2,-2,8)),
   assert.ok(profile.lights[0].energy > 0);
   assert.deepEqual([...profile.bakedObjects].sort(), ["Floor", "RedCube"]);
   assert.ok(profile.world.environmentUri?.endsWith("environment.exr"));
-  assert.ok(profile.world.backgroundEnvironmentUri?.startsWith("data:application/octet-stream;base64,"));
+  assert.equal(profile.world.backgroundEnvironmentUri, "background.exr");
+  const panorama = async (name: string) => {
+    const asset = exported.artifacts.find((file: { name: string }) => file.name === name);
+    const response = await fetch(asset.url);
+    assert.equal(response.status, 200);
+    return new EXRLoader().setDataType(FloatType).parse(await response.arrayBuffer());
+  };
+  const sky = await panorama("background.exr"), ambient = await panorama("environment.exr");
+  assert.deepEqual([sky.width, sky.height, ambient.width, ambient.height], [2048, 1024, 512, 256]);
+  assert.ok(Math.abs(ambient.data[0]! - 0.4) < 0.002, `The non-camera branch lights the scene (${ambient.data[0]})`);
+  assert.ok(sky.data[0]! < 0.25, "The camera branch supplies the visible sky");
+  const skyChunk = await call("scene_asset_chunk", { sceneId: id, name: "background.exr", offset: 0 });
+  assert.equal(skyChunk.isError, undefined);
+  assert.equal(exported.exportAlignment.status, "degraded");
+  assert.ok(profile.effects.issues.some((issue: { status: string; reason: string }) =>
+    issue.status === "missing" && issue.reason.includes("Local color grade")));
   assert.ok(Math.abs(profile.postprocessing.bloom.strength - 0.1) < 1e-6);
   assert.ok(Math.abs(profile.postprocessing.haze.strength - 0.03) < 1e-6);
   assert.ok(profile.warnings.some((warning: string) => warning.includes("Fog Glow")));

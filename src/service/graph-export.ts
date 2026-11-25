@@ -67,6 +67,13 @@ export function writeGraphExport(directory: string, iteration: number, graph: Sc
   const { glbSha256, glbBytes } = glbChecksum(glb);
   const profilePath = join(directory, "render-profile.json");
   const profile = JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>;
+  const world = profile.world as { environmentUri?: string; backgroundEnvironmentUri?: string } | undefined;
+  const panoramas = [world?.environmentUri === "environment.exr" ? "environment.exr" : null,
+    world?.backgroundEnvironmentUri === "background.exr" ? "background.exr" : null].filter((name): name is string => name !== null);
+  for (const name of panoramas) {
+    const file = openSync(join(directory, name), "r");
+    closeSync(file);
+  }
   const effects = profile.effects as ExportEffects | undefined;
   const issues = effects?.issues ?? [];
   if (effects && glbBytes > maxViewerAssetBytes) issues.push({ object: "final.glb", effect: "interactive model",
@@ -104,6 +111,6 @@ export function writeGraphExport(directory: string, iteration: number, graph: Sc
     sourceRenderSha256: hash(resolve(directory, render)),
     ...(source.blend === "best.blend" ? { bestBlendSha256: hash(resolve(directory, blend)), bestRenderSha256: hash(resolve(directory, render)) } : {}),
     files: [...(source.blend === "best.blend" ? [blend] : []), render, "final.glb", "render-profile.json", "scene-graph.json",
-      ...((profile.world as { environmentUri?: string } | undefined)?.environmentUri ? ["environment.exr"] : []), ...lightmaps.map(map => map.uri)] }, null, 2));
+      ...panoramas, ...lightmaps.map(map => map.uri)] }, null, 2));
   return profile.effects ? alignment : undefined;
 }

@@ -1722,7 +1722,7 @@ result = {"reviewViews": 5}
       `artifacts/${scene.exportedIteration}` : scene.previewedIteration !== undefined &&
       this.hasStructuralPreview(scene) ? this.previewDirectory(scene, scene.previewedIteration) : undefined;
     if (directory) {
-      for (const name of ["final.glb", "render-profile.json", "environment.exr", "scene-graph.json", "manifest.json"]) {
+      for (const name of ["final.glb", "render-profile.json", "environment.exr", "background.exr", "scene-graph.json", "manifest.json"]) {
         const file = `${directory}/${name}`;
         if (existsSync(this.path(scene, file))) files.push(file);
       }

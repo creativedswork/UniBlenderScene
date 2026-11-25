@@ -174,8 +174,10 @@ export async function renderThreeRT(directory: string, binary: string) {
     warnings.push("ThreeRT 使用渐变天空近似环境照明。");
   }
   const background = profile.world.backgroundEnvironmentUri;
-  const panorama = !profile.render.filmTransparent && typeof background === "string" && background.startsWith("data:")
-    ? readPanorama(Buffer.from(background.split(",")[1]!, "base64")) : undefined;
+  const panorama = profile.render.filmTransparent ? undefined : background === "background.exr"
+    ? readPanorama(await readFile(join(directory, "background.exr")))
+    : typeof background === "string" && background.startsWith("data:")
+      ? readPanorama(Buffer.from(background.split(",")[1]!, "base64")) : undefined;
   await writeFile(join(directory, "model.glb"), modelWithoutPunctualLights(glb));
   input.camera.aspect = profile.render.resolutionX / profile.render.resolutionY;
   const adapter = fileURLToPath(new URL("../../runtime/threert/scene.ts", import.meta.url));

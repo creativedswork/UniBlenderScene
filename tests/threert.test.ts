@@ -43,8 +43,9 @@ require("node:fs").writeFileSync(process.argv[process.argv.indexOf("-o") + 1], B
   try {
     writeFileSync(join(directory, "final.glb"), glb());
     writeFileSync(join(directory, "environment.exr"), exr);
+    writeFileSync(join(directory, "background.exr"), exr);
     writeFileSync(join(directory, "render-profile.json"), JSON.stringify({ ...profile, world: { ...profile.world,
-      environmentUri: "environment.exr", backgroundEnvironmentUri: `data:application/octet-stream;base64,${exr.toString("base64")}`,
+      environmentUri: "environment.exr", backgroundEnvironmentUri: "background.exr",
       environmentRotationY: Math.PI / 2 } }));
     await renderThreeRT(directory, cli);
     const input: ThreeRTInput = JSON.parse(readFileSync(join(directory, "input.json"), "utf8"));
